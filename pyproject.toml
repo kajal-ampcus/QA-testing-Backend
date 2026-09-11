@@ -1,0 +1,88 @@
+[project]
+name = "qa-platform"
+version = "0.1.0"
+description = "Agentic AI automation testing platform"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "asyncpg>=0.29",
+    "redis>=5.0",
+    "playwright>=1.47",
+    "anthropic>=0.34",
+    "boto3>=1.35",
+    # worker/queue library: add celery+redis OR arq here once decided (see docs/PROJECT_STRUCTURE.md)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "import-linter>=2.1",
+    "pre-commit>=3.8",
+]
+
+[tool.setuptools.packages.find]
+# Flat layout with several top-level dirs — only these are installable
+# packages; deploy/, docs/, scripts/, tests/ etc. are excluded implicitly by
+# not being listed.
+include = ["apps*", "core*", "domain*", "infra*", "schemas*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+plugins = ["pydantic.mypy"]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+# --- Architectural boundary enforcement ---
+# This is the mechanism referenced in docs/PROJECT_STRUCTURE.md point 3 and 1:
+# core/ must never import from apps/, and core/agents/test_execution must never
+# import from infra/llm (zero LLM-in-the-loop guarantee, architecture doc Section 14).
+[tool.importlinter]
+root_package = "."
+
+[[tool.importlinter.contracts]]
+name = "core never imports apps"
+type = "forbidden"
+source_modules = ["core"]
+forbidden_modules = ["apps"]
+
+[[tool.importlinter.contracts]]
+name = "test_execution agent has zero LLM-in-the-loop"
+type = "forbidden"
+source_modules = ["core.agents.test_execution"]
+forbidden_modules = ["infra.llm"]
+
+[[tool.importlinter.contracts]]
+name = "only tool_gateway talks to secrets and MCP clients"
+type = "forbidden"
+source_modules = ["core.agents"]
+forbidden_modules = ["infra.secrets", "core.tool_gateway.mcp_clients"]
+
+[[tool.importlinter.contracts]]
+name = "domain entities stay framework-agnostic"
+type = "forbidden"
+source_modules = ["domain"]
+forbidden_modules = ["fastapi", "sqlalchemy", "apps", "infra"]
+
+# Package manager: choose uv or Poetry and remove this comment once decided
+# (see docs/PROJECT_STRUCTURE.md, "A few concrete choices to lock in")

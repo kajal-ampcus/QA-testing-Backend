@@ -1,0 +1,13 @@
+# Deferred to Production phase (Section 35) — CI/CD deploy automation is not
+# MVP scope (Section 34). Stub kept here as a placeholder so the file exists
+# and this decision is visible, not silently missing.
+name: Deploy (not yet active)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deploy pipeline not yet implemented — Production phase, see docs/architecture Section 35"
