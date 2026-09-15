@@ -1,14 +1,58 @@
 """
-Worker task wrapping core/agents/application_discovery. For large applications
-this is where the sharded/parallel crawl fan-out happens (architecture doc
-Section 9's scaling subsection): one task instance per navigation shard, each
-with its own isolated chrome-devtools-mcp + Chrome instance, merged via the
-`fingerprint` key on completion. MVP scope is a single sequential crawl
-(Section 34); sharding is Production scope (Section 35).
-
-Phase 0 stub.
+Worker task wrapping core/agents/application_discovery — the arq function the
+API enqueues rather than running Discovery synchronously inside a request.
+Owns its own DB session (arq tasks run in a separate process from the API,
+so they can't reuse apps.api.dependencies.get_db_session, which is FastAPI-
+specific dependency injection).
 """
 
-# TODO (Phase 1): async def run_discovery(project_id, target, crawl_budget): ...
-#   -> instantiate core.agents.application_discovery.agent.ApplicationDiscoveryAgent
-#      via core.tool_gateway, execute, persist application_map via infra.db.repositories
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from infra.db.models import project  # noqa: F401 — register the FK target on Base.metadata
+from infra.db.models.agent_run import AgentRun
+from infra.db.repositories.application_map_repo import ApplicationMapRepository
+from infra.db.repositories.requirement_repo import RequirementRepository
+from infra.db.session import AsyncSessionLocal
+from schemas.envelope import AgentInputEnvelope
+
+
+async def run_discovery(
+    ctx: dict[str, Any], project_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """arq task signature: first arg is always the worker context (ctx),
+    everything after is what the caller passed to `enqueue_job`. Returns a
+    small JSON-safe summary — arq stores this as the job result, retrievable
+    via the job id for the /application-maps status endpoint to poll."""
+    # Import here, not at module load time, to avoid a circular import
+    # between this module and core.agents.application_discovery.agent (which
+    # doesn't currently import this file, but keeps the dependency direction
+    # explicit and one-way: worker task -> agent, never the reverse).
+    from core.agents.application_discovery.agent import ApplicationDiscoveryAgent
+
+    async with AsyncSessionLocal() as session:
+        map_repo = ApplicationMapRepository(session)
+        requirement_repo = RequirementRepository(session)
+        agent = ApplicationDiscoveryAgent(map_repo=map_repo, requirement_repo=requirement_repo)
+
+        input_envelope = AgentInputEnvelope(
+            agent_run_id=uuid.uuid4(),
+            project_id=uuid.UUID(project_id),
+            trigger="manual",
+            payload=payload,
+        )
+        result = await agent.run(input_envelope)
+        session.add(
+            AgentRun(
+                id=input_envelope.agent_run_id,
+                project_id=input_envelope.project_id,
+                agent_name=agent.name,
+                status=result.status,
+                input_envelope=input_envelope.model_dump(mode="json"),
+                output_envelope=result.model_dump(mode="json"),
+                finished_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+        return result.model_dump(mode="json")

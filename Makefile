@@ -12,7 +12,7 @@ lint:
 	ruff format --check .
 
 typecheck:
-	mypy .
+	mypy apps core domain infra schemas tests
 
 check-arch:
 	# Fails the build if core/ imports apps/, or if test_execution imports infra/llm —
@@ -29,10 +29,7 @@ run-api:
 	uvicorn apps.api.main:app --reload
 
 run-worker:
-	# celery -A apps.worker.celery_app worker --loglevel=info
-	# OR: arq apps.worker.arq_app.WorkerSettings
-	# — fill in once the worker/queue library is chosen (docs/PROJECT_STRUCTURE.md)
-	@echo "worker entrypoint not yet chosen — see docs/PROJECT_STRUCTURE.md"
+	arq apps.worker.arq_worker.WorkerSettings
 
 docker-up:
 	docker compose -f deploy/docker/docker-compose.yml up -d

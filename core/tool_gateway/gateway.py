@@ -1,13 +1,26 @@
-"""
-The single choke point for every external tool call (architecture doc Section
-11/28). No agent module imports mcp_clients/ or infra/secrets/ directly — it
-goes through here (docs/PROJECT_STRUCTURE.md point 4). This is Section 11's
-least-privilege table made real: each agent is provisioned with only the tool
-subset it needs, enforced here, not by prompting.
+"""Least-privilege access to exploratory browser tools.
 
-Phase 0 stub.
+Only Discovery and Failure Analysis may obtain Chrome DevTools MCP. Scripted
+test execution uses Playwright through a separate path in a later milestone.
 """
 
-# TODO (Phase 1): class ToolGateway:
-#   def for_agent(self, agent_name: str) -> ScopedToolAccess: ...
-#   — returns only the tools that agent is allowed per Section 11's table
+from typing import Any, Protocol
+
+from core.tool_gateway.mcp_clients.chrome_devtools_client import ChromeDevToolsClient
+
+
+class BrowserInspection(Protocol):
+    async def navigate_page(self, url: str) -> Any: ...
+
+    async def take_snapshot(self) -> Any: ...
+
+    async def click(self, element_ref: str) -> Any: ...
+
+
+class ToolGateway:
+    _CHROME_AGENTS = frozenset({"application_discovery", "failure_analysis"})
+
+    def chrome_devtools(self, agent_name: str, allowed_url_pattern: str) -> ChromeDevToolsClient:
+        if agent_name not in self._CHROME_AGENTS:
+            raise PermissionError(f"Agent {agent_name!r} has no Chrome DevTools access")
+        return ChromeDevToolsClient(allowed_url_pattern=allowed_url_pattern)

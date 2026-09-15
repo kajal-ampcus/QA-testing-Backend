@@ -13,7 +13,7 @@ Agentic AI automation testing platform — automates the QA lifecycle (requireme
 
 ## Status
 
-**Phase 0 — repo scaffolding.** Directory structure and tooling config are in place; no agent reasoning logic is implemented yet. See `docs/IMPLEMENTATION_PLAN.md` for current phase and next milestone once it exists.
+Projects, requirement understanding and approval, and application discovery are implemented. Discovery runs as an `arq` job in a separate worker. Test design, execution, triage, and reporting remain later milestones.
 
 ## Local development
 
@@ -30,26 +30,37 @@ py -3.13 -m venv .venv
 # 2. install deps (editable, with dev extras)
 pip install -e ".[dev]"
 
-# 3. (optional) bring up Postgres/Redis/MinIO via Docker Compose
+# 3. bring up Postgres/Redis/MinIO via Docker Compose
 docker compose -f deploy/docker/docker-compose.yml up -d
 
-# 4. run the API
+# 4. migrate the database
+python -m alembic upgrade head
+
+# 5. run the API and, in a separate terminal, the worker
 uvicorn apps.api.main:app --reload
+arq apps.worker.arq_worker.WorkerSettings
 ```
 
-Equivalent shortcuts once deps are installed: `make dev` (installs deps +
-pre-commit) and `make run-api`. See `Makefile` for the rest of the common
-commands (`make test`, `make lint`, `make migrate`, `make docker-up`) —
-`make run-worker` isn't wired up yet since the worker/queue library
-(Celery+Redis vs. `arq`) is still undecided, per `CLAUDE.md`.
+Equivalent shortcuts once deps are installed: `make run-api` and `make run-worker`.
+Set `DATABASE_URL` and `REDIS_URL` in `.env` to match the running services.
 
 Once running:
 - `GET /health` — liveness, no setup required
 - `GET /health/db` — verifies Postgres connectivity; needs `DATABASE_URL`
   reachable (set in `.env`, copied from `.env.example`)
 
-Only these two endpoints exist today — everything else in the app is still a
-Phase 0 stub (see `docs/IMPLEMENTATION_PLAN.md` for what's next).
+To start discovery, create a project with `application_url`, then call
+`POST /api/v1/application-maps/projects/{project_id}/discover` with
+`{"focus_requirements": []}`. Omitting `url` uses the project's application
+URL. A nonempty focus list must contain approved requirement IDs or codes.
+The response contains a `job_id`; poll
+`GET /api/v1/application-maps/jobs/{job_id}` and then read
+`GET /api/v1/application-maps/projects/{project_id}`. Redis is required to
+enqueue discovery, and the separate worker is required to complete it.
+
+For request-by-request API testing, import
+`postman/qa-platform.postman_collection.json` into Postman. See
+`postman/README.md` for the project, requirement, approval, and discovery order.
 
 ## Database migrations
 
@@ -64,15 +75,9 @@ python -m alembic upgrade head
 python -m alembic upgrade head --sql
 ```
 
-The last command generates SQL without connecting. The migration framework
-is configured, but application models and migration revisions are still to
-be implemented. Once models exist, import their modules in
-`infra/db/models/__init__.py`, then generate and review a migration:
-
-```bash
-python -m alembic revision --autogenerate -m "create initial tables"
-python -m alembic upgrade head
-```
+The last command generates SQL without connecting. Application models and
+migrations are implemented; run `upgrade head` whenever the database schema is
+behind the code.
 
 If PostgreSQL reports password authentication failure, correct `DATABASE_URL`
 in `.env` (or the overriding environment variable) to match the database user.

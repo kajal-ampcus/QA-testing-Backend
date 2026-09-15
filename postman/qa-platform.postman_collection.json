@@ -1,0 +1,503 @@
+{
+  "info": {
+    "name": "QA Platform API — implemented endpoints",
+    "description": "Run against a local QA Platform API. Create Project and Submit Requirement capture IDs. Revision creates a new approval; run List Pending Approvals again before approval. Approve and Reject are alternative manual actions. Discovery requires Redis and an arq worker; a 202 response only means the job was queued.",
+    "schema": "https://schema.postman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000",
+      "description": "API origin"
+    },
+    {
+      "key": "project_id",
+      "value": "edc91f00-d925-41af-a7fa-43123fe0a302",
+      "description": "Current local project UUID; run Create Project or change this value"
+    },
+    {
+      "key": "requirement_id",
+      "value": "988a05aa-16cd-424d-ab53-e73bb1bf2321",
+      "description": "Current local requirement UUID; Submit Requirement replaces it"
+    },
+    {
+      "key": "req_code",
+      "value": "REQ-001",
+      "description": "Current local requirement code; Submit Requirement replaces it"
+    },
+    {
+      "key": "approval_id",
+      "value": "",
+      "description": "Captured from List Pending Approvals"
+    },
+    {
+      "key": "job_id",
+      "value": "",
+      "description": "Captured from discovery trigger"
+    },
+    {
+      "key": "application_url",
+      "value": "https://example.com/",
+      "description": "Application to discover when creating a project"
+    },
+    {
+      "key": "decided_by",
+      "value": "tester",
+      "description": "Name recorded on approval decisions"
+    }
+  ],
+  "item": [
+    {
+      "name": "01 Health",
+      "item": [
+        {
+          "name": "Liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/health",
+            "description": "Checks that the API is running."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Database readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/health/db",
+            "description": "Checks PostgreSQL connectivity."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 Projects",
+      "item": [
+        {
+          "name": "Create Project",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/projects",
+            "description": "Creates a project and stores its ID in project_id.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman test project\",\n  \"application_url\": \"{{application_url}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { const data = pm.response.json(); pm.collectionVariables.set(\"project_id\", data.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Projects",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/projects",
+            "description": "Lists stored projects."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Project",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/projects/{{project_id}}",
+            "description": "Uses a project UUID captured from Create Project or supplied in collection variables."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 Requirements",
+      "item": [
+        {
+          "name": "Submit Requirement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/requirements/projects/{{project_id}}",
+            "description": "Sends raw requirement text to the configured LLM; saves requirement_id and req_code. Edit this example to match your application.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"raw_text\": \"A registered user signs in with email and password. Invalid credentials show an error without revealing which field is wrong. A signed-in user can send a chatbot message and view prior chats in a History panel.\",\n  \"external_ref\": \"POSTMAN-REQ-1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { const data = pm.response.json(); pm.collectionVariables.set(\"requirement_id\", data.id); pm.collectionVariables.set(\"req_code\", data.req_code); if (data.ambiguities?.length) console.warn(\"Clarify the requirement before approval:\", data.ambiguities); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Project Requirements",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/requirements/projects/{{project_id}}",
+            "description": "Lists the current version of each project requirement."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Requirement",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/requirements/{{requirement_id}}",
+            "description": "Read ambiguities and current version before approval."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revise Requirement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/requirements/{{requirement_id}}/revisions",
+            "description": "Append a new version. Edit the sample product decisions to match your application. Then run List Pending Approvals to capture the new approval ID.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"raw_text\": \"A registered user signs in with email and password. Both fields are required. On invalid credentials, show 'Invalid email or password', keep the user on the login page, and do not create a session. After login, users can send chatbot messages. After every chatbot reply, save or update that conversation under the user's account. The History panel lists conversations newest first by last reply time. Selecting a history item opens all saved messages in order. Users cannot view another user's history.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { const data = pm.response.json(); pm.collectionVariables.set(\"requirement_id\", data.id); if (data.ambiguities?.length) console.warn(\"Remaining ambiguities:\", data.ambiguities); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 Approvals — choose one decision",
+      "description": "Approval and rejection are alternatives. A requirement with ambiguities cannot be approved. Revision supersedes its old pending approval; refresh the pending list after revising.",
+      "item": [
+        {
+          "name": "List Pending Approvals",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/approvals?project_id={{project_id}}",
+            "description": "Finds a pending approval for requirement_id and stores its real approval ID."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { const approvals = pm.response.json(); const requirementId = pm.collectionVariables.get('requirement_id'); const match = approvals.find(a => a.target_type === 'requirement' && a.target_id === requirementId); if (match) pm.collectionVariables.set('approval_id', match.id); else { pm.collectionVariables.unset('approval_id'); console.warn('No pending approval for requirement_id'); } }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve Requirement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/approvals/{{approval_id}}/approve",
+            "description": "Run only when the current requirement version has no ambiguities. Requires the real pending approval ID, not an OpenAPI example ID.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decided_by\": \"{{decided_by}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject Requirement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/approvals/{{approval_id}}/reject",
+            "description": "Alternative to Approve. Reason is required; use a different pending approval for each decision.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decided_by\": \"{{decided_by}}\",\n  \"reason\": \"Requirement does not match the agreed behavior.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 Application Discovery",
+      "description": "Redis must be reachable and an arq worker must be running. Poll the job after receiving HTTP 202. The job result can report FAILED even when queueing succeeded.",
+      "item": [
+        {
+          "name": "Trigger General Discovery",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/application-maps/projects/{{project_id}}/discover",
+            "description": "Uses the project's saved application_url. Empty focus list performs a general crawl.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"focus_requirements\": [],\n  \"max_pages\": 5,\n  \"max_depth\": 2,\n  \"max_duration_seconds\": 60\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { const data = pm.response.json(); pm.collectionVariables.set(\"job_id\", data.job_id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Trigger Focused Discovery",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/application-maps/projects/{{project_id}}/discover",
+            "description": "Uses the approved requirement code in req_code to prioritize relevant elements. Run after approval.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"focus_requirements\": [\n    \"{{req_code}}\"\n  ],\n  \"max_pages\": 5,\n  \"max_depth\": 2,\n  \"max_duration_seconds\": 60\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 202\", () => pm.response.to.have.status(202));",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { const data = pm.response.json(); pm.collectionVariables.set(\"job_id\", data.job_id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Discovery Job",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/application-maps/jobs/{{job_id}}",
+            "description": "Poll until status is complete, then check result.status and result.errors."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { const job = pm.response.json(); if (job.result?.status === 'FAILED') console.warn('Discovery failed:', job.result.errors); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Latest Application Map",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/application-maps/projects/{{project_id}}",
+            "description": "Reads the newest map, including status and observed states."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

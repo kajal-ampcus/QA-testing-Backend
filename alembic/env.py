@@ -1,17 +1,35 @@
-"""Run migrations with the same database configuration as the API."""
+"""
+Alembic migration environment.
+
+Imports every SQLAlchemy model from infra/db/models/ so autogenerate can see
+the full schema. Milestone 1 only has 5 models (project, requirement +
+requirement_versions, approval, agent_run, audit_log) — later milestones add
+their models' imports here as infra/db/models/ gains real content.
+"""
 
 import asyncio
 from logging.config import fileConfig
 
-from sqlalchemy import pool
-from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
-from infra.db.models import Base
-from infra.db.settings import DatabaseSettings
+
+# Import every model module so its table registers on Base.metadata.
+# Required even though these names aren't referenced directly below —
+# the import side effect is what populates Base.metadata.
+from infra.db.models import (  # noqa: F401
+    Base,
+    agent_run,
+    application_map,
+    approval,
+    audit_log,
+    project,
+    requirement,
+)
+from infra.db.session import DATABASE_URL
 
 config = context.config
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -19,39 +37,30 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """Generate SQL without connecting to the database."""
     context.configure(
-        url=DatabaseSettings().database_url,
+        url=DATABASE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
-def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+def do_run_migrations(connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
         context.run_migrations()
 
 
-async def run_async_migrations() -> None:
-    engine = create_async_engine(DatabaseSettings().database_url, poolclass=pool.NullPool)
-    try:
-        async with engine.connect() as connection:
-            await connection.run_sync(do_run_migrations)
-    finally:
-        await engine.dispose()
-
-
-def run_migrations_online() -> None:
-    """Apply migrations using SQLAlchemy's async connection bridge."""
-    asyncio.run(run_async_migrations())
+async def run_migrations_online() -> None:
+    connectable = create_async_engine(DATABASE_URL)
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+    await connectable.dispose()
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online()
+    asyncio.run(run_migrations_online())

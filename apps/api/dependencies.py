@@ -1,11 +1,18 @@
 """
-Shared FastAPI dependency-injection providers: db session, current_user,
-and the tool_gateway handle that routers use to reach core/ agent logic.
-
-Phase 0 stub — real providers land alongside infra/db/session.py (Phase 1).
+Shared FastAPI dependency-injection providers.
 """
 
-# TODO (Phase 1):
-# async def get_db_session() -> AsyncIterator[AsyncSession]: ...
-# async def get_current_user(...) -> User: ...
-# def get_tool_gateway() -> ToolGateway: ...  # from core.tool_gateway.gateway
+from collections.abc import AsyncIterator
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from infra.db.session import AsyncSessionLocal
+
+
+async def get_db_session() -> AsyncIterator[AsyncSession]:
+    async with AsyncSessionLocal() as session:
+        yield session
+
+
+# TODO (later milestone): get_current_user, get_tool_gateway once auth
+# and the Tool Gateway itself have real content.

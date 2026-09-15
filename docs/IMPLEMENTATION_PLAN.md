@@ -58,6 +58,8 @@ go" and `docs/PROJECT_STRUCTURE.md`'s "concrete choices to lock in"):
 
 ## Phase 1 — MVP
 
+**Milestone 1: implemented, not yet verified by a real run.** All the code described below exists for real (models, migration, repository, LLM client, agent, routers, mounted in `main.py`). Still needed before it counts as actually done per this doc's own "what done means" section: run `alembic upgrade head`, set a real `ANTHROPIC_API_KEY` in `.env`, and exercise the acceptance criteria below against a running server — nobody has done that yet, including me (I can write files on this machine but can't execute commands on it).
+
 Ordered by the agent sequence in architecture doc Section 8. Each milestone
 is a **vertical slice** — something demonstrably working end-to-end, not "all
 agents scaffolded in parallel." Do not start milestone *N+1* until milestone
