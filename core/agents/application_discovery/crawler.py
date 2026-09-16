@@ -123,6 +123,9 @@ class Crawler:
     async def _replay_to(self, base_url: str, path: list[ClickStep]) -> object:
         """Navigates to base_url, replays each click by role+name matching."""
         await self._client.navigate_page(base_url)
+        await self._client.wait_until_ready()
+        # Credential values are resolved inside the browser gateway only.
+        await self._client.authenticate()
         snapshot = await self._client.take_snapshot()
         for step in path:
             elements = _parse_elements(snapshot)
@@ -148,14 +151,14 @@ class Crawler:
         start_time = time.monotonic()
         queue: list[QueueItem] = [QueueItem(path=[], score=1.0)]
         pages_visited = 0
-        hit_budget = False
+        termination_reason = "EXPLORATION_EXHAUSTED"
 
         while queue:
             if pages_visited >= self._budget.max_pages:
-                hit_budget = True
+                termination_reason = "MAX_PAGES_REACHED"
                 break
             if time.monotonic() - start_time > self._budget.max_duration_seconds:
-                hit_budget = True
+                termination_reason = "MAX_DURATION_REACHED"
                 break
 
             queue.sort(key=lambda item: item.score, reverse=True)
@@ -227,4 +230,10 @@ class Crawler:
                     )
                 )
 
-        return "PARTIAL" if hit_budget else "COMPLETE"
+        self.termination_reason = termination_reason
+        self.coverage = {
+            "states_discovered": pages_visited,
+            "actions_examined": sum(len(item.path) for item in queue),
+            "queue_exhausted": not queue,
+        }
+        return "PARTIAL" if termination_reason != "EXPLORATION_EXHAUSTED" else "COMPLETE"

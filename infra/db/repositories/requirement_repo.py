@@ -29,7 +29,9 @@ class RequirementRepository(BaseRepository):
         if project.scalar_one_or_none() is None:
             raise ValueError("Project not found")
         result = await self.session.execute(
-            select(func.count()).select_from(Requirement).where(Requirement.project_id == project_id)
+            select(func.count())
+            .select_from(Requirement)
+            .where(Requirement.project_id == project_id)
         )
         count = result.scalar_one()
         return f"REQ-{count + 1:03d}"
@@ -42,7 +44,9 @@ class RequirementRepository(BaseRepository):
         extraction: Any,  # validated agent output, kept out of infra's import graph
         status: RequirementStatus,
     ) -> tuple[Requirement, RequirementVersion]:
-        requirement = Requirement(project_id=project_id, req_code=req_code, current_version=1, status=status)
+        requirement = Requirement(
+            project_id=project_id, req_code=req_code, current_version=1, status=status
+        )
         self.session.add(requirement)
         await self.session.flush()  # assigns requirement.id without committing
 
@@ -52,7 +56,9 @@ class RequirementRepository(BaseRepository):
             raw_text=raw_text,
             title=extraction.title,
             description=extraction.description,
-            acceptance_criteria=[ac.model_dump(mode="json") for ac in extraction.acceptance_criteria],
+            acceptance_criteria=[
+                ac.model_dump(mode="json") for ac in extraction.acceptance_criteria
+            ],
             ambiguities=[a.model_dump(mode="json") for a in extraction.ambiguities],
             domain_tags=extraction.domain_tags,
         )
@@ -70,9 +76,51 @@ class RequirementRepository(BaseRepository):
             raw_text=raw_text,
             title=extraction.title,
             description=extraction.description,
-            acceptance_criteria=[ac.model_dump(mode="json") for ac in extraction.acceptance_criteria],
+            acceptance_criteria=[
+                ac.model_dump(mode="json") for ac in extraction.acceptance_criteria
+            ],
             ambiguities=[a.model_dump(mode="json") for a in extraction.ambiguities],
             domain_tags=extraction.domain_tags,
+        )
+        self.session.add(version)
+        requirement.current_version = next_version
+        await self.session.flush()
+        return version
+
+    async def append_clarified_version(
+        self,
+        requirement: Requirement,
+        current: RequirementVersion,
+        resolutions: list[tuple[dict[str, Any], str]],
+        resolved_by: str,
+    ) -> RequirementVersion:
+        """Record tester decisions as a new immutable version, without another LLM pass."""
+        next_version = requirement.current_version + 1
+        entries = [
+            f"{index}. {ambiguity['field']}: {decision} (resolves: {ambiguity['issue']})"
+            for index, (ambiguity, decision) in enumerate(resolutions, start=1)
+        ]
+        criteria = [
+            {
+                "id": f"AC-CLARIFY-{next_version}-{index}",
+                "text": decision,
+                "source": "REQUIREMENT",
+            }
+            for index, (_, decision) in enumerate(resolutions, start=1)
+        ]
+        version = RequirementVersion(
+            requirement_id=requirement.id,
+            version=next_version,
+            raw_text=(
+                current.raw_text
+                + f"\n\nTester clarifications by {resolved_by} (version {next_version}):\n"
+                + "\n".join(entries)
+            ),
+            title=current.title,
+            description=current.description + "\n\nTester clarifications:\n" + "\n".join(entries),
+            acceptance_criteria=[*current.acceptance_criteria, *criteria],
+            ambiguities=[],
+            domain_tags=list(current.domain_tags),
         )
         self.session.add(version)
         requirement.current_version = next_version
@@ -95,7 +143,9 @@ class RequirementRepository(BaseRepository):
         return requirement, version
 
     async def list_for_project(self, project_id: uuid.UUID) -> list[Requirement]:
-        result = await self.session.execute(select(Requirement).where(Requirement.project_id == project_id))
+        result = await self.session.execute(
+            select(Requirement).where(Requirement.project_id == project_id)
+        )
         return list(result.scalars().all())
 
     async def set_status(self, requirement_id: uuid.UUID, status: RequirementStatus) -> None:

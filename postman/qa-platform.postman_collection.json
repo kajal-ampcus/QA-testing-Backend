@@ -26,6 +26,11 @@
       "description": "Current local requirement code; Submit Requirement replaces it"
     },
     {
+      "key": "requirement_version",
+      "value": "3",
+      "description": "Current local version; updated by requirement responses"
+    },
+    {
       "key": "approval_id",
       "value": "",
       "description": "Captured from List Pending Approvals"
@@ -39,6 +44,21 @@
       "key": "application_url",
       "value": "https://example.com/",
       "description": "Application to discover when creating a project"
+    },
+    {
+      "key": "credential_ref",
+      "value": "",
+      "description": "Captured from Save Discovery Credential; never enter a password here"
+    },
+    {
+      "key": "test_username",
+      "value": "",
+      "description": "Test account username; do not save real credentials in a shared collection"
+    },
+    {
+      "key": "test_password",
+      "value": "",
+      "description": "Test account password; do not save real credentials in a shared collection"
     },
     {
       "key": "decided_by",
@@ -131,6 +151,41 @@
           ]
         },
         {
+          "name": "Save Discovery Credential",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/projects/{{project_id}}/credentials",
+            "description": "Encrypts this test account in backend storage and makes it the project's default. Do not save real values in this collection.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{test_username}}\",\n  \"password\": \"{{test_password}}\",\n  \"username_selector\": \"Email\",\n  \"password_selector\": \"Password\",\n  \"submit_selector\": \"Login\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) { pm.collectionVariables.set(\"credential_ref\", pm.response.json().credential_ref); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "List Projects",
           "request": {
             "method": "GET",
@@ -204,7 +259,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
-                  "if (pm.response.code >= 200 && pm.response.code < 300) { const data = pm.response.json(); pm.collectionVariables.set(\"requirement_id\", data.id); pm.collectionVariables.set(\"req_code\", data.req_code); if (data.ambiguities?.length) console.warn(\"Clarify the requirement before approval:\", data.ambiguities); }"
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { const data = pm.response.json(); pm.collectionVariables.set(\"requirement_id\", data.id); pm.collectionVariables.set(\"req_code\", data.req_code); pm.collectionVariables.set(\"requirement_version\", data.version); if (data.ambiguities?.length) console.warn(\"Clarify the requirement before approval:\", data.ambiguities); }"
                 ]
               }
             }
@@ -236,7 +291,7 @@
             "method": "GET",
             "header": [],
             "url": "{{base_url}}/api/v1/requirements/{{requirement_id}}",
-            "description": "Read ambiguities and current version before approval."
+            "description": "Read ambiguities and capture the current version before clarification or approval."
           },
           "event": [
             {
@@ -244,7 +299,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) pm.collectionVariables.set(\"requirement_version\", pm.response.json().version);"
                 ]
               }
             }
@@ -279,7 +335,42 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
-                  "if (pm.response.code >= 200 && pm.response.code < 300) { const data = pm.response.json(); pm.collectionVariables.set(\"requirement_id\", data.id); if (data.ambiguities?.length) console.warn(\"Remaining ambiguities:\", data.ambiguities); }"
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { const data = pm.response.json(); pm.collectionVariables.set(\"requirement_id\", data.id); pm.collectionVariables.set(\"requirement_version\", data.version); if (data.ambiguities?.length) console.warn(\"Remaining ambiguities:\", data.ambiguities); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Resolve Current Ambiguities (Human Decision)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/requirements/{{requirement_id}}/clarifications",
+            "description": "For every ambiguity in Get Requirement, provide its zero-based array index and your explicit decision. This creates a new version without another LLM pass and a new pending approval. Edit the example decision to match the application.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"expected_version\": \"{{requirement_version}}\",\n  \"resolved_by\": \"{{decided_by}}\",\n  \"resolutions\": [\n    {\n      \"ambiguity_index\": 0,\n      \"decision\": \"Save or update the conversation immediately after each chatbot reply; the History panel includes all messages up to the most recent reply.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) { const data = pm.response.json(); pm.collectionVariables.set(\"requirement_version\", data.version); console.log(\"Clarified version:\", data.version); }"
                 ]
               }
             }
@@ -289,7 +380,7 @@
     },
     {
       "name": "04 Approvals — choose one decision",
-      "description": "Approval and rejection are alternatives. A requirement with ambiguities cannot be approved. Revision supersedes its old pending approval; refresh the pending list after revising.",
+      "description": "Approval and rejection are alternatives. A requirement with ambiguities cannot be approved. Revision or human clarification supersedes its old pending approval; refresh the pending list afterward.",
       "item": [
         {
           "name": "List Pending Approvals",
@@ -397,7 +488,7 @@
               }
             ],
             "url": "{{base_url}}/api/v1/application-maps/projects/{{project_id}}/discover",
-            "description": "Uses the project's saved application_url. Empty focus list performs a general crawl.",
+            "description": "Uses the project's saved application_url and saved credential. Empty focus list performs a general crawl.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"focus_requirements\": [],\n  \"max_pages\": 5,\n  \"max_depth\": 2,\n  \"max_duration_seconds\": 60\n}",
@@ -432,7 +523,7 @@
               }
             ],
             "url": "{{base_url}}/api/v1/application-maps/projects/{{project_id}}/discover",
-            "description": "Uses the approved requirement code in req_code to prioritize relevant elements. Run after approval.",
+            "description": "Uses the approved requirement code in req_code to prioritize relevant authenticated elements. Run after approval.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"focus_requirements\": [\n    \"{{req_code}}\"\n  ],\n  \"max_pages\": 5,\n  \"max_depth\": 2,\n  \"max_duration_seconds\": 60\n}",

@@ -38,10 +38,13 @@ async def test_discovery_uses_project_url_or_explicit_target(
     )
     explicit_response = await application_maps.trigger_discovery(
         project_id,
-        application_maps.DiscoveryTriggerRequest(url="https://staging.example.test/"),
+        application_maps.DiscoveryTriggerRequest(
+            url="https://staging.example.test/", credential_ref="cred:staging_tester"
+        ),
         session,
     )
 
     assert default_response.job_id == explicit_response.job_id == "job-1"
     assert queued[0]["target"]["url"] == "https://chatgpt.com/"
     assert queued[1]["target"]["url"] == "https://staging.example.test/"
+    assert queued[1]["target"]["credential_ref"] == "cred:staging_tester"

@@ -20,6 +20,12 @@ class FakeBrowser:
     async def navigate_page(self, url: str) -> None:
         self.page = "root"
 
+    async def authenticate(self) -> None:
+        pass
+
+    async def wait_until_ready(self) -> None:
+        pass
+
     async def take_snapshot(self) -> list[TextBlock]:
         if self.page == "root":
             text = (

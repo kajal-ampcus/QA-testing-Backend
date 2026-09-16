@@ -10,9 +10,12 @@ For the requirement and approval flow, run these requests in order:
 
 1. **Submit Requirement** (captures `requirement_id` and `req_code`). The LLM
    may return ambiguities, so read **Get Requirement**.
-2. If there are ambiguities, edit and run **Revise Requirement** until the
-   response has `ambiguities: []`.
-3. Run **List Pending Approvals** after the latest revision. It captures the
+2. If there are ambiguities, use **Resolve Current Ambiguities (Human Decision)**
+   to provide one concrete decision for each ambiguity shown by **Get
+   Requirement**. The indexes are zero-based and `expected_version` prevents
+   resolving a stale version. This appends a version without another LLM call.
+   Use **Revise Requirement** when the full requirement text needs re-extraction.
+3. Run **List Pending Approvals** after the latest clarification or revision. It captures the
    pending `approval_id` for `requirement_id`.
 4. Choose **Approve Requirement** or **Reject Requirement**. These are
    alternative actions; running both on the same approval returns 409.

@@ -8,6 +8,19 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: qa_platform
+          POSTGRES_PASSWORD: admin@123
+          POSTGRES_DB: qa_platform
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U qa_platform -d qa_platform"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,7 +41,12 @@ jobs:
         run: lint-imports
 
       - name: Unit + integration tests
-        run: pytest tests/unit tests/integration
+        env:
+          DATABASE_URL: postgresql+asyncpg://qa_platform:admin%40123@localhost:5432/qa_platform
+          TEST_DATABASE_URL: postgresql+asyncpg://qa_platform:admin%40123@localhost:5432/qa_platform
+        run: |
+          python -m alembic upgrade head
+          pytest tests/unit tests/integration
 
 # tests/e2e (Section 37 #1) runs separately, not on every PR — needs real
 # sample-app fixtures and a live browser; wire up as a scheduled/manual workflow

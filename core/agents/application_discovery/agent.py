@@ -112,9 +112,13 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
 
         status = "FAILED"
         error_message: str | None = None
+        crawler: Crawler | None = None
         try:
-            async with self._tool_gateway.chrome_devtools(self.name, payload.target.url) as client:
-                status = await Crawler(client, budget, keywords).crawl(payload.target.url, _on_state_discovered)
+            async with self._tool_gateway.chrome_devtools(
+                self.name, payload.target.url, payload.target.credential_ref
+            ) as client:
+                crawler = Crawler(client, budget, keywords)
+                status = await crawler.crawl(payload.target.url, _on_state_discovered)
         except Exception as exc:  # noqa: BLE001 — intentional: this runs inside a background
             # worker task (apps/worker/tasks/run_discovery.py). An unhandled exception here
             # must not crash the worker — it must mark the map FAILED with a reason so a
@@ -122,11 +126,19 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             status = "FAILED"
             error_message = str(exc)
 
-        await self._map_repo.set_status(app_map.id, status)
+        termination_reason = getattr(crawler, "termination_reason", None)
+        if status == "FAILED":
+            termination_reason = "AUTHENTICATION_OR_CRAWL_ERROR"
+        await self._map_repo.set_status(
+            app_map.id, status, termination_reason, getattr(crawler, "coverage", None)
+        )
         await self._map_repo.session.commit()
 
         decision = AgentDecision(
-            decision=f"Discovered {state_count} application state(s), status={status}",
+            decision=(
+                f"Discovered {state_count} application state(s), status={status}, "
+                f"termination_reason={termination_reason}"
+            ),
             reason="Deterministic priority-queue crawl via chrome-devtools-mcp (Section 9)",
             evidence=[f"{state_count} states persisted to application_map {app_map.id}"],
             confidence=0.9 if status == "COMPLETE" else 0.6,

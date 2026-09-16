@@ -23,6 +23,7 @@ from infra.db.models import (  # noqa: F401
     application_map,
     approval,
     audit_log,
+    discovery_credential,
     project,
     requirement,
 )

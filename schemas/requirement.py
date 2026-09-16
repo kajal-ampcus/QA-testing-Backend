@@ -18,6 +18,17 @@ class RequirementRevisionRequest(BaseModel):
     raw_text: str = Field(min_length=1)
 
 
+class AmbiguityResolution(BaseModel):
+    ambiguity_index: int = Field(ge=0)
+    decision: str = Field(min_length=1)
+
+
+class RequirementClarificationRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    resolved_by: str = Field(min_length=1)
+    resolutions: list[AmbiguityResolution] = Field(min_length=1)
+
+
 class AcceptanceCriterionOut(BaseModel):
     id: str
     text: str

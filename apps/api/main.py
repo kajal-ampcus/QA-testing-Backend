@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from apps.api.routers.health import router as health_router
 from apps.api.routers.v1.application_maps import router as application_maps_router
 from apps.api.routers.v1.approvals import router as approvals_router
+from apps.api.routers.v1.credentials import router as credentials_router
 from apps.api.routers.v1.projects import router as projects_router
 from apps.api.routers.v1.requirements import router as requirements_router
 
@@ -29,6 +30,7 @@ def create_app() -> FastAPI:
     app.include_router(requirements_router, prefix="/api/v1")
     app.include_router(approvals_router, prefix="/api/v1")
     app.include_router(application_maps_router, prefix="/api/v1")
+    app.include_router(credentials_router, prefix="/api/v1")
 
     # TODO (later milestones): mount test_cases, automation, executions,
     # failures, defects, reports, agent_activity as each gains real content

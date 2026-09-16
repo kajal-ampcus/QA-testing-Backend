@@ -76,10 +76,16 @@ class ApplicationMapRepository(BaseRepository):
         )
         return bool(result.scalar())
 
-    async def set_status(self, application_map_id: uuid.UUID, status: str) -> None:
+    async def set_status(
+        self, application_map_id: uuid.UUID, status: str, termination_reason: str | None = None,
+        coverage: dict[str, Any] | None = None,
+    ) -> None:
         app_map = await self.session.get(ApplicationMap, application_map_id)
         if app_map is not None:
             app_map.status = status
+            app_map.termination_reason = termination_reason
+            if coverage is not None:
+                app_map.coverage = coverage
             await self.session.flush()
 
     async def get_with_states(self, application_map_id: uuid.UUID) -> ApplicationMap | None:

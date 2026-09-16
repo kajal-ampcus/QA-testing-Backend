@@ -31,6 +31,7 @@ from schemas.envelope import (
     AgentRunStatus,
 )
 from schemas.requirement import (
+    RequirementClarificationRequest,
     RequirementCreateRequest,
     RequirementResponse,
     RequirementRevisionRequest,
@@ -125,6 +126,21 @@ def _request_approval(session: AsyncSession, requirement: Requirement) -> None:
     )
 
 
+async def _supersede_pending_approvals(session: AsyncSession, requirement_id: uuid.UUID) -> None:
+    pending = await session.execute(
+        select(Approval).where(
+            Approval.target_type == "requirement",
+            Approval.target_id == requirement_id,
+            Approval.status == ApprovalStatus.PENDING,
+        )
+    )
+    for approval in pending.scalars():
+        approval.status = ApprovalStatus.REJECTED
+        approval.decided_by = "system"
+        approval.reason = "Superseded by a new requirement version"
+        approval.decided_at = datetime.now(UTC)
+
+
 @router.post("/projects/{project_id}", response_model=RequirementResponse, status_code=201)
 async def create_requirement(
     project_id: uuid.UUID,
@@ -185,19 +201,55 @@ async def revise_requirement(
         if result.envelope.status == AgentRunStatus.PARTIAL
         else RequirementStatus.PENDING_APPROVAL
     )
-    old_approvals = await session.execute(
-        select(Approval).where(
-            Approval.target_type == "requirement",
-            Approval.target_id == requirement_id,
-            Approval.status == ApprovalStatus.PENDING,
+    await _supersede_pending_approvals(session, requirement_id)
+    _record_successful_run(session, agent, input_envelope, result, requirement, version)
+    _request_approval(session, requirement)
+    await session.commit()
+    return _to_response(requirement, version)
+
+
+@router.post(
+    "/{requirement_id}/clarifications", response_model=RequirementResponse, status_code=201
+)
+async def clarify_requirement(
+    requirement_id: uuid.UUID,
+    body: RequirementClarificationRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> RequirementResponse:
+    locked = await session.execute(
+        select(Requirement).where(Requirement.id == requirement_id).with_for_update()
+    )
+    requirement = locked.scalar_one_or_none()
+    if requirement is None:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    if requirement.current_version != body.expected_version:
+        raise HTTPException(status_code=409, detail="Requirement version changed; reload it first")
+    current_result = await session.execute(
+        select(RequirementVersion).where(
+            RequirementVersion.requirement_id == requirement_id,
+            RequirementVersion.version == requirement.current_version,
         )
     )
-    for approval in old_approvals.scalars():
-        approval.status = ApprovalStatus.REJECTED
-        approval.decided_by = "system"
-        approval.reason = "Superseded by a new requirement version"
-        approval.decided_at = datetime.now(UTC)
-    _record_successful_run(session, agent, input_envelope, result, requirement, version)
+    current = current_result.scalar_one()
+    if not current.ambiguities:
+        raise HTTPException(status_code=409, detail="Current requirement has no ambiguities")
+    resolved_by = body.resolved_by.strip()
+    if not resolved_by or any(not item.decision.strip() for item in body.resolutions):
+        raise HTTPException(status_code=422, detail="Resolved by and decisions must not be blank")
+    indexes = [item.ambiguity_index for item in body.resolutions]
+    if len(indexes) != len(set(indexes)) or set(indexes) != set(range(len(current.ambiguities))):
+        raise HTTPException(
+            status_code=422,
+            detail="Provide exactly one decision for every current ambiguity index",
+        )
+    resolutions = [
+        (current.ambiguities[item.ambiguity_index], item.decision.strip())
+        for item in sorted(body.resolutions, key=lambda item: item.ambiguity_index)
+    ]
+    repo = RequirementRepository(session)
+    version = await repo.append_clarified_version(requirement, current, resolutions, resolved_by)
+    requirement.status = RequirementStatus.PENDING_APPROVAL
+    await _supersede_pending_approvals(session, requirement_id)
     _request_approval(session, requirement)
     await session.commit()
     return _to_response(requirement, version)

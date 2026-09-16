@@ -38,6 +38,8 @@ class ApplicationMap(Base):
     base_url: Mapped[str] = mapped_column(String(500), nullable=False)
     # RUNNING | COMPLETE | PARTIAL | FAILED
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="RUNNING")
+    termination_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    coverage: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     states: Mapped[list["ApplicationMapState"]] = relationship(back_populates="application_map")

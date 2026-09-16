@@ -19,6 +19,10 @@ from urllib.parse import urlparse
 _NUMERIC_ID_SEGMENT = re.compile(r"/\d+(?=/|$)")
 _UUID_SEGMENT = re.compile(r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?=/|$)")
 _ANY_DIGIT_RUN = re.compile(r"\d+")
+_TIMESTAMP = re.compile(r"\b\d{1,4}[-/:]\d{1,2}[-/:]\d{1,4}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?\b")
+_TOKEN = re.compile(r"\b(?:token|csrf|nonce|session|captcha)\s*[:=]\s*[^\s\"]+", re.I)
+_LOADING_LINE = re.compile(r"^.*\b(?:loading|please wait|starting service)\b.*$", re.I | re.M)
+_CAPTCHA_LINE = re.compile(r"^.*\b(?:captcha|your answer)\b.*$", re.I | re.M)
 
 
 def normalize_url_pattern(url: str) -> str:
@@ -35,7 +39,14 @@ def structural_hash(snapshot_text: str) -> str:
     difference is a timestamp, a record ID, or a counter still hashes the
     same, while a genuinely different layout does not. Every digit run is
     normalized to a single placeholder before hashing."""
-    normalized = _ANY_DIGIT_RUN.sub("#", snapshot_text)
+    normalized = _LOADING_LINE.sub("", snapshot_text)
+    normalized = _CAPTCHA_LINE.sub("", normalized)
+    normalized = _TOKEN.sub("<dynamic>", normalized)
+    normalized = _TIMESTAMP.sub("<time>", normalized)
+    # Math CAPTCHA prompts are intentionally excluded: a refresh must not
+    # create another /login state.
+    normalized = re.sub(r"\b\d+\s*[+\-*/x×]\s*\d+\b", "<captcha>", normalized)
+    normalized = _ANY_DIGIT_RUN.sub("#", normalized)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
 
 

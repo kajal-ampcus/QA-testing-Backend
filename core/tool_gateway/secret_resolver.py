@@ -8,5 +8,9 @@ literal password.
 Phase 0 stub.
 """
 
-# TODO (Phase 1): async def resolve(credential_ref: str) -> str: ...
-#   delegates to infra/secrets/vault_client.py
+from infra.secrets.vault_client import get_login_secret
+
+
+async def resolve_login(credential_ref: str) -> dict[str, str]:
+    """Resolve a credential reference only at the browser-tool boundary."""
+    return await get_login_secret(credential_ref)

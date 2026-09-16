@@ -25,7 +25,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     from infra.llm.base import LLMStructuredResult
 
     test_engine = create_async_engine(os.environ["TEST_DATABASE_URL"], poolclass=NullPool)
-    monkeypatch.setattr(dependencies, "AsyncSessionLocal", async_sessionmaker(test_engine, expire_on_commit=False))
+    monkeypatch.setattr(
+        dependencies, "AsyncSessionLocal", async_sessionmaker(test_engine, expire_on_commit=False)
+    )
 
     class FakeLLM:
         async def call_structured(self, **kwargs: Any) -> LLMStructuredResult:
@@ -35,10 +37,16 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
                     "title": "Test requirement",
                     "description": "Observed expected behavior",
                     "acceptance_criteria": [
-                        {"id": "AC-1", "text": "The expected behavior occurs", "source": "REQUIREMENT"}
+                        {
+                            "id": "AC-1",
+                            "text": "The expected behavior occurs",
+                            "source": "REQUIREMENT",
+                        }
                     ],
                     "ambiguities": (
-                        [{"field": "timing", "issue": "Quickly is not measurable"}] if ambiguous else []
+                        [{"field": "timing", "issue": "Quickly is not measurable"}]
+                        if ambiguous
+                        else []
                     ),
                     "domain_tags": ["test"],
                 },
@@ -73,7 +81,10 @@ def test_project_scoped_codes_and_approval(client: TestClient) -> None:
         )
         assert decided.status_code == 200
         assert decided.json()["decided_at"] is not None
-        assert client.get("/api/v1/requirements/" + response.json()["id"]).json()["status"] == "APPROVED"
+        assert (
+            client.get("/api/v1/requirements/" + response.json()["id"]).json()["status"]
+            == "APPROVED"
+        )
 
 
 def test_ambiguity_requires_revision_and_supersedes_old_approval(client: TestClient) -> None:
@@ -95,14 +106,70 @@ def test_ambiguity_requires_revision_and_supersedes_old_approval(client: TestCli
     assert revised.status_code == 201
     assert revised.json()["version"] == 2
     assert revised.json()["status"] == "PENDING_APPROVAL"
-    assert client.post(
-        "/api/v1/approvals/" + old["id"] + "/approve", json={"decided_by": "tester"}
-    ).status_code == 409
+    assert (
+        client.post(
+            "/api/v1/approvals/" + old["id"] + "/approve", json={"decided_by": "tester"}
+        ).status_code
+        == 409
+    )
     current = client.get("/api/v1/approvals", params={"project_id": project["id"]}).json()[0]
     assert current["id"] != old["id"]
-    assert client.post(
-        "/api/v1/approvals/" + current["id"] + "/approve", json={"decided_by": "tester"}
-    ).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/approvals/" + current["id"] + "/approve", json={"decided_by": "tester"}
+        ).status_code
+        == 200
+    )
+    assert client.get("/api/v1/requirements/" + first["id"]).json()["status"] == "APPROVED"
+
+
+def test_tester_can_resolve_ambiguity_without_another_llm_revision(client: TestClient) -> None:
+    project = client.post("/api/v1/projects", json={"name": "Clarification project"}).json()
+    first = client.post(
+        "/api/v1/requirements/projects/" + project["id"],
+        json={"raw_text": "The page should load quickly."},
+    ).json()
+    old_approval = client.get("/api/v1/approvals", params={"project_id": project["id"]}).json()[0]
+    endpoint = f"/api/v1/requirements/{first['id']}/clarifications"
+    body = {
+        "expected_version": 1,
+        "resolved_by": "tester",
+        "resolutions": [{"ambiguity_index": 0, "decision": "The page loads within two seconds."}],
+    }
+    assert client.post(endpoint, json={**body, "expected_version": 2}).status_code == 409
+    assert (
+        client.post(
+            endpoint,
+            json={**body, "resolutions": [{"ambiguity_index": 1, "decision": "Two seconds."}]},
+        ).status_code
+        == 422
+    )
+    clarified = client.post(endpoint, json=body)
+    assert clarified.status_code == 201
+    assert clarified.json()["version"] == 2
+    assert clarified.json()["ambiguities"] == []
+    assert clarified.json()["status"] == "PENDING_APPROVAL"
+    assert any(
+        criterion["text"] == "The page loads within two seconds."
+        and criterion["source"] == "REQUIREMENT"
+        for criterion in clarified.json()["acceptance_criteria"]
+    )
+    assert client.post(endpoint, json=body).status_code == 409
+    assert (
+        client.post(
+            "/api/v1/approvals/" + old_approval["id"] + "/approve", json={"decided_by": "tester"}
+        ).status_code
+        == 409
+    )
+    current = client.get("/api/v1/approvals", params={"project_id": project["id"]}).json()
+    assert len(current) == 1 and current[0]["id"] != old_approval["id"]
+    assert (
+        client.post(
+            "/api/v1/approvals/" + current[0]["id"] + "/approve",
+            json={"decided_by": "tester"},
+        ).status_code
+        == 200
+    )
     assert client.get("/api/v1/requirements/" + first["id"]).json()["status"] == "APPROVED"
 
 
@@ -129,8 +196,6 @@ def test_discovery_accepts_explicit_target_for_project(
     assert response.status_code == 202
     assert response.json()["job_id"] == "test-job"
     assert queued[0]["target"]["url"] == "https://staging.example.test/"
-    fallback = client.post(
-        f"/api/v1/application-maps/projects/{project['id']}/discover", json={}
-    )
+    fallback = client.post(f"/api/v1/application-maps/projects/{project['id']}/discover", json={})
     assert fallback.status_code == 202
     assert queued[1]["target"]["url"] == "https://chatgpt.com/"

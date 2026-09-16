@@ -27,6 +27,7 @@ router = APIRouter(prefix="/application-maps", tags=["application-maps"])
 
 class DiscoveryTriggerRequest(BaseModel):
     url: AnyHttpUrl | None = None
+    credential_ref: str | None = Field(default=None, max_length=200)
     focus_requirements: list[str] = Field(default_factory=list)
     max_pages: int = Field(default=150, ge=1)
     max_depth: int = Field(default=6, ge=0)
@@ -71,6 +72,8 @@ class ApplicationMapResponse(BaseModel):
     version: int
     base_url: str
     status: str
+    termination_reason: str | None
+    coverage: dict[str, Any]
     states: list[ApplicationMapStateResponse]
 
 
@@ -120,7 +123,10 @@ async def trigger_discovery(
             )
         approved_refs.append(f"{requirement.id}@v{requirement.current_version}")
     payload = {
-        "target": {"url": target_url},
+        "target": {
+            "url": target_url,
+            "credential_ref": body.credential_ref or project.credential_ref,
+        },
         "focus_requirements": approved_refs,
         "crawl_budget": {
             "max_pages": body.max_pages,
@@ -169,6 +175,8 @@ async def get_latest_map(
         version=app_map.version,
         base_url=app_map.base_url,
         status=app_map.status,
+        termination_reason=app_map.termination_reason,
+        coverage=app_map.coverage,
         states=[
             ApplicationMapStateResponse(
                 state_code=s.state_code,

@@ -58,9 +58,42 @@ The response contains a `job_id`; poll
 `GET /api/v1/application-maps/projects/{project_id}`. Redis is required to
 enqueue discovery, and the separate worker is required to complete it.
 
+### Authenticated application discovery
+
+For an application that redirects to a login page, configure an encryption key
+in your uncommitted `.env` and submit a test account once through the backend
+API. The API returns an opaque reference; the project, Redis job payload, and
+application map never contain the username or password.
+
+```env
+CREDENTIAL_ENCRYPTION_KEY=replace-with-a-Fernet-key
+```
+
+```json
+POST /api/v1/projects/{project_id}/credentials
+{
+  "username": "qa@example.test",
+  "password": "your-test-password",
+  "username_selector": "Email",
+  "password_selector": "Password",
+  "submit_selector": "Sign in"
+}
+```
+
+The returned reference is set as the project's default automatically. Then
+trigger discovery normally. Login controls are detected by common accessible
+names (`Email`/`Username`, `Password`, `Sign in`/`Login`); supply the optional
+selector fields when yours differ.
+
 For request-by-request API testing, import
 `postman/qa-platform.postman_collection.json` into Postman. See
 `postman/README.md` for the project, requirement, approval, and discovery order.
+If a requirement has ambiguities, `GET /api/v1/requirements/{requirement_id}`
+shows their zero-based array positions. Submit one tester decision per item to
+`POST /api/v1/requirements/{requirement_id}/clarifications` with
+`expected_version`, `resolved_by`, and `resolutions`. This appends an auditable
+version without another LLM extraction. Fetch the new pending approval before
+calling its approve endpoint.
 
 ## Database migrations
 

@@ -16,11 +16,17 @@ class BrowserInspection(Protocol):
 
     async def click(self, element_ref: str) -> Any: ...
 
+    async def authenticate(self) -> None: ...
+
+    async def wait_until_ready(self) -> None: ...
+
 
 class ToolGateway:
     _CHROME_AGENTS = frozenset({"application_discovery", "failure_analysis"})
 
-    def chrome_devtools(self, agent_name: str, allowed_url_pattern: str) -> ChromeDevToolsClient:
+    def chrome_devtools(
+        self, agent_name: str, allowed_url_pattern: str, credential_ref: str | None = None
+    ) -> ChromeDevToolsClient:
         if agent_name not in self._CHROME_AGENTS:
             raise PermissionError(f"Agent {agent_name!r} has no Chrome DevTools access")
-        return ChromeDevToolsClient(allowed_url_pattern=allowed_url_pattern)
+        return ChromeDevToolsClient(allowed_url_pattern=allowed_url_pattern, credential_ref=credential_ref)

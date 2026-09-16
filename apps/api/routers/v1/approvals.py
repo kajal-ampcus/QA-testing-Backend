@@ -44,7 +44,9 @@ async def list_pending_approvals(
     project_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)
 ) -> list[Approval]:
     result = await session.execute(
-        select(Approval).where(Approval.project_id == project_id, Approval.status == ApprovalStatus.PENDING)
+        select(Approval).where(
+            Approval.project_id == project_id, Approval.status == ApprovalStatus.PENDING
+        )
     )
     return list(result.scalars().all())
 
@@ -71,7 +73,10 @@ async def _apply_target_side_effect(
         if current is None or current.ambiguities:
             raise HTTPException(
                 status_code=409,
-                detail="Resolve ambiguities with a requirement revision before approval",
+                detail=(
+                    "Current requirement has unresolved ambiguities; get the requirement "
+                    f"and POST /api/v1/requirements/{requirement.id}/clarifications"
+                ),
             )
         requirement.status = RequirementStatus.APPROVED
 
