@@ -16,6 +16,7 @@ refresh buttons (↻). These would cause form-submission states (e.g.
 the map. Only role=link elements are followed in Phase 1.
 """
 
+import contextlib
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -236,10 +237,8 @@ class Crawler:
             if match is None or not match.get("uid"):
                 raise RuntimeError(f"Replay failed: could not find {step.role!r} '{step.name}'")
             await self._client.click(match["uid"])
-            try:
+            with contextlib.suppress(Exception):
                 await self._client.handle_dialog("dismiss")
-            except Exception:
-                pass
             await self._client.wait_until_ready()
             snapshot = await self._client.take_snapshot()
         return snapshot
@@ -343,7 +342,7 @@ class Crawler:
         # This is where the CAPTCHA solver runs — never in Phase 1.
         try:
             auth_snapshot = await self._go_to_start(skip_auth=False)
-        except Exception as exc:
+        except Exception:
             self.termination_reason = "AUTHENTICATION_FAILED"
             self.coverage = {"states_discovered": pages_visited, "actions_examined": 0, "queue_exhausted": False}
             return "FAILED"

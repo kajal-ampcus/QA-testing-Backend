@@ -307,6 +307,6 @@ class ChromeDevToolsClient:
                     )
 
         raise RuntimeError(
-            f"Authentication failed after 3 attempts — CAPTCHA could not be solved. "
+            "Authentication failed after 3 attempts — CAPTCHA could not be solved. "
             "Check that the math question is visible in the accessibility tree."
         )

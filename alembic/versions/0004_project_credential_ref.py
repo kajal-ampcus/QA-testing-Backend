@@ -1,6 +1,7 @@
 """Store an opaque discovery credential reference on projects."""
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0004"
