@@ -1,28 +1,19 @@
 """
 Priority-queue crawl loop (architecture doc Section 9). Deterministic —
-zero LLM calls during the crawl (see the explanation in this conversation:
-take_snapshot() is already structured data, not pixels, so there's no
-perception problem for an LLM to solve here).
+zero LLM calls during the crawl.
 
-STATE MODEL: each queue item is a REPLAY PATH (an ordered list of
-role+name click targets from the base URL), not a raw URL — chrome-devtools-mcp
-element references (uid) are only valid against the snapshot they came from,
-not stable across navigations. To explore a queued path: re-navigate to the
-base URL, replay each click in order by re-snapshotting and matching
-role+name at each step, then take a fresh snapshot at the destination and
-enqueue its own candidate elements.
+TWO-PHASE CRAWL:
+  Phase 1 — unauthenticated: navigate to login_url, record login/register/
+             forgot-password pages WITHOUT filling any forms or clicking
+             submit buttons. Only follow genuine navigation links.
+  Phase 2 — authenticated: call authenticate() which fills credentials +
+             CAPTCHA and submits. Explore all post-login pages.
 
-HONEST LIMITATIONS (flagged rather than silently assumed away):
-- Role+name matching during replay is ambiguous if a page has two elements
-  with the same role and name (e.g. two "Edit" buttons in a table) — this
-  picks the first match. A real fix needs a more specific locator strategy
-  than MVP scope covers.
-- The current URL is read from the snapshot's RootWebArea. If a future MCP
-  version omits it, the crawler falls back to the base URL.
-
-Also owns the large-app sharding strategy (Section 9 scaling subsection):
-MVP = one shard (the whole app, one CrawlBudget); each shard runs this exact
-same algorithm scoped to its own budget and starting point.
+KEY RULE: During Phase 1 (unauthenticated), the crawler NEVER clicks
+form submit buttons (Log in, Create account, Send reset link) or CAPTCHA
+refresh buttons (↻). These would cause form-submission states (e.g.
+"incorrect captcha answer") to be recorded as distinct states, polluting
+the map. Only role=link elements are followed in Phase 1.
 """
 
 import re
@@ -55,20 +46,35 @@ class ClickStep:
 class QueueItem:
     path: list[ClickStep] = field(default_factory=list)
     score: float = 1.0
+    skip_auth: bool = False
 
 
 OnStateDiscovered = Callable[[dict[str, Any]], Awaitable[None]]
 
+# Roles navigated during AUTHENTICATED phase (full set)
+_NAVIGABLE_ROLES_AUTH = {"link", "button", "menuitem", "tab", "option", "treeitem"}
+
+# Roles navigated during UNAUTHENTICATED phase — links ONLY.
+# Buttons on login/register pages are form submit buttons and CAPTCHA controls.
+# Following them pollutes the map with error states ("incorrect captcha answer").
+_NAVIGABLE_ROLES_UNAUTH = {"link"}
+
+# Names that indicate a form submit or CAPTCHA control — never follow these
+# during unauthenticated crawl even if role=link slips through
+_FORM_ACTION_NAMES = {
+    "log in", "login", "sign in", "create account", "register",
+    "send reset link", "submit", "↻", "refresh captcha",
+}
+
+# Interactive roles — recorded but not clicked
+_INTERACTIVE_ROLES = {"textbox", "combobox", "searchbox", "spinbutton"}
+
 
 def _relevance_score(element_name: str, keywords: list[str]) -> float:
-    """Deterministic keyword-overlap scoring against the requirement's own
-    domain_tags/description — no LLM call. Neutral (0.5) with no requirement
-    context, so an unscoped crawl still explores breadth-first rather than
-    not exploring at all."""
     if not keywords:
         return 0.5
-    name_words = set(element_name.lower().split())
-    overlap = sum(1 for kw in keywords if kw.lower() in name_words)
+    name_lower = element_name.lower()
+    overlap = sum(1 for kw in keywords if kw.lower() in name_lower)
     return min(1.0, 0.3 + 0.2 * overlap)
 
 
@@ -83,14 +89,9 @@ def _snapshot_text(snapshot: object) -> str:
 
 
 def _parse_elements(snapshot: object) -> list[dict[str, Any]]:
-    """Extracts observed accessibility elements from a live MCP snapshot."""
     if isinstance(snapshot, dict):
         return [
-            {
-                "uid": node.get("uid"),
-                "role": node.get("role", "unknown"),
-                "name": node.get("name", ""),
-            }
+            {"uid": node.get("uid"), "role": node.get("role", "unknown"), "name": node.get("name", "")}
             for node in snapshot.get("elements", [])
         ]
     elements = []
@@ -100,60 +101,272 @@ def _parse_elements(snapshot: object) -> list[dict[str, Any]]:
             continue
         uid, role, name = match.groups()
         url_match = _SNAPSHOT_URL.search(line)
-        elements.append(
-            {
-                "uid": uid,
-                "role": role,
-                "name": name,
-                "url": url_match.group(1) if url_match else None,
-            }
-        )
+        elements.append({
+            "uid": uid,
+            "role": role,
+            "name": name,
+            "url": url_match.group(1) if url_match else None,
+        })
     return elements
+
+
+def _parse_console_messages(raw: object) -> list[dict[str, str]]:
+    text = _snapshot_text(raw)
+    messages = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        level = "log"
+        if re.search(r"\berror\b", line, re.I):
+            level = "error"
+        elif re.search(r"\bwarn(ing)?\b", line, re.I):
+            level = "warning"
+        messages.append({"level": level, "text": line[:500]})
+    return messages
+
+
+def _parse_network_requests(raw: object) -> list[dict[str, str]]:
+    text = _snapshot_text(raw)
+    requests = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = re.search(r'\b(GET|POST|PUT|PATCH|DELETE|OPTIONS)\s+(https?://\S+|\S+)', line, re.I)
+        status_match = re.search(r'\b(\d{3})\b', line)
+        if match:
+            requests.append({
+                "method": match.group(1).upper(),
+                "url": match.group(2)[:300],
+                "status": status_match.group(1) if status_match else "unknown",
+            })
+    return requests
+
+
+def _is_external(url: str | None, base_url: str) -> bool:
+    if not url:
+        return False
+    return urlparse(url).netloc not in ("", urlparse(base_url).netloc)
+
+
+def _is_form_action(name: str) -> bool:
+    """True if this element name looks like a form submit or CAPTCHA control."""
+    return name.strip().lower() in _FORM_ACTION_NAMES
 
 
 class Crawler:
     def __init__(
-        self, client: BrowserInspection, budget: CrawlBudget, keywords: list[str]
+        self,
+        client: BrowserInspection,
+        budget: CrawlBudget,
+        keywords: list[str],
+        login_url: str | None = None,
     ) -> None:
         self._client = client
         self._budget = budget
         self._keywords = keywords
+        self._login_url = login_url
         self._visited_fingerprints: set[str] = set()
+        self.termination_reason: str = "EXPLORATION_EXHAUSTED"
+        self.coverage: dict[str, Any] = {}
 
-    async def _replay_to(self, base_url: str, path: list[ClickStep]) -> object:
-        """Navigates to base_url, replays each click by role+name matching."""
-        await self._client.navigate_page(base_url)
+    async def _capture_debug_signals(self) -> tuple[list[dict], list[dict], str | None]:
+        console_errors: list[dict] = []
+        network_requests: list[dict] = []
+        screenshot: str | None = None
+        try:
+            raw = await self._client.list_console_messages()
+            all_msgs = _parse_console_messages(raw)
+            console_errors = [m for m in all_msgs if m["level"] in ("error", "warning")]
+        except Exception:
+            pass
+        try:
+            raw = await self._client.list_network_requests()
+            network_requests = _parse_network_requests(raw)
+        except Exception:
+            pass
+        try:
+            s = _snapshot_text(await self._client.take_screenshot()).strip()
+            if s:
+                screenshot = s
+        except Exception:
+            pass
+        return console_errors, network_requests, screenshot
+
+    def _build_elements(
+        self,
+        classified: list[dict],
+        console_errors: list[dict],
+        network_requests: list[dict],
+    ) -> list[dict]:
+        result = list(classified)
+        for i, msg in enumerate(console_errors, start=len(classified) + 1):
+            result.append({
+                "element_code": f"CON-{i:03d}", "role": "console",
+                "name": msg["text"][:200], "risk": "SAFE",
+                "source": EvidenceSource.OBSERVED_CONSOLE.value, "level": msg["level"],
+            })
+        for i, req in enumerate(network_requests, start=len(classified) + 1):
+            result.append({
+                "element_code": f"NET-{i:03d}", "role": "network",
+                "name": f"{req['method']} {req['url']}", "risk": "SAFE",
+                "source": EvidenceSource.OBSERVED_NETWORK.value, "status": req.get("status", "unknown"),
+            })
+        return result
+
+    async def _go_to_start(self, skip_auth: bool = False) -> object:
+        start = self._login_url or self._base_url
+        await self._client.navigate_page(start)
         await self._client.wait_until_ready()
-        # Credential values are resolved inside the browser gateway only.
-        await self._client.authenticate()
-        snapshot = await self._client.take_snapshot()
+        if not skip_auth:
+            # authenticate() calls wait_until_ready() internally before reading snapshot
+            await self._client.authenticate()
+            await self._client.wait_until_ready()
+        return await self._client.take_snapshot()
+
+    async def _replay_to(self, path: list[ClickStep], skip_auth: bool = False) -> object:
+        snapshot = await self._go_to_start(skip_auth=skip_auth)
         for step in path:
             elements = _parse_elements(snapshot)
             match = next(
                 (el for el in elements if el["role"] == step.role and el["name"] == step.name),
                 None,
             )
-            if match is None or not match["uid"]:
-                raise RuntimeError(
-                    f"Replay failed: could not find {step.role} '{step.name}' — "
-                    f"the page may have changed since this path was discovered."
-                )
+            if match is None or not match.get("uid"):
+                raise RuntimeError(f"Replay failed: could not find {step.role!r} '{step.name}'")
             await self._client.click(match["uid"])
+            try:
+                await self._client.handle_dialog("dismiss")
+            except Exception:
+                pass
+            await self._client.wait_until_ready()
             snapshot = await self._client.take_snapshot()
         return snapshot
 
+    async def _record_state(
+        self,
+        snapshot: object,
+        path: list[ClickStep],
+        on_state_discovered: OnStateDiscovered,
+    ) -> tuple[str | None, list[dict]]:
+        root = next(
+            (el for el in _parse_elements(snapshot) if el["role"] == "RootWebArea"), None
+        )
+        current_url = root.get("url") if root else None
+        state_url = current_url or self._base_url
+
+        if _is_external(current_url, self._base_url):
+            return None, []
+
+        fingerprint = compute_fingerprint(state_url, _snapshot_text(snapshot))
+        if fingerprint in self._visited_fingerprints:
+            return None, []
+        self._visited_fingerprints.add(fingerprint)
+
+        raw_elements = _parse_elements(snapshot)
+        classified = [
+            {
+                "element_code": f"EL-{i:03d}",
+                "role": el["role"],
+                "name": el["name"],
+                "risk": classify_risk(el["role"], el["name"]).value,
+                "source": EvidenceSource.OBSERVED_DOM.value,
+            }
+            for i, el in enumerate(raw_elements, start=1)
+        ]
+
+        console_errors, network_requests, screenshot = await self._capture_debug_signals()
+        all_elements = self._build_elements(classified, console_errors, network_requests)
+
+        await on_state_discovered({
+            "url_pattern": normalize_url_pattern(state_url),
+            "fingerprint": fingerprint,
+            "reached_via": [f"click(role={s.role},name={s.name!r})" for s in path],
+            "elements": all_elements,
+            "evidence_ref": f"screenshot:{screenshot}" if screenshot else None,
+        })
+
+        return fingerprint, raw_elements
+
     async def crawl(self, base_url: str, on_state_discovered: OnStateDiscovered) -> str:
-        """Runs the crawl. Calls on_state_discovered(state_dict) for each
-        newly discovered, deduplicated state — the caller (agent.py) owns
-        persistence, keeping this class free of DB/session concerns
-        (docs/PROJECT_STRUCTURE.md's layering). Returns "COMPLETE" or
-        "PARTIAL" depending on whether the budget was hit first."""
+        self._base_url = base_url
         start_time = time.monotonic()
-        queue: list[QueueItem] = [QueueItem(path=[], score=1.0)]
         pages_visited = 0
         termination_reason = "EXPLORATION_EXHAUSTED"
 
-        while queue:
+        # ── PHASE 1: Unauthenticated pages ──────────────────────────────────
+        # Record login page and follow LINKS ONLY (not buttons).
+        # This discovers /register and /forgot-password without submitting any form.
+        try:
+            unauth_snapshot = await self._go_to_start(skip_auth=True)
+            _, unauth_elements = await self._record_state(unauth_snapshot, [], on_state_discovered)
+            if unauth_elements:
+                pages_visited += 1
+
+            unauth_queue: list[QueueItem] = []
+            for el in unauth_elements:
+                # PHASE 1 RULE: links only — never buttons (avoids form submissions + CAPTCHA refresh)
+                if el["role"] not in _NAVIGABLE_ROLES_UNAUTH:
+                    continue
+                if _is_form_action(el["name"]):
+                    continue
+                if classify_risk(el["role"], el["name"]) == RiskLevel.DESTRUCTIVE:
+                    continue
+                if _is_external(el.get("url"), base_url):
+                    continue
+                unauth_queue.append(QueueItem(
+                    path=[ClickStep(role=el["role"], name=el["name"])],
+                    score=_relevance_score(el["name"], self._keywords),
+                    skip_auth=True,
+                ))
+
+            # Explore one level deep from each unauth page (links only)
+            for item in unauth_queue:
+                if pages_visited >= self._budget.max_pages:
+                    break
+                if time.monotonic() - start_time > self._budget.max_duration_seconds:
+                    termination_reason = "MAX_DURATION_REACHED"
+                    break
+                try:
+                    snap = await self._replay_to(item.path, skip_auth=True)
+                    _, _ = await self._record_state(snap, item.path, on_state_discovered)
+                    pages_visited += 1
+                except Exception:
+                    continue
+
+        except Exception:
+            pass  # unauthenticated phase non-fatal
+
+        # ── PHASE 2: Authenticated pages ─────────────────────────────────────
+        # authenticate() fills email + password + CAPTCHA and submits.
+        # This is where the CAPTCHA solver runs — never in Phase 1.
+        try:
+            auth_snapshot = await self._go_to_start(skip_auth=False)
+        except Exception as exc:
+            self.termination_reason = "AUTHENTICATION_FAILED"
+            self.coverage = {"states_discovered": pages_visited, "actions_examined": 0, "queue_exhausted": False}
+            return "FAILED"
+
+        _, auth_elements = await self._record_state(auth_snapshot, [], on_state_discovered)
+        if auth_elements:
+            pages_visited += 1
+
+        auth_queue: list[QueueItem] = []
+        for el in auth_elements:
+            if el["role"] not in _NAVIGABLE_ROLES_AUTH:
+                continue
+            if classify_risk(el["role"], el["name"]) == RiskLevel.DESTRUCTIVE:
+                continue
+            if _is_external(el.get("url"), base_url):
+                continue
+            auth_queue.append(QueueItem(
+                path=[ClickStep(role=el["role"], name=el["name"])],
+                score=_relevance_score(el["name"], self._keywords),
+                skip_auth=False,
+            ))
+
+        while auth_queue:
             if pages_visited >= self._budget.max_pages:
                 termination_reason = "MAX_PAGES_REACHED"
                 break
@@ -161,79 +374,38 @@ class Crawler:
                 termination_reason = "MAX_DURATION_REACHED"
                 break
 
-            queue.sort(key=lambda item: item.score, reverse=True)
-            item = queue.pop(0)
+            auth_queue.sort(key=lambda item: item.score, reverse=True)
+            item = auth_queue.pop(0)
             if len(item.path) > self._budget.max_depth:
                 continue
 
             try:
-                snapshot = await self._replay_to(base_url, item.path)
+                snapshot = await self._replay_to(item.path, skip_auth=False)
             except RuntimeError:
-                if not item.path:
-                    raise
-                continue  # this path no longer resolves — skip it, don't crash the whole crawl
-
-            root = next(
-                (el for el in _parse_elements(snapshot) if el["role"] == "RootWebArea"),
-                None,
-            )
-            current_url = root.get("url") if root else None
-            if current_url and urlparse(current_url).netloc != urlparse(base_url).netloc:
                 continue
-            state_url = current_url or base_url
 
-            fingerprint = compute_fingerprint(state_url, _snapshot_text(snapshot))
-            if fingerprint in self._visited_fingerprints:
+            fingerprint, elements = await self._record_state(snapshot, item.path, on_state_discovered)
+            if fingerprint is None:
                 continue
-            self._visited_fingerprints.add(fingerprint)
             pages_visited += 1
 
-            elements = _parse_elements(snapshot)
-            if not elements:
-                raise RuntimeError("Chrome DevTools snapshot contained no identifiable elements")
-            classified = [
-                {
-                    "element_code": f"EL-{index:03d}",
-                    "role": el["role"],
-                    "name": el["name"],
-                    "risk": classify_risk(el["role"], el["name"]).value,
-                    "source": EvidenceSource.OBSERVED_DOM.value,
-                }
-                for index, el in enumerate(elements, start=1)
-            ]
-
-            await on_state_discovered(
-                {
-                    "url_pattern": normalize_url_pattern(state_url),
-                    "fingerprint": fingerprint,
-                    "reached_via": [f"click(role={s.role},name={s.name!r})" for s in item.path],
-                    "elements": classified,
-                }
-            )
-
             for el in elements:
-                risk = classify_risk(el["role"], el["name"])
-                # Destructive elements are recorded above (in `classified`)
-                # but NEVER auto-clicked to continue the crawl (Section 29).
-                if risk == RiskLevel.DESTRUCTIVE or el["role"] not in ("link", "button"):
+                if el["role"] not in _NAVIGABLE_ROLES_AUTH:
                     continue
-                target_url = el.get("url")
-                if target_url and urlparse(target_url).netloc not in (
-                    "", urlparse(base_url).netloc
-                ):
+                if classify_risk(el["role"], el["name"]) == RiskLevel.DESTRUCTIVE:
                     continue
-                score = _relevance_score(el["name"], self._keywords)
-                queue.append(
-                    QueueItem(
-                        path=[*item.path, ClickStep(role=el["role"], name=el["name"])],
-                        score=score,
-                    )
-                )
+                if _is_external(el.get("url"), base_url):
+                    continue
+                auth_queue.append(QueueItem(
+                    path=[*item.path, ClickStep(role=el["role"], name=el["name"])],
+                    score=_relevance_score(el["name"], self._keywords),
+                    skip_auth=False,
+                ))
 
         self.termination_reason = termination_reason
         self.coverage = {
             "states_discovered": pages_visited,
-            "actions_examined": sum(len(item.path) for item in queue),
-            "queue_exhausted": not queue,
+            "actions_examined": len(auth_queue),
+            "queue_exhausted": not auth_queue,
         }
         return "PARTIAL" if termination_reason != "EXPLORATION_EXHAUSTED" else "COMPLETE"

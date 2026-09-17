@@ -1,19 +1,9 @@
 """
 Wraps the official chrome-devtools-mcp server (Puppeteer/CDP-based,
-Chromium-only) via the MCP Python SDK's stdio transport — for the two
-exploratory use cases: Application Discovery and Failure Analysis's
-reproduction step (architecture doc Section 10/11, companion doc Part 3).
+Chromium-only) via the MCP Python SDK's stdio transport.
+
 Never used for scripted Test Execution — that's
 core/tool_gateway/playwright_client.py, always.
-
-Spawns `npx chrome-devtools-mcp@latest` as a subprocess, one per Discovery
-run/shard (a fresh, isolated Chrome instance each time — --isolated), with
---allowedUrlPattern scoped to the crawl target and --redactNetworkHeaders on
-by default (Section 20/28 — never let auth tokens/cookies reach agent
-context via network evidence).
-
-Navigation, snapshots, and clicks were checked against a live MCP server.
-The other convenience methods still need schema checks before use.
 """
 
 import asyncio
@@ -26,6 +16,51 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from core.tool_gateway.secret_resolver import resolve_login
+
+
+def _snapshot_text(snapshot: object) -> str:
+    if isinstance(snapshot, list):
+        return "\n".join(getattr(block, "text", "") for block in snapshot)
+    return str(snapshot)
+
+
+def _parse_controls(text: str) -> list[tuple[str, str, str]]:
+    """Parse all uid/role/name triples from a snapshot text."""
+    return re.findall(r'uid=(\S+)\s+(\S+)\s+"([^"]*)"', text)
+
+
+def _find_uid(
+    controls: list[tuple[str, str, str]],
+    names: list[str],
+    roles: set[str],
+) -> str | None:
+    """Return the uid of the first element whose role and name match."""
+    wanted = {n.lower() for n in names if n}
+    return next(
+        (uid for uid, role, name in controls if role in roles and name.lower() in wanted),
+        None,
+    )
+
+
+def _solve_math_captcha(text: str) -> int | None:
+    """
+    Find and solve a simple arithmetic CAPTCHA in snapshot text.
+    Handles: 'What is 3 + 3?', 'What is 6 - 2?', 'What is 8 + 1?' etc.
+    Returns the integer answer or None if no math expression found.
+    """
+    match = re.search(r"\b(\d+)\s*([+\-*/x×÷])\s*(\d+)\b", text)
+    if not match:
+        return None
+    a, op, b = int(match.group(1)), match.group(2), int(match.group(3))
+    return {
+        "+": a + b,
+        "-": a - b,
+        "*": a * b,
+        "x": a * b,
+        "×": a * b,
+        "/": (a // b if b and a % b == 0 else None),
+        "÷": (a // b if b and a % b == 0 else None),
+    }.get(op)
 
 
 class ChromeDevToolsClient:
@@ -63,7 +98,7 @@ class ChromeDevToolsClient:
         self._session = await self._exit_stack.enter_async_context(ClientSession(read, write))
         await self._session.initialize()
         pages = await self.list_pages()
-        page_text = "\n".join(getattr(block, "text", "") for block in pages)
+        page_text = _snapshot_text(pages)
         selected = re.search(r"(?m)^(\d+): .*\[selected\]", page_text)
         first = re.search(r"(?m)^(\d+): ", page_text)
         match = selected or first
@@ -87,8 +122,7 @@ class ChromeDevToolsClient:
     def _require_session(self) -> ClientSession:
         if self._session is None:
             raise RuntimeError(
-                "ChromeDevToolsClient used outside its 'async with' block — "
-                "the underlying subprocess/session isn't running."
+                "ChromeDevToolsClient used outside its 'async with' block."
             )
         return self._session
 
@@ -100,16 +134,11 @@ class ChromeDevToolsClient:
         return result.content
 
     async def list_tool_schemas(self) -> dict[str, dict[str, Any]]:
-        """Returns {tool_name: input_schema} for every tool the running
-        server actually exposes — use this to verify argument names (e.g.
-        click's element-reference parameter) against the real, currently
-        installed version rather than trusting the convenience methods
-        below blindly."""
         session = self._require_session()
         tools = await session.list_tools()
         return {tool.name: tool.input_schema for tool in tools.tools}
 
-    # --- Navigation ---
+    # ── Navigation ──────────────────────────────────────────────────────────
     async def navigate_page(self, url: str) -> Any:
         return await self._call("navigate_page", self._page_args(type="url", url=url))
 
@@ -119,11 +148,8 @@ class ChromeDevToolsClient:
     async def list_pages(self) -> Any:
         return await self._call("list_pages", {})
 
-    # --- Inspection ---
+    # ── Inspection ──────────────────────────────────────────────────────────
     async def take_snapshot(self) -> Any:
-        """Structured, accessibility-aware element map with stable
-        references — this is what the crawler reasons over, never raw
-        pixels (Section 9/13)."""
         return await self._call("take_snapshot", self._page_args())
 
     async def take_screenshot(self) -> Any:
@@ -135,101 +161,12 @@ class ChromeDevToolsClient:
     async def list_network_requests(self) -> Any:
         return await self._call("list_network_requests", {})
 
-    # --- Input automation ---
+    # ── Input automation ────────────────────────────────────────────────────
     async def click(self, element_ref: str) -> Any:
         return await self._call("click", self._page_args(uid=element_ref))
 
     async def fill(self, element_ref: str, value: str) -> Any:
         return await self._call("fill", self._page_args(uid=element_ref, value=value))
-
-    async def authenticate(self) -> None:
-        """Log in once, resolving the secret only inside this browser client."""
-        if self._credential_ref is None or self._authenticated:
-            return
-        secret = await resolve_login(self._credential_ref)
-        snapshot = await self.take_snapshot()
-        text = "\n".join(getattr(block, "text", "") for block in snapshot)
-        controls = re.findall(r'uid=(\S+)\s+(\S+)\s+"([^"]*)"', text)
-
-        def find(names: list[str], roles: set[str]) -> str | None:
-            wanted = {name.lower() for name in names if name}
-            return next(
-                (uid for uid, role, name in controls if role in roles and name.lower() in wanted), None
-            )
-
-        username = find(
-            [secret.get("username_selector", ""), "email", "email address", "username"],
-            {"textbox", "input"},
-        )
-        password = find([secret.get("password_selector", ""), "password"], {"textbox", "input"})
-        submit = find(
-            [secret.get("submit_selector", ""), "sign in", "login", "log in"],
-            {"button", "link"},
-        )
-        if not username or not password or not submit:
-            raise RuntimeError(
-                "Could not identify login controls; configure username_selector, "
-                "password_selector, and submit_selector for this credential reference."
-            )
-        await self.fill(username, secret["username"])
-        await self.fill(password, secret["password"])
-        # Supported CAPTCHA: a visible arithmetic prompt such as "What is 4 + 7?".
-        math = re.search(r"\b(\d+)\s*([+\-*/x×])\s*(\d+)\b", text)
-        captcha = find(
-            [
-                secret.get("captcha_selector", ""),
-                "captcha",
-                "captcha answer",
-                "your answer",
-                "answer",
-            ],
-            {"textbox", "input"},
-        )
-        if math and captcha:
-            left, operator, right = math.groups()
-            a, b = int(left), int(right)
-            answer = {"+": a + b, "-": a - b, "*": a * b, "x": a * b, "×": a * b}.get(operator)
-            if operator == "/" and b and a % b == 0:
-                answer = a // b
-            if answer is None:
-                raise RuntimeError("Unsupported arithmetic CAPTCHA")
-            await self.fill(captcha, str(answer))
-        await self.click(submit)
-        # Render can take several seconds to process login. Do not inspect one
-        # immediate snapshot: it still contains the old login form.
-        for _ in range(20):
-            after = "\n".join(getattr(block, "text", "") for block in await self.take_snapshot())
-            still_login = re.search(r'\b(?:password|email|username)\b', after, re.I)
-            if not still_login:
-                self._authenticated = True
-                return
-            messages = [
-                line.strip()
-                for line in after.splitlines()
-                if "StaticText" in line
-                and re.search(r"\b(?:invalid|incorrect|failed|error|does not match)\b", line, re.I)
-            ]
-            if messages:
-                raise RuntimeError(f"Authentication did not complete: {messages[-1]}")
-            await asyncio.sleep(0.5)
-        raise RuntimeError("Authentication timed out; the login form remained visible")
-
-    async def wait_until_ready(self) -> None:
-        """Wait for two stable, non-loading accessibility snapshots."""
-        previous = ""
-        for _ in range(20):
-            text = "\n".join(getattr(block, "text", "") for block in await self.take_snapshot())
-            loading = re.search(r"\b(?:loading|please wait|starting service)\b", text, re.I)
-            # A login page is not ready while its arithmetic CAPTCHA is still
-            # loading. Once the prompt appears, it is safe to fill it.
-            captcha_loading = "captcha" in text.lower() and not re.search(
-                r"\b\d+\s*[+\-*/x×]\s*\d+\b", text
-            )
-            if text and text == previous and not (loading and captcha_loading):
-                return
-            previous = text
-            await asyncio.sleep(0.5)
-        raise RuntimeError("Application did not become ready before discovery")
 
     async def handle_dialog(self, action: str = "dismiss") -> Any:
         return await self._call("handle_dialog", {"action": action})
@@ -239,3 +176,137 @@ class ChromeDevToolsClient:
         if text:
             args["text"] = text
         return await self._call("wait_for", args)
+
+    # ── CAPTCHA-aware wait ───────────────────────────────────────────────────
+    async def wait_until_ready(self) -> None:
+        """
+        Wait for a stable snapshot. Special rule: if the page has a CAPTCHA
+        section but the math question ('What is N op M?') has not appeared yet,
+        keep waiting — the question loads asynchronously and we must not proceed
+        before we can read it.
+        """
+        previous = ""
+        for _ in range(30):
+            text = _snapshot_text(await self.take_snapshot())
+            loading = bool(re.search(r"\b(?:loading|please wait|starting service)\b", text, re.I))
+            has_captcha_label = "captcha" in text.lower()
+            has_math_question = bool(re.search(r"\b\d+\s*[+\-*/x×÷]\s*\d+\b", text))
+            captcha_still_loading = has_captcha_label and not has_math_question
+            if text and text == previous and not loading and not captcha_still_loading:
+                return
+            previous = text
+            await asyncio.sleep(0.5)
+        raise RuntimeError("Application did not become ready (timed out after 15 s)")
+
+    # ── Authentication ───────────────────────────────────────────────────────
+    async def authenticate(self) -> None:
+        """
+        Fill the login form — including arithmetic CAPTCHA — and submit.
+
+        BUG FIXES vs previous version:
+        1. wait_until_ready() is called AGAIN after navigate to guarantee the
+           CAPTCHA math question is fully rendered before we read the snapshot.
+           Previously we called wait_until_ready() in _go_to_start() before
+           authenticate(), but the CAPTCHA number can appear slightly after the
+           rest of the form — so the first snapshot passed the ready check but
+           still showed no math expression.
+
+        2. The snapshot is re-read INSIDE authenticate() after waiting, not
+           reused from the caller. This ensures the math question is present
+           in the text we parse.
+
+        3. After filling and clicking submit, we retry the login if we see
+           "incorrect captcha answer" — the CAPTCHA refreshes on each wrong
+           attempt, so we re-read the new question and answer it again. We
+           retry up to 3 times before giving up.
+
+        4. submit_selector now also matches "log in" (two words) in addition
+           to "login" (one word), matching your app's button text exactly.
+        """
+        if self._credential_ref is None or self._authenticated:
+            return
+
+        secret = await resolve_login(self._credential_ref)
+
+        for attempt in range(3):
+            # Always re-read the snapshot fresh — CAPTCHA changes on each attempt
+            await self.wait_until_ready()
+            text = _snapshot_text(await self.take_snapshot())
+            controls = _parse_controls(text)
+
+            # ── Locate form fields ──────────────────────────────────────────
+            username_uid = _find_uid(
+                controls,
+                [secret.get("username_selector", ""), "email", "email address", "username"],
+                {"textbox", "input"},
+            )
+            password_uid = _find_uid(
+                controls,
+                [secret.get("password_selector", ""), "password"],
+                {"textbox", "input"},
+            )
+            # BUG FIX 4: added "log in" (with space) to match your button
+            submit_uid = _find_uid(
+                controls,
+                [secret.get("submit_selector", ""), "log in", "sign in", "login", "submit"],
+                {"button", "link"},
+            )
+
+            if not username_uid or not password_uid or not submit_uid:
+                raise RuntimeError(
+                    f"Could not identify login form fields on attempt {attempt + 1}. "
+                    "Check username_selector, password_selector, submit_selector in your credential."
+                )
+
+            # ── Fill credentials ────────────────────────────────────────────
+            await self.fill(username_uid, secret["username"])
+            await self.fill(password_uid, secret["password"])
+
+            # ── Solve arithmetic CAPTCHA ────────────────────────────────────
+            # BUG FIX 1+2: snapshot is already fresh from above — math question
+            # is guaranteed present because wait_until_ready() waited for it.
+            captcha_uid = _find_uid(
+                controls,
+                [secret.get("captcha_selector", ""), "your answer", "captcha answer", "answer", "captcha"],
+                {"textbox", "input"},
+            )
+
+            if captcha_uid:
+                answer = _solve_math_captcha(text)
+                if answer is None:
+                    raise RuntimeError(
+                        f"CAPTCHA input found but could not parse math question from page text.\n"
+                        f"Page text snippet: {text[:500]}"
+                    )
+                await self.fill(captcha_uid, str(answer))
+
+            # ── Submit ──────────────────────────────────────────────────────
+            await self.click(submit_uid)
+
+            # ── Wait and check result ───────────────────────────────────────
+            # Poll up to 10 seconds for the page to change
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                after = _snapshot_text(await self.take_snapshot())
+
+                # Success — password field is gone, we left the login page
+                if not re.search(r'\b(?:password)\b', after, re.I):
+                    self._authenticated = True
+                    return
+
+                # BUG FIX 3: CAPTCHA was wrong — the question refreshes,
+                # retry the entire fill sequence with the new question
+                if re.search(r"incorrect captcha", after, re.I):
+                    break  # break inner loop → outer loop retries with fresh snapshot
+
+                # Hard failure — wrong credentials (not a CAPTCHA issue)
+                if re.search(r"\b(?:invalid|incorrect).{0,30}(?:email|password|credential)\b", after, re.I):
+                    raise RuntimeError(
+                        "Authentication failed: wrong email or password. "
+                        "Update the credential using scripts/store_credential.py."
+                    )
+
+        raise RuntimeError(
+            f"Authentication failed after 3 attempts — CAPTCHA could not be solved. "
+            "Check that the math question is visible in the accessibility tree."
+        )

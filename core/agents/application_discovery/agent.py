@@ -1,16 +1,12 @@
 """
 Agent 2 — Application Discovery Agent (architecture doc Section 6, 9).
 
-The crawl itself is fully deterministic (crawler.py) — this agent's job is
-orchestration: resolve requirement keywords, run the crawler, persist each
-discovered state INCREMENTALLY (committed per-state, not in one giant
-transaction at the end) so a long crawl's progress survives a crash partway
-through, run the crawl inside chrome-devtools-mcp with the target's domain as
---allowedUrlPattern, and report a summary envelope.
+Orchestration: resolve requirement keywords → run crawler → persist each
+discovered state INCREMENTALLY (committed per-state) → report summary envelope.
 
-Every discovered element carries source=OBSERVED_DOM — nothing here is
-invented. A destructive-looking element is recorded but never auto-clicked
-(Section 29, enforced inside crawler.py, not re-checked here).
+KEY FIX: The crawler now receives login_url (from the stored credential secret)
+so it can start exploration from the real login page, not base_url. This means
+it will discover the login form, registration page, and all authenticated states.
 """
 
 import uuid
@@ -23,6 +19,7 @@ from core.tool_gateway.gateway import ToolGateway
 from domain.enums import EvidenceSource, RequirementStatus
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.requirement_repo import RequirementRepository
+from infra.secrets.vault_client import get_login_secret
 from schemas.envelope import (
     AgentArtifactRef,
     AgentDecision,
@@ -32,11 +29,7 @@ from schemas.envelope import (
 )
 
 
-def _extract_keywords_from_requirement(title: str, description: str, domain_tags: list[str]) -> list[str]:
-    """Deterministic — no LLM call. domain_tags are already curated by the
-    Requirement Understanding Agent; title/description words are added as a
-    broader (noisier) fallback so a crawl still has something to score
-    against even if domain_tags came back empty for a given requirement."""
+def _extract_keywords(title: str, description: str, domain_tags: list[str]) -> list[str]:
     words = set(domain_tags)
     for text in (title, description):
         words.update(w.strip(".,!?").lower() for w in text.split() if len(w) > 3)
@@ -56,7 +49,9 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         self._requirement_repo = requirement_repo
         self._tool_gateway = tool_gateway or ToolGateway()
 
-    async def _resolve_keywords(self, project_id: uuid.UUID, focus_requirements: list[str]) -> list[str]:
+    async def _resolve_keywords(
+        self, project_id: uuid.UUID, focus_requirements: list[str]
+    ) -> list[str]:
         if self._requirement_repo is None:
             return []
         keywords: list[str] = []
@@ -75,17 +70,42 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 or requirement.status != RequirementStatus.APPROVED
                 or (version_ref and version_ref != str(version.version))
             ):
-                raise ValueError(f"Focus requirement is not approved/current for this project: {req_ref}")
+                raise ValueError(
+                    f"Focus requirement is not approved/current for this project: {req_ref}"
+                )
             keywords.extend(
-                _extract_keywords_from_requirement(version.title, version.description, version.domain_tags)
+                _extract_keywords(version.title, version.description, version.domain_tags)
             )
         return keywords
+
+    async def _get_login_url(self, credential_ref: str | None, base_url: str) -> str:
+        """
+        Read the stored credential to get login_url if it was saved.
+        Falls back to base_url if no login_url was stored.
+
+        This is what makes the crawler start from the login page instead of
+        jumping straight to the dashboard.
+        """
+        if not credential_ref:
+            return base_url
+        try:
+            secret = await get_login_secret(credential_ref)
+            return secret.get("login_url", base_url)
+        except Exception:
+            return base_url
 
     async def run(self, request: AgentInputEnvelope) -> AgentOutputEnvelope:
         payload = DiscoveryPayload.model_validate(request.payload)
         keywords = await self._resolve_keywords(request.project_id, payload.focus_requirements)
 
-        app_map = await self._map_repo.create(project_id=request.project_id, base_url=payload.target.url)
+        # Resolve login_url BEFORE starting the crawler
+        login_url = await self._get_login_url(
+            payload.target.credential_ref, payload.target.url
+        )
+
+        app_map = await self._map_repo.create(
+            project_id=request.project_id, base_url=payload.target.url
+        )
         await self._map_repo.session.commit()
 
         budget = CrawlBudget(
@@ -106,8 +126,8 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 fingerprint=state["fingerprint"],
                 reached_via=state["reached_via"],
                 elements=state["elements"],
+                evidence_ref=state.get("evidence_ref"),
             )
-            # Committed per-state, deliberately — see module docstring.
             await self._map_repo.session.commit()
 
         status = "FAILED"
@@ -117,18 +137,21 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             async with self._tool_gateway.chrome_devtools(
                 self.name, payload.target.url, payload.target.credential_ref
             ) as client:
-                crawler = Crawler(client, budget, keywords)
+                crawler = Crawler(
+                    client=client,
+                    budget=budget,
+                    keywords=keywords,
+                    login_url=login_url,   # ← pass login_url so crawler starts from /login
+                )
                 status = await crawler.crawl(payload.target.url, _on_state_discovered)
-        except Exception as exc:  # noqa: BLE001 — intentional: this runs inside a background
-            # worker task (apps/worker/tasks/run_discovery.py). An unhandled exception here
-            # must not crash the worker — it must mark the map FAILED with a reason so a
-            # human sees it in the Agent Activity feed (Section 27), not lose the run silently.
+        except Exception as exc:
             status = "FAILED"
             error_message = str(exc)
 
         termination_reason = getattr(crawler, "termination_reason", None)
         if status == "FAILED":
             termination_reason = "AUTHENTICATION_OR_CRAWL_ERROR"
+
         await self._map_repo.set_status(
             app_map.id, status, termination_reason, getattr(crawler, "coverage", None)
         )
@@ -139,7 +162,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 f"Discovered {state_count} application state(s), status={status}, "
                 f"termination_reason={termination_reason}"
             ),
-            reason="Deterministic priority-queue crawl via chrome-devtools-mcp (Section 9)",
+            reason="Two-phase crawl: unauthenticated pages first (login/register), then authenticated pages",
             evidence=[f"{state_count} states persisted to application_map {app_map.id}"],
             confidence=0.9 if status == "COMPLETE" else 0.6,
             source=EvidenceSource.OBSERVED_DOM,
@@ -153,8 +176,12 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         return AgentOutputEnvelope(
             agent_run_id=request.agent_run_id,
             status=run_status,
-            artifacts=[AgentArtifactRef(type="application_map", id=str(app_map.id), version=app_map.version)],
+            artifacts=[
+                AgentArtifactRef(
+                    type="application_map", id=str(app_map.id), version=app_map.version
+                )
+            ],
             decisions=[decision],
-            requires_human_approval=False,  # Section 21 — review recommended, not a blocking gate for this agent
+            requires_human_approval=False,
             errors=[error_message] if error_message else [],
         )
