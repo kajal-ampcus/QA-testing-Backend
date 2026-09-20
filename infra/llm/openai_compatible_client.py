@@ -20,6 +20,7 @@ from openai import AsyncOpenAI, BadRequestError
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
 from infra.llm.base import LLMClient, LLMStructuredResult
+from infra.llm.gemini_schema import inline_schema_refs
 from infra.llm.rate_limiter import get_llm_semaphore
 from infra.llm.retry import with_retry
 
@@ -46,6 +47,10 @@ class OpenAICompatibleClient(LLMClient):
         self._client = AsyncOpenAI(api_key=api_key or "not-needed", base_url=base_url)
         self.model = model
         self._max_retries = int(os.environ.get("LLM_MAX_RETRIES", "3"))
+        self._is_gemini = (
+            self._client.base_url.host == "generativelanguage.googleapis.com"
+            and model.startswith("gemini-")
+        )
 
     async def call_structured(
         self,
@@ -59,12 +64,24 @@ class OpenAICompatibleClient(LLMClient):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+        response_tokens = max_tokens
+        if self._is_gemini:
+            tool_schema = inline_schema_refs(tool_schema)
+            # Nested batches need substantially more space on Gemini. Start
+            # with headroom rather than repeatedly paying for truncated output.
+            response_tokens = max(max_tokens, min(max_tokens * 4, 16000))
+        input_tokens = output_tokens = 0
+        # Gemini 2.5 shares the completion budget between thinking and output.
+        # Bound thinking so structured output has room; leave other models alone.
+        request_options: dict[str, Any] = {}
+        if self._is_gemini and self.model.startswith("gemini-2.5-"):
+            request_options["reasoning_effort"] = "low"
 
         async def _do_call() -> ChatCompletion:
             async with get_llm_semaphore():
                 return await self._client.chat.completions.create(
                     model=self.model,
-                    max_tokens=max_tokens,
+                    max_tokens=response_tokens,
                     messages=messages,
                     tools=[
                         {
@@ -77,6 +94,7 @@ class OpenAICompatibleClient(LLMClient):
                         }
                     ],
                     tool_choice={"type": "function", "function": {"name": tool_name}},
+                    **request_options,
                 )
 
         # Bounded repair attempts: if the provider rejects the tool call
@@ -93,35 +111,82 @@ class OpenAICompatibleClient(LLMClient):
         for attempt in range(max_repair_attempts + 1):
             try:
                 response = await with_retry(_do_call, max_retries=self._max_retries)
+                if response.usage:
+                    input_tokens += response.usage.prompt_tokens
+                    output_tokens += response.usage.completion_tokens
+                if response.choices and response.choices[0].finish_reason == "length":
+                    # Never parse a truncated function call. Gemini may omit it
+                    # entirely when its shared thinking/output budget runs out.
+                    if (
+                        self._is_gemini
+                        and attempt < max_repair_attempts
+                        and response_tokens < 32000
+                    ):
+                        response_tokens = min(response_tokens * 2, 32000)
+                        continue
+                    raise RuntimeError(
+                        f"Model '{self.model}' exhausted the {response_tokens}-token response "
+                        f"budget while generating '{tool_name}' (finish_reason=length). "
+                        "Reduce the requirement scope or increase the response token budget."
+                    )
+                if (
+                    self._is_gemini
+                    and response.choices
+                    and "MALFORMED_FUNCTION_CALL" in response.choices[0].finish_reason
+                ):
+                    if attempt == max_repair_attempts:
+                        raise RuntimeError(
+                            f"Model '{self.model}' returned MALFORMED_FUNCTION_CALL for "
+                            f"'{tool_name}' after {max_repair_attempts} repair attempts."
+                        )
+                    response_tokens = max(response_tokens, min(response_tokens * 2, 32000))
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"The provider rejected the previous function call. Call only {tool_name} "
+                                "once, with the complete root object matching its parameters. "
+                                "Nested objects must be JSON values, never separate function calls. "
+                                "Use strict JSON without comments or trailing commas."
+                            ),
+                        }
+                    )
+                    continue
                 break
             except BadRequestError as exc:
+                if not (_is_json_parse_error(exc) or _is_schema_validation_error(exc)):
+                    raise
                 if attempt < max_repair_attempts and _is_json_parse_error(exc):
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "Your last response could not even be parsed as JSON "
-                            f"(error: {exc}). This almost always means you included a "
-                            "// or /* */ comment, or a trailing comma, somewhere in the "
-                            f"arguments. Call {tool_name} again with STRICT, plain JSON — "
-                            "zero comments anywhere, no trailing commas. If you need to "
-                            "note an assumption or gap, put that sentence inside the "
-                            "`objective` field's text, never as a comment token."
-                        ),
-                    })
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your last response could not even be parsed as JSON "
+                                f"(error: {exc}). This almost always means you included a "
+                                "// or /* */ comment, or a trailing comma, somewhere in the "
+                                f"arguments. Call {tool_name} again with STRICT, plain JSON — "
+                                "zero comments anywhere, no trailing commas. If you need to "
+                                "note an assumption or gap, put that sentence inside the "
+                                "`objective` field's text, never as a comment token."
+                            ),
+                        }
+                    )
                     continue
                 if attempt < max_repair_attempts and _is_schema_validation_error(exc):
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "Your last response did not match the required schema:\n"
-                            f"{exc}\n\n"
-                            f"Call {tool_name} again and fix EXACTLY the violations listed "
-                            "above — missing required properties must be added, and any "
-                            "value flagged as invalid must be replaced with one of the "
-                            "allowed values from the schema. Use the exact property names "
-                            "from the schema, not your own names for the same idea."
-                        ),
-                    })
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your last response did not match the required schema:\n"
+                                f"{exc}\n\n"
+                                f"Call {tool_name} again and fix EXACTLY the violations listed "
+                                "above — missing required properties must be added, and any "
+                                "value flagged as invalid must be replaced with one of the "
+                                "allowed values from the schema. Use the exact property names "
+                                "from the schema, not your own names for the same idea."
+                            ),
+                        }
+                    )
                     continue
                 raise RuntimeError(
                     f"Model '{self.model}' returned a tool call that didn't match the "
@@ -134,21 +199,21 @@ class OpenAICompatibleClient(LLMClient):
                 f"after {max_repair_attempts} repair attempt(s)."
             )
 
+        if not response.choices:
+            raise RuntimeError(f"Model '{self.model}' returned no choices for '{tool_name}'.")
         message = response.choices[0].message
         if message.tool_calls:
             for call in message.tool_calls:
                 if call.type == "function" and call.function.name == tool_name:
-                    usage = response.usage
                     return LLMStructuredResult(
                         data=json.loads(call.function.arguments),
                         model=self.model,
-                        input_tokens=usage.prompt_tokens if usage else 0,
-                        output_tokens=usage.completion_tokens if usage else 0,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
                     )
 
         raise RuntimeError(
             f"Model '{self.model}' did not return a '{tool_name}' function call — "
-            f"either it doesn't support forced tool calling, or the request failed. "
-            f"Check {os.environ.get('LLM_BASE_URL', '(base url not set)')} and try a "
-            f"model documented to support tool/function calling."
+            f"finish_reason={response.choices[0].finish_reason}. "
+            "The provider returned no matching structured output."
         )

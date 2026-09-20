@@ -1,0 +1,163 @@
+name: qa-platform
+
+x-postgres-env: &postgres-env
+  POSTGRES_USER: ${POSTGRES_USER:-qa_platform}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qa_platform}
+  POSTGRES_DB: ${POSTGRES_DB:-qa_platform}
+
+x-backend-env: &backend-env
+  <<: *postgres-env
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  REDIS_URL: redis://redis:6379/0
+  OBJECT_STORAGE_ENDPOINT: http://minio:9000
+  OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-qa-platform-evidence}
+  OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+
+x-backend: &backend
+  image: qa-platform-api:local
+  build:
+    context: .
+    dockerfile: deploy/docker/Dockerfile.api
+  env_file:
+    - path: .env
+      required: false
+  environment: *backend-env
+  init: true
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: *postgres-env
+    ports: ["127.0.0.1:${POSTGRES_PORT:-5432}:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:${REDIS_PORT:-6379}:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports: ["127.0.0.1:${MINIO_PORT:-9000}:9000", "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"]
+    volumes: ["minio-data:/data"]
+    restart: unless-stopped
+
+  storage-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      BUCKET: ${OBJECT_STORAGE_BUCKET:-qa-platform-evidence}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for attempt in $$(seq 1 60); do
+          if mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; then
+            exec mc mb --ignore-existing "local/$$BUCKET"
+          fi
+          sleep 2
+        done
+        echo "MinIO did not become ready" >&2
+        exit 1
+    restart: "no"
+
+  migrate:
+    <<: *backend
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend
+    ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/db', timeout=5)"]
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    image: qa-platform-worker:local
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *backend-env
+      CHROME_DEVTOOLS_MCP_COMMAND: chrome-devtools-mcp
+      CHROME_EXECUTABLE_PATH: /usr/bin/google-chrome
+      CHROME_NO_SANDBOX: "true"
+      WORKER_MAX_JOBS: ${WORKER_MAX_JOBS:-1}
+      WORKER_JOB_TIMEOUT: ${WORKER_JOB_TIMEOUT:-1200}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "scripts/docker_entrypoint.py", "arq", "--check", "apps.worker.arq_worker.WorkerSettings"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    init: true
+    shm_size: 1gb
+    restart: unless-stopped
+
+  frontend:
+    image: qa-platform-frontend:local
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports: ["127.0.0.1:${FRONTEND_PORT:-3000}:80"]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redis-data:
+  minio-data:

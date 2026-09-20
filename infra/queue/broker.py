@@ -5,10 +5,10 @@ actually runs them (docs/PROJECT_STRUCTURE.md point 2) — the API only ever
 enqueues and reads status, never runs a crawl inline.
 """
 
-import os
-
 from arq import create_pool
-from arq.connections import ArqRedis, RedisSettings
+from arq.connections import ArqRedis
+
+from infra.queue.settings import QueueSettings
 
 _pool: ArqRedis | None = None
 
@@ -16,7 +16,7 @@ _pool: ArqRedis | None = None
 async def get_arq_pool() -> ArqRedis:
     global _pool
     if _pool is None:
-        settings = RedisSettings.from_dsn(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
+        settings = QueueSettings().arq_settings()
         settings.conn_retries = 1
         _pool = await create_pool(settings)
     return _pool

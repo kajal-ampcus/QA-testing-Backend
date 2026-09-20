@@ -35,11 +35,19 @@ class ApplicationMap(Base):
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    credential_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    account_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    account_role: Mapped[str | None] = mapped_column(String(120), nullable=True)
     base_url: Mapped[str] = mapped_column(String(500), nullable=False)
     # RUNNING | COMPLETE | PARTIAL | FAILED
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="RUNNING")
     termination_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
     coverage: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # Structured failure evidence — populated when status is FAILED or PARTIAL.
+    # Contains login_error, screenshot_ref, console_errors, network_errors,
+    # failed_actions, and termination_detail. Used by the UI to show a
+    # developer-friendly diagnostic panel instead of a blank error state.
+    diagnostic_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     states: Mapped[list["ApplicationMapState"]] = relationship(back_populates="application_map")

@@ -29,9 +29,9 @@ from typing import Any
 from core.agents.base import BaseAgent
 from core.agents.test_design.prompts import SYSTEM_PROMPT, build_user_prompt
 from core.agents.test_design.schemas import TestCaseBatch, TestCaseSpec, TestDesignResult
+from core.agents.test_design.validation import validate_case
 from domain.enums import EvidenceSource, confidence_band
 from infra.db.models.application_map import ApplicationMap
-from infra.db.models.requirement import Requirement, RequirementVersion
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.requirement_repo import RequirementRepository
 from infra.db.repositories.test_case_repo import TestCaseRepository
@@ -91,7 +91,11 @@ def _low_confidence_test_cases(test_cases: list[TestCaseSpec], threshold: float 
     covers that page. Surface them by title so a human reviewer knows
     exactly which ones need the map extended before approval, rather than
     this being buried in a per-test-case confidence number nobody scans."""
-    return [f"{tc.title} (confidence={tc.confidence:.1f})" for tc in test_cases if tc.confidence < threshold]
+    return [
+        f"{tc.title} (confidence={tc.confidence:.1f})"
+        for tc in test_cases
+        if tc.confidence < threshold
+    ]
 
 
 def _states_to_dict(app_map: ApplicationMap) -> list[dict[str, Any]]:
@@ -161,11 +165,13 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 "No application map found for this project. "
                 "Run discovery (POST /api/v1/application-maps/projects/{id}/discover) first."
             )
-        if app_map.status != "COMPLETE":
+        if app_map.status not in {"COMPLETE", "PARTIAL"}:
             raise ValueError(
                 f"Application map {app_map.id} has status={app_map.status}. "
-                "Only COMPLETE maps can be used for test design."
+                "Only COMPLETE or PARTIAL maps with observed states can be used for test design."
             )
+        if not app_map.states:
+            raise ValueError(f"Application map {app_map.id} has no observed states.")
 
         # ── Call LLM ─────────────────────────────────────────────────────
         user_prompt = build_user_prompt(
@@ -186,10 +192,21 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
 
         batch = TestCaseBatch.model_validate(llm_result.data)
         test_cases = batch.test_cases
+        map_states = _states_to_dict(app_map)
+        ac_ids = {ac["id"] for ac in req_version.acceptance_criteria}
+        invalid = [(case.title, validate_case(case, map_states, ac_ids)) for case in test_cases]
+        invalid = [(title, issues) for title, issues in invalid if issues]
+        if invalid:
+            detail = "; ".join(f"{title}: {' | '.join(issues)}" for title, issues in invalid[:10])
+            raise RuntimeError(
+                f"Generated test cases failed deterministic validation and were not saved. {detail}"
+            )
 
         # ── AC coverage checks ───────────────────────────────────────────
         uncovered = _check_ac_coverage(req_version.acceptance_criteria, test_cases)
-        partial_pairing = _check_positive_negative_pairing(req_version.acceptance_criteria, test_cases)
+        partial_pairing = _check_positive_negative_pairing(
+            req_version.acceptance_criteria, test_cases
+        )
         needs_review = _low_confidence_test_cases(test_cases)
 
         # ── Persist test cases ────────────────────────────────────────────
@@ -214,9 +231,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                     "confidence": tc_spec.confidence,
                 },
             )
-            artifacts.append(
-                AgentArtifactRef(type="test_case", id=str(tc.id), version=1)
-            )
+            artifacts.append(AgentArtifactRef(type="test_case", id=str(tc.id), version=1))
         await self._test_case_repo.session.commit()
 
         # ── Build decisions ───────────────────────────────────────────────

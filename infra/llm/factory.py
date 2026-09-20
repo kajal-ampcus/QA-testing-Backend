@@ -6,7 +6,7 @@ models or providers is always a .env edit, never a code change.
 
 .env variables:
 
-  LLM_PROVIDER   "anthropic" | "openai_compatible"   (default: anthropic)
+  LLM_PROVIDER   "anthropic" | "openai_compatible" | "google" | "gemini"
   LLM_MODEL      provider-specific model id           (has a sane default per provider)
 
   # when LLM_PROVIDER=anthropic:
@@ -15,6 +15,10 @@ models or providers is always a .env edit, never a code change.
   # when LLM_PROVIDER=openai_compatible (OpenAI, Groq, xAI/Grok, Ollama, ...):
   LLM_BASE_URL   e.g. https://api.groq.com/openai/v1
   LLM_API_KEY    (not required for local Ollama)
+
+  # when LLM_PROVIDER=google (alias: gemini):
+  GEMINI_API_KEY or GOOGLE_API_KEY or LLM_API_KEY
+  # Uses Google's OpenAI-compatible endpoint; LLM_BASE_URL is not needed.
 
 See .env.example for a ready-to-uncomment block per provider.
 """
@@ -40,6 +44,23 @@ def get_llm_client() -> LLMClient:
             model=model or "claude-sonnet-5",
         )
 
+    if provider in {"google", "gemini"}:
+        api_key = (
+            os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY")
+            or os.environ.get("LLM_API_KEY")
+        )
+        if not api_key:
+            raise RuntimeError(
+                "LLM_PROVIDER=google/gemini requires GEMINI_API_KEY, GOOGLE_API_KEY, "
+                "or LLM_API_KEY to be set in .env."
+            )
+        return OpenAICompatibleClient(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            model=model or "gemini-2.5-flash",
+        )
+
     if provider == "openai_compatible":
         base_url = os.environ.get("LLM_BASE_URL")
         if not base_url:
@@ -56,5 +77,5 @@ def get_llm_client() -> LLMClient:
 
     raise ValueError(
         f"Unknown LLM_PROVIDER: {provider!r} "
-        "(expected 'anthropic' or 'openai_compatible')"
+        "(expected 'anthropic', 'openai_compatible', 'google', or 'gemini')"
     )

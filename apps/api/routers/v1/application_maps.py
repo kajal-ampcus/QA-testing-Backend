@@ -64,6 +64,7 @@ class ApplicationMapStateResponse(BaseModel):
     fingerprint: str
     reached_via: list[str]
     elements: list[dict[str, Any]]
+    evidence_ref: str | None = None
 
 
 class ApplicationMapResponse(BaseModel):
@@ -184,6 +185,7 @@ async def get_latest_map(
                 fingerprint=s.fingerprint,
                 reached_via=s.reached_via,
                 elements=s.elements,
+                evidence_ref=s.evidence_ref,
             )
             for s in app_map.states
         ],

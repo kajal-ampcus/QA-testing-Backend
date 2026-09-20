@@ -1,0 +1,105 @@
+[
+  {
+    "id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "req_code": "REQ-001",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "version": 2,
+    "status": "APPROVED",
+    "title": "End-to-End Application Exploration",
+    "description": "Validate that the application functions correctly from the home page through all navigation links, forms, login, practice test scenarios, and that pages load without errors, required fields are validated, successful actions show expected results, and invalid actions display appropriate error messages.\n\nTester clarifications:\n1. expected results: After each action, the application should behave as expected. Successful login should take the user to the logged-in page and show a success message with a logout option. Forms should submit successfully when valid information is entered. Filters, sorting, buttons, and navigation should update the page correctly. Invalid actions should show the appropriate error message. (resolves: The specific outcomes or UI changes expected after successful actions are not defined.)\n2. error message content: Show a clear message explaining what went wrong. For invalid login, show that the username or password is incorrect. For invalid or missing form information, show an appropriate validation message near the relevant field. (resolves: The exact wording or format of error messages for invalid inputs and login failures is not specified.)\n3. practice test scenarios: Test the complete application including positive and negative login, form validation, navigation, dynamic elements, tables, filters, sorting, buttons, and different input conditions. Also check successful and unsuccessful actions and verify that the application responds correctly. (resolves: The list of practice test scenarios to be covered is not provided.)\n4. list of pages and forms: After each action, the application should behave as expected. Successful login should take the user to the logged-in page and show a success message with a logout option. Forms should submit successfully when valid information is entered. Filters, sorting, buttons, and navigation should update the page correctly. Invalid actions should show the appropriate error message. (resolves: A complete inventory of pages, forms, and navigation links to be tested is missing.)\n5. validation rules: Required fields should not be submitted when they are empty. Username and password should be checked during login. Form fields should accept valid information and show a clear message when invalid information is entered. Filters and sorting should only show the results that match the selected options. (resolves: Specific validation rules for each form field (e.g., format, length) are not described.)",
+    "acceptance_criteria": [
+      {
+        "id": "AC-1",
+        "text": "Starting from the home page, a user can navigate to each available page via navigation links without encountering errors.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-2",
+        "text": "All navigation links lead to the correct target pages as intended by the application.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-3",
+        "text": "Forms on each page enforce required field validation, preventing submission when required fields are empty.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-4",
+        "text": "When required fields are left empty, an appropriate error message is displayed to the user.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-5",
+        "text": "Submitting valid inputs to any form results in a successful action and displays the expected outcome.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-6",
+        "text": "Submitting invalid inputs to any form results in an error message indicating the validation problem.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-7",
+        "text": "Users with valid credentials can log in successfully from the login functionality.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-8",
+        "text": "Login attempts with invalid credentials display an error message to the user.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-9",
+        "text": "Each available practice test scenario can be started, completed, and results are displayed without errors.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-10",
+        "text": "No broken links are present; every hyperlink resolves to a valid page without returning a 404 or similar error.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-11",
+        "text": "During navigation and interactions, the application does not produce unexpected errors such as HTTP 500 responses.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-12",
+        "text": "All pages reachable through intended navigation are accessible and do not return access\u2011denied or not\u2011found responses.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-CLARIFY-2-1",
+        "text": "After each action, the application should behave as expected. Successful login should take the user to the logged-in page and show a success message with a logout option. Forms should submit successfully when valid information is entered. Filters, sorting, buttons, and navigation should update the page correctly. Invalid actions should show the appropriate error message.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-CLARIFY-2-2",
+        "text": "Show a clear message explaining what went wrong. For invalid login, show that the username or password is incorrect. For invalid or missing form information, show an appropriate validation message near the relevant field.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-CLARIFY-2-3",
+        "text": "Test the complete application including positive and negative login, form validation, navigation, dynamic elements, tables, filters, sorting, buttons, and different input conditions. Also check successful and unsuccessful actions and verify that the application responds correctly.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-CLARIFY-2-4",
+        "text": "After each action, the application should behave as expected. Successful login should take the user to the logged-in page and show a success message with a logout option. Forms should submit successfully when valid information is entered. Filters, sorting, buttons, and navigation should update the page correctly. Invalid actions should show the appropriate error message.",
+        "source": "REQUIREMENT"
+      },
+      {
+        "id": "AC-CLARIFY-2-5",
+        "text": "Required fields should not be submitted when they are empty. Username and password should be checked during login. Form fields should accept valid information and show a clear message when invalid information is entered. Filters and sorting should only show the results that match the selected options.",
+        "source": "REQUIREMENT"
+      }
+    ],
+    "ambiguities": [],
+    "domain_tags": [
+      "navigation",
+      "validation",
+      "auth",
+      "error-handling"
+    ]
+  }
+]

@@ -7,15 +7,21 @@ core/tool_gateway/playwright_client.py, always.
 """
 
 import asyncio
+import base64
+import json
 import os
 import re
+import uuid
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from core.tool_gateway.secret_resolver import resolve_login
+from core.tool_gateway.snapshot import parse_elements
 
 
 def _snapshot_text(snapshot: object) -> str:
@@ -26,7 +32,7 @@ def _snapshot_text(snapshot: object) -> str:
 
 def _parse_controls(text: str) -> list[tuple[str, str, str]]:
     """Parse all uid/role/name triples from a snapshot text."""
-    return re.findall(r'uid=(\S+)\s+(\S+)\s+"([^"]*)"', text)
+    return [(e["uid"], e["role"], e["name"]) for e in parse_elements(text)]
 
 
 def _find_uid(
@@ -34,12 +40,59 @@ def _find_uid(
     names: list[str],
     roles: set[str],
 ) -> str | None:
-    """Return the uid of the first element whose role and name match."""
+    """
+    Return the uid of the first element whose role and name match.
+
+    Works for ANY website — no hardcoded field names.
+    Three-pass matching so this degrades gracefully on any login form:
+
+    Pass 1 — exact match:     field name == wanted term exactly
+                               e.g. stored selector "Username" matches "Username"
+    Pass 2 — contains match:  field name contains a wanted term
+                               e.g. "Email address" contains "email"
+    Pass 3 — reverse contains: a wanted term contains the field name
+                               e.g. field name "user" is contained in "username"
+
+    This means the crawler never needs site-specific fallback lists for standard
+    login forms. Custom selectors in the stored credential still take priority
+    because they are the first item in the names list.
+    """
     wanted = {n.lower() for n in names if n}
-    return next(
+    if not wanted:
+        return None
+
+    # Pass 1: exact match
+    exact = next(
         (uid for uid, role, name in controls if role in roles and name.lower() in wanted),
         None,
     )
+    if exact:
+        return exact
+
+    # Pass 2: field name contains a wanted term
+    # e.g. "Email address" contains "email", "Sign in with email" contains "email"
+    contains = next(
+        (
+            uid
+            for uid, role, name in controls
+            if role in roles and any(w in name.lower() for w in wanted)
+        ),
+        None,
+    )
+    if contains:
+        return contains
+
+    # Pass 3: a wanted term contains the field name
+    # e.g. field is "user", wanted has "username" — "username" contains "user"
+    reverse = next(
+        (
+            uid
+            for uid, role, name in controls
+            if role in roles and any(name.lower() in w for w in wanted if len(name) > 2)
+        ),
+        None,
+    )
+    return reverse
 
 
 def _solve_math_captcha(text: str) -> int | None:
@@ -79,16 +132,29 @@ class ChromeDevToolsClient:
         self._page_id: int | None = None
 
     def _server_params(self) -> StdioServerParameters:
-        args = ["chrome-devtools-mcp@latest"]
+        command = os.environ.get("CHROME_DEVTOOLS_MCP_COMMAND")
+        args = [] if command else ["-y", "chrome-devtools-mcp@latest"]
+        if executable_path := os.environ.get("CHROME_EXECUTABLE_PATH"):
+            args.extend(["--executablePath", executable_path])
+        if os.environ.get("CHROME_NO_SANDBOX", "false").lower() == "true":
+            args.append("--chromeArg=--no-sandbox")
         if os.environ.get("CHROME_DEVTOOLS_MCP_ISOLATED", "true").lower() == "true":
             args.append("--isolated")
         if self._headless:
             args.append("--headless=true")
         if self._allowed_url_pattern:
-            args.extend(["--allowedUrlPattern", self._allowed_url_pattern])
+            parsed = urlparse(self._allowed_url_pattern)
+            allowed_pattern = (
+                f"{parsed.scheme}://{parsed.netloc}/*"
+                if parsed.scheme in {"http", "https"} and parsed.netloc
+                else self._allowed_url_pattern
+            )
+            args.extend(["--allowedUrlPattern", allowed_pattern])
         if os.environ.get("CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true").lower() == "true":
             args.append("--redactNetworkHeaders")
-        return StdioServerParameters(command="npx.cmd" if os.name == "nt" else "npx", args=args)
+        return StdioServerParameters(
+            command=command or ("npx.cmd" if os.name == "nt" else "npx"), args=args
+        )
 
     async def __aenter__(self) -> "ChromeDevToolsClient":
         self._exit_stack = AsyncExitStack()
@@ -121,9 +187,7 @@ class ChromeDevToolsClient:
 
     def _require_session(self) -> ClientSession:
         if self._session is None:
-            raise RuntimeError(
-                "ChromeDevToolsClient used outside its 'async with' block."
-            )
+            raise RuntimeError("ChromeDevToolsClient used outside its 'async with' block.")
         return self._session
 
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> Any:
@@ -153,13 +217,66 @@ class ChromeDevToolsClient:
         return await self._call("take_snapshot", self._page_args())
 
     async def take_screenshot(self) -> Any:
-        return await self._call("take_screenshot", {})
+        directory = Path(os.environ.get("DISCOVERY_EVIDENCE_DIR", "artifacts/discovery")).resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{uuid.uuid4()}.png"
+        content = await self._call("take_screenshot", self._page_args(fullPage=True))
+        image = next((block for block in content if getattr(block, "type", None) == "image"), None)
+        if image is None or not getattr(image, "data", None):
+            raise RuntimeError("Discovery screenshot returned no image data")
+        target.write_bytes(base64.b64decode(image.data))
+        return str(target)
+
+    async def inspect_elements(self, snapshot: object) -> list[dict[str, Any]]:
+        """Attach browser-read attributes to the exact observed MCP controls."""
+        nodes = parse_elements(snapshot)
+        controls = [
+            e
+            for e in nodes
+            if e["role"]
+            in {
+                "link",
+                "button",
+                "textbox",
+                "combobox",
+                "radio",
+                "checkbox",
+                "searchbox",
+                "spinbutton",
+            }
+        ]
+        function = """(...els) => els.map(el => ({
+            dom_id: el.id || null,
+            locator: el.id ? '#' + CSS.escape(el.id) : null,
+            input_type: el.getAttribute('type'),
+            required: !!el.required,
+            disabled: !!el.disabled,
+            visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
+            url: el.href || null,
+            options: el.options ? [...el.options].filter(o => !o.disabled).map(o => o.value) : null
+        }))"""
+        for offset in range(0, len(controls), 30):
+            batch = controls[offset : offset + 30]
+            raw = await self._call(
+                "evaluate_script",
+                self._page_args(
+                    function=function,
+                    args=[e["uid"] for e in batch],
+                    waitForStableDom=False,
+                ),
+            )
+            text = _snapshot_text(raw)
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+            data = json.loads(match.group(1) if match else text)
+            for node, attributes in zip(batch, data, strict=True):
+                node.update({k: v for k, v in attributes.items() if v is not None})
+        return nodes
 
     async def list_console_messages(self) -> Any:
-        return await self._call("list_console_messages", {})
+        return await self._call("list_console_messages", self._page_args())
 
     async def list_network_requests(self) -> Any:
-        return await self._call("list_network_requests", {})
+        return await self._call("list_network_requests", self._page_args())
 
     # ── Input automation ────────────────────────────────────────────────────
     async def click(self, element_ref: str) -> Any:
@@ -202,16 +319,44 @@ class ChromeDevToolsClient:
         keep waiting — the question loads asynchronously and we must not proceed
         before we can read it.
         """
-        previous = ""
+        previous_signature: tuple[tuple[str, str, str], ...] = ()
         for _ in range(30):
             text = _snapshot_text(await self.take_snapshot())
             loading = bool(re.search(r"\b(?:loading|please wait|starting service)\b", text, re.I))
             has_captcha_label = "captcha" in text.lower()
             has_math_question = bool(re.search(r"\b\d+\s*[+\-*/x×÷]\s*\d+\b", text))
-            captcha_still_loading = has_captcha_label and not has_math_question
-            if text and text == previous and not loading and not captcha_still_loading:
+            captcha_still_loading = (
+                has_captcha_label
+                and not has_math_question
+                and bool(re.search(r"\b(?:your answer|captcha answer)\b", text, re.I))
+            )
+            signature = tuple(
+                (
+                    element["role"],
+                    re.sub(r"\d+", "#", element["name"]),
+                    element.get("url", ""),
+                )
+                for element in parse_elements(text)
+                if element["role"]
+                in {
+                    "RootWebArea",
+                    "heading",
+                    "link",
+                    "button",
+                    "textbox",
+                    "combobox",
+                    "checkbox",
+                    "radio",
+                }
+            )
+            if (
+                signature
+                and signature == previous_signature
+                and not loading
+                and not captcha_still_loading
+            ):
                 return
-            previous = text
+            previous_signature = signature
             await asyncio.sleep(0.5)
         raise RuntimeError("Application did not become ready (timed out after 15 s)")
 
@@ -240,8 +385,14 @@ class ChromeDevToolsClient:
         4. submit_selector now also matches "log in" (two words) in addition
            to "login" (one word), matching your app's button text exactly.
         """
-        if self._credential_ref is None or self._authenticated:
+        if self._credential_ref is None:
             return
+        current = _parse_controls(_snapshot_text(await self.take_snapshot()))
+        if self._authenticated and not any(
+            role in {"textbox", "input"} and name.lower() == "password" for _, role, name in current
+        ):
+            return
+        self._authenticated = False
 
         secret = await resolve_login(self._credential_ref)
 
@@ -252,27 +403,95 @@ class ChromeDevToolsClient:
             controls = _parse_controls(text)
 
             # ── Locate form fields ──────────────────────────────────────────
+            # Custom selectors from the stored credential are always first.
+            # Fallback lists cover common field names across any website.
+            # _find_uid uses 3-pass fuzzy matching so partial names also work.
             username_uid = _find_uid(
                 controls,
-                [secret.get("username_selector", ""), "email", "email address", "username"],
-                {"textbox", "input"},
+                [
+                    secret.get("username_selector", ""),
+                    # Common email/username field names across websites
+                    "email",
+                    "email address",
+                    "e-mail",
+                    "your email",
+                    "username",
+                    "user name",
+                    "user",
+                    "userid",
+                    "user id",
+                    "login",
+                    "account",
+                    "phone",
+                    "mobile",
+                    "mobile number",
+                    "id",
+                    "identifier",
+                ],
+                {"textbox", "input", "combobox", "searchbox"},
             )
             password_uid = _find_uid(
                 controls,
-                [secret.get("password_selector", ""), "password"],
+                [
+                    secret.get("password_selector", ""),
+                    "password",
+                    "pass",
+                    "passphrase",
+                    "secret",
+                    "pin",
+                    "your password",
+                    "current password",
+                ],
                 {"textbox", "input"},
             )
-            # BUG FIX 4: added "log in" (with space) to match your button
             submit_uid = _find_uid(
                 controls,
-                [secret.get("submit_selector", ""), "log in", "sign in", "login", "submit"],
+                [
+                    secret.get("submit_selector", ""),
+                    # Common submit button names across websites
+                    "log in",
+                    "login",
+                    "sign in",
+                    "signin",
+                    "submit",
+                    "continue",
+                    "next",
+                    "go",
+                    "enter",
+                    "access",
+                    "proceed",
+                    "send",
+                    "get started",
+                    "let me in",
+                ],
                 {"button", "link"},
             )
 
             if not username_uid or not password_uid or not submit_uid:
+                missing = []
+                if not username_uid:
+                    missing.append(
+                        f"username field (tried selector={secret.get('username_selector')!r})"
+                    )
+                if not password_uid:
+                    missing.append(
+                        f"password field (tried selector={secret.get('password_selector')!r})"
+                    )
+                if not submit_uid:
+                    missing.append(
+                        f"submit button (tried selector={secret.get('submit_selector')!r})"
+                    )
+                available = [
+                    (role, name)
+                    for _, role, name in controls
+                    if role in {"textbox", "input", "button", "link", "combobox"}
+                ]
                 raise RuntimeError(
-                    f"Could not identify login form fields on attempt {attempt + 1}. "
-                    "Check username_selector, password_selector, submit_selector in your credential."
+                    f"Login form detection failed on attempt {attempt + 1}. "
+                    f"Could not find: {', '.join(missing)}. "
+                    f"Available interactive elements on page: {available[:10]}. "
+                    "Fix by passing custom selectors when saving this credential "
+                    "(scripts/store_credential.py --username-selector '...' --submit-selector '...')"
                 )
 
             # ── Fill credentials ────────────────────────────────────────────
@@ -284,7 +503,13 @@ class ChromeDevToolsClient:
             # is guaranteed present because wait_until_ready() waited for it.
             captcha_uid = _find_uid(
                 controls,
-                [secret.get("captcha_selector", ""), "your answer", "captcha answer", "answer", "captcha"],
+                [
+                    secret.get("captcha_selector", ""),
+                    "your answer",
+                    "captcha answer",
+                    "answer",
+                    "captcha",
+                ],
                 {"textbox", "input"},
             )
 
@@ -307,7 +532,7 @@ class ChromeDevToolsClient:
                 after = _snapshot_text(await self.take_snapshot())
 
                 # Success — password field is gone, we left the login page
-                if not re.search(r'\b(?:password)\b', after, re.I):
+                if not re.search(r"\b(?:password)\b", after, re.I):
                     self._authenticated = True
                     return
 
@@ -317,7 +542,9 @@ class ChromeDevToolsClient:
                     break  # break inner loop → outer loop retries with fresh snapshot
 
                 # Hard failure — wrong credentials (not a CAPTCHA issue)
-                if re.search(r"\b(?:invalid|incorrect).{0,30}(?:email|password|credential)\b", after, re.I):
+                if re.search(
+                    r"\b(?:invalid|incorrect).{0,30}(?:email|password|credential)\b", after, re.I
+                ):
                     raise RuntimeError(
                         "Authentication failed: wrong email or password. "
                         "Update the credential using scripts/store_credential.py."

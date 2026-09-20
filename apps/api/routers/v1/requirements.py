@@ -24,6 +24,7 @@ from infra.db.models.approval import Approval
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement, RequirementVersion
 from infra.db.repositories.requirement_repo import RequirementRepository
+from infra.llm.errors import requirement_failure_detail
 from schemas.envelope import (
     AgentArtifactRef,
     AgentInputEnvelope,
@@ -58,7 +59,6 @@ def _to_response(requirement: Requirement, version: RequirementVersion) -> Requi
 async def _extract_requirement(
     session: AsyncSession, project_id: uuid.UUID, raw_text: str
 ) -> tuple[RequirementUnderstandingAgent, AgentInputEnvelope, RequirementUnderstandingResult]:
-    agent = RequirementUnderstandingAgent()
     input_envelope = AgentInputEnvelope(
         agent_run_id=uuid.uuid4(),
         project_id=project_id,
@@ -66,18 +66,19 @@ async def _extract_requirement(
         payload={"raw_text": raw_text, "project_glossary": {}},
     )
     try:
+        agent = RequirementUnderstandingAgent()
         result = await agent.run(input_envelope)
     except Exception as exc:  # noqa: BLE001 - persist failed agent calls without exposing provider data
         failure = AgentOutputEnvelope(
             agent_run_id=input_envelope.agent_run_id,
             status=AgentRunStatus.FAILED,
-            errors=[f"{type(exc).__name__}: requirement extraction failed"],
+            errors=[requirement_failure_detail(exc)],
         )
         session.add(
             AgentRun(
                 id=input_envelope.agent_run_id,
                 project_id=project_id,
-                agent_name=agent.name,
+                agent_name=RequirementUnderstandingAgent.name,
                 status=failure.status,
                 input_envelope=input_envelope.model_dump(mode="json"),
                 output_envelope=failure.model_dump(mode="json"),
@@ -85,9 +86,7 @@ async def _extract_requirement(
             )
         )
         await session.commit()
-        raise HTTPException(
-            status_code=502, detail="Requirement extraction failed; check LLM tool compatibility"
-        ) from exc
+        raise HTTPException(status_code=502, detail=requirement_failure_detail(exc)) from exc
     return agent, input_envelope, result
 
 
@@ -106,7 +105,7 @@ def _record_successful_run(
         AgentRun(
             id=input_envelope.agent_run_id,
             project_id=requirement.project_id,
-            agent_name=agent.name,
+            agent_name=RequirementUnderstandingAgent.name,
             status=result.envelope.status,
             input_envelope=input_envelope.model_dump(mode="json"),
             output_envelope=result.envelope.model_dump(mode="json"),

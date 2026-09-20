@@ -13,9 +13,36 @@ Agentic AI automation testing platform — automates the QA lifecycle (requireme
 
 ## Status
 
-Projects, requirement understanding and approval, and application discovery are implemented. Discovery runs as an `arq` job in a separate worker. Test design, execution, triage, and reporting remain later milestones.
+Projects, requirement understanding and approval, application discovery, and test-case generation are implemented. Discovery runs as an `arq` job in a separate worker. Test validation, automation, execution, triage, and reporting remain later milestones.
 
-## Local development
+The sibling `../frontend` application now connects to these APIs.
+See its README for frontend setup and `docs/FRONTEND_INTEGRATION.md` for the
+architecture review, endpoint mapping, and remaining milestones.
+
+After starting the API on port 8000, run `npm.cmd install` and `npm.cmd run dev`
+from `../frontend`, then open http://localhost:3000. The frontend
+uses a development proxy by default. For a separately hosted frontend, set
+`CORS_ORIGINS` in the backend `.env` to a JSON array of allowed origins.
+
+## Run everything in Docker
+
+From this directory, with Docker Desktop running:
+
+```powershell
+docker compose pull --ignore-buildable
+docker compose up -d --build --wait --wait-timeout 180
+docker compose ps -a
+```
+
+Open http://localhost:3000. One **qa-platform** application contains the frontend,
+API, worker, PostgreSQL, Redis, and MinIO. Migrations and bucket creation run
+automatically as setup jobs. The existing backend `.env` supplies LLM and
+credential-encryption settings; secrets are excluded from build contexts.
+
+See [Docker setup](deploy/docker/README.md) for ports, configuration, persistence,
+troubleshooting, and the difference between setup jobs and running services.
+
+## Local development without containerized application services
 
 `pyproject.toml` requires Python **>=3.12**. On Windows, if `python --version`
 shows something older, use the `py` launcher to pick a supported version
@@ -31,7 +58,7 @@ py -3.13 -m venv .venv
 pip install -e ".[dev]"
 
 # 3. bring up Postgres/Redis/MinIO via Docker Compose
-docker compose -f deploy/docker/docker-compose.yml up -d
+docker compose up -d postgres redis minio storage-init
 
 # 4. migrate the database
 python -m alembic upgrade head

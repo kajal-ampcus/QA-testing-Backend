@@ -1,0 +1,401 @@
+{
+  "test_case_count": 31,
+  "states": 8,
+  "distinct_paths": 7,
+  "categories": {
+    "POSITIVE": 21,
+    "NEGATIVE": 6,
+    "EDGE_CASE": 4
+  },
+  "confidence": {
+    "0.9": 16,
+    "0.5": 5,
+    "0.7": 10
+  },
+  "issues": [
+    {
+      "code": "TC-008",
+      "step": 2,
+      "issue": "unresolvable_test_data_path",
+      "key": "valid_credentials.username"
+    },
+    {
+      "code": "TC-008",
+      "step": 3,
+      "issue": "unresolvable_test_data_path",
+      "key": "valid_credentials.password"
+    },
+    {
+      "code": "TC-009",
+      "step": 2,
+      "issue": "unresolvable_test_data_path",
+      "key": "invalid_username.username"
+    },
+    {
+      "code": "TC-009",
+      "step": 3,
+      "issue": "unresolvable_test_data_path",
+      "key": "invalid_username.password"
+    },
+    {
+      "code": "TC-010",
+      "step": 2,
+      "issue": "unresolvable_test_data_path",
+      "key": "invalid_password.username"
+    },
+    {
+      "code": "TC-010",
+      "step": 3,
+      "issue": "unresolvable_test_data_path",
+      "key": "invalid_password.password"
+    },
+    {
+      "code": "TC-011",
+      "step": 3,
+      "issue": "unresolvable_test_data_path",
+      "key": "valid_password.password"
+    },
+    {
+      "code": "TC-012",
+      "step": 2,
+      "issue": "unresolvable_test_data_path",
+      "key": "valid_username.username"
+    },
+    {
+      "code": "TC-013",
+      "step": 2,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_valid.first_name"
+    },
+    {
+      "code": "TC-013",
+      "step": 3,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_valid.last_name"
+    },
+    {
+      "code": "TC-013",
+      "step": 4,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_valid.email"
+    },
+    {
+      "code": "TC-013",
+      "step": 5,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_valid.message"
+    },
+    {
+      "code": "TC-014",
+      "step": 3,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_invalid_first_name.last_name"
+    },
+    {
+      "code": "TC-014",
+      "step": 4,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_invalid_first_name.email"
+    },
+    {
+      "code": "TC-014",
+      "step": 5,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_invalid_first_name.message"
+    },
+    {
+      "code": "TC-015",
+      "step": 2,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_invalid_email.first_name"
+    },
+    {
+      "code": "TC-015",
+      "step": 3,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_invalid_email.last_name"
+    },
+    {
+      "code": "TC-015",
+      "step": 4,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_invalid_email.email"
+    },
+    {
+      "code": "TC-015",
+      "step": 5,
+      "issue": "unresolvable_test_data_path",
+      "key": "contact_form_invalid_email.message"
+    },
+    {
+      "code": "TC-019",
+      "issue": "no_assertion"
+    },
+    {
+      "code": "TC-030",
+      "issue": "no_assertion"
+    },
+    {
+      "code": "TC-031",
+      "issue": "no_assertion"
+    }
+  ],
+  "ac_references": {
+    "AC-1": [
+      "TC-001",
+      "TC-002",
+      "TC-003",
+      "TC-004",
+      "TC-005",
+      "TC-006",
+      "TC-007",
+      "TC-016",
+      "TC-017",
+      "TC-018",
+      "TC-019",
+      "TC-020",
+      "TC-021",
+      "TC-022"
+    ],
+    "AC-2": [
+      "TC-001",
+      "TC-002",
+      "TC-003",
+      "TC-004",
+      "TC-005",
+      "TC-006",
+      "TC-007",
+      "TC-016",
+      "TC-017",
+      "TC-018",
+      "TC-019",
+      "TC-020",
+      "TC-021",
+      "TC-022"
+    ],
+    "AC-10": [
+      "TC-001",
+      "TC-002",
+      "TC-003",
+      "TC-004",
+      "TC-005",
+      "TC-006",
+      "TC-007",
+      "TC-016",
+      "TC-017",
+      "TC-018",
+      "TC-019",
+      "TC-020",
+      "TC-021",
+      "TC-022"
+    ],
+    "AC-11": [
+      "TC-001",
+      "TC-002",
+      "TC-003",
+      "TC-004",
+      "TC-005",
+      "TC-006",
+      "TC-007",
+      "TC-016",
+      "TC-017",
+      "TC-018",
+      "TC-019",
+      "TC-020",
+      "TC-021",
+      "TC-022"
+    ],
+    "AC-12": [
+      "TC-001",
+      "TC-002",
+      "TC-003",
+      "TC-004",
+      "TC-005",
+      "TC-006",
+      "TC-007",
+      "TC-016",
+      "TC-017",
+      "TC-018",
+      "TC-020",
+      "TC-021",
+      "TC-022"
+    ],
+    "AC-CLARIFY-2-1": [
+      "TC-001",
+      "TC-002",
+      "TC-003",
+      "TC-004",
+      "TC-005",
+      "TC-006",
+      "TC-007",
+      "TC-008",
+      "TC-013",
+      "TC-016",
+      "TC-017",
+      "TC-018",
+      "TC-019",
+      "TC-020",
+      "TC-021",
+      "TC-022",
+      "TC-023",
+      "TC-024",
+      "TC-025",
+      "TC-026",
+      "TC-027",
+      "TC-028"
+    ],
+    "AC-5": [
+      "TC-008",
+      "TC-013",
+      "TC-023"
+    ],
+    "AC-7": [
+      "TC-008",
+      "TC-025"
+    ],
+    "AC-CLARIFY-2-3": [
+      "TC-008",
+      "TC-009",
+      "TC-010",
+      "TC-011",
+      "TC-012",
+      "TC-013",
+      "TC-014",
+      "TC-015",
+      "TC-016",
+      "TC-025",
+      "TC-026",
+      "TC-027",
+      "TC-028",
+      "TC-029",
+      "TC-030",
+      "TC-031"
+    ],
+    "AC-CLARIFY-2-4": [
+      "TC-008",
+      "TC-009",
+      "TC-010",
+      "TC-013",
+      "TC-017",
+      "TC-018",
+      "TC-019",
+      "TC-020",
+      "TC-021",
+      "TC-022",
+      "TC-023",
+      "TC-024",
+      "TC-025",
+      "TC-026",
+      "TC-027",
+      "TC-028"
+    ],
+    "AC-CLARIFY-2-5": [
+      "TC-008",
+      "TC-009",
+      "TC-010",
+      "TC-011",
+      "TC-012",
+      "TC-013",
+      "TC-014",
+      "TC-015",
+      "TC-024",
+      "TC-025",
+      "TC-026",
+      "TC-027",
+      "TC-028"
+    ],
+    "AC-6": [
+      "TC-009",
+      "TC-010",
+      "TC-011",
+      "TC-012",
+      "TC-014",
+      "TC-015",
+      "TC-024",
+      "TC-028"
+    ],
+    "AC-8": [
+      "TC-009",
+      "TC-010",
+      "TC-026",
+      "TC-027",
+      "TC-028"
+    ],
+    "AC-CLARIFY-2-2": [
+      "TC-009",
+      "TC-010",
+      "TC-011",
+      "TC-012",
+      "TC-014",
+      "TC-015",
+      "TC-024",
+      "TC-026",
+      "TC-027",
+      "TC-028"
+    ],
+    "AC-3": [
+      "TC-011",
+      "TC-012",
+      "TC-014",
+      "TC-024",
+      "TC-028"
+    ],
+    "AC-4": [
+      "TC-011",
+      "TC-012",
+      "TC-014",
+      "TC-024",
+      "TC-028"
+    ],
+    "AC-9": [
+      "TC-016",
+      "TC-029",
+      "TC-030",
+      "TC-031"
+    ]
+  },
+  "duplicate_state_elements": true,
+  "latest_batch_count": 15,
+  "latest_batch_ac_reference_count": 17,
+  "latest_batch_partial_pairing": {
+    "AC-1": [
+      "NEGATIVE"
+    ],
+    "AC-2": [
+      "NEGATIVE"
+    ],
+    "AC-3": [
+      "POSITIVE"
+    ],
+    "AC-4": [
+      "POSITIVE"
+    ],
+    "AC-5": [
+      "NEGATIVE"
+    ],
+    "AC-6": [
+      "POSITIVE"
+    ],
+    "AC-7": [
+      "NEGATIVE"
+    ],
+    "AC-8": [
+      "POSITIVE"
+    ],
+    "AC-9": [
+      "NEGATIVE"
+    ],
+    "AC-10": [
+      "NEGATIVE"
+    ],
+    "AC-11": [
+      "NEGATIVE"
+    ],
+    "AC-12": [
+      "NEGATIVE"
+    ],
+    "AC-CLARIFY-2-2": [
+      "POSITIVE"
+    ]
+  }
+}

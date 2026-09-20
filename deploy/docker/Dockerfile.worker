@@ -1,19 +1,26 @@
-# Phase 0 stub. Also needs Playwright's browser binaries installed
-# (`playwright install --with-deps chromium`) once apps/worker/tasks has real content —
-# this is the image that actually runs Test Execution (Section 14).
-FROM python:3.12-slim
+FROM node:22-bookworm-slim AS node
+FROM python:3.12-slim-bookworm
 
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
-
-COPY pyproject.toml .
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+COPY pyproject.toml README.md ./
 COPY apps/ apps/
 COPY core/ core/
 COPY domain/ domain/
 COPY schemas/ schemas/
 COPY infra/ infra/
-
-RUN pip install --no-cache-dir -e .
-# RUN playwright install --with-deps chromium   # uncomment once Execution agent is implemented
-
-# CMD set once the worker/queue library is chosen — see docs/PROJECT_STRUCTURE.md
-CMD ["echo", "worker entrypoint not yet chosen"]
+RUN pip install --no-cache-dir .
+# Install browser and MCP at build time; no runtime package downloads.
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && npm install --global chrome-devtools-mcp@latest \
+    && playwright install --with-deps chrome \
+    && npm cache clean --force \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/docker_entrypoint.py scripts/docker_entrypoint.py
+RUN useradd --create-home --uid 10001 qa
+USER qa
+ENTRYPOINT ["python", "scripts/docker_entrypoint.py"]
+CMD ["arq", "apps.worker.arq_worker.WorkerSettings"]

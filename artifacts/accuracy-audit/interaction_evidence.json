@@ -1,0 +1,39 @@
+{
+  "skip_link_href": "#main-container",
+  "workshop_href": "https://practicetestautomation.com/workshop",
+  "skip_link_destination": "https://practicetestautomation.com/#main-container",
+  "table_initial_rows": 9,
+  "java_filter": {
+    "rows": 6,
+    "languages": [
+      "Java",
+      "Java",
+      "Java",
+      "Java",
+      "Java",
+      "Java"
+    ],
+    "passed": true
+  },
+  "reset_buttons": [
+    "Reset"
+  ],
+  "reset_rows": 9,
+  "numeric_sort": {
+    "values": [
+      1365,
+      2207,
+      2667,
+      6678,
+      8254,
+      10705,
+      14762,
+      16452,
+      64284
+    ],
+    "passed": true
+  },
+  "exceptions_add_row": {
+    "row2_visible": true
+  }
+}

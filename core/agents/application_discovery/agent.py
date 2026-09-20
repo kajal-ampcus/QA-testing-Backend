@@ -2,11 +2,12 @@
 Agent 2 — Application Discovery Agent (architecture doc Section 6, 9).
 
 Orchestration: resolve requirement keywords → run crawler → persist each
-discovered state INCREMENTALLY (committed per-state) → report summary envelope.
+discovered state INCREMENTALLY (committed per-state) → report summary.
 
-KEY FIX: The crawler now receives login_url (from the stored credential secret)
-so it can start exploration from the real login page, not base_url. This means
-it will discover the login form, registration page, and all authenticated states.
+On failure or partial completion, the agent captures structured diagnostic
+evidence (login error, screenshot, console errors, network errors, failed
+actions) and persists it to application_maps.diagnostic_evidence so the UI
+can display a developer-friendly report rather than a blank error state.
 """
 
 import uuid
@@ -34,6 +35,19 @@ def _extract_keywords(title: str, description: str, domain_tags: list[str]) -> l
     for text in (title, description):
         words.update(w.strip(".,!?").lower() for w in text.split() if len(w) > 3)
     return list(words)
+
+
+def _human_termination(reason: str | None) -> str:
+    return {
+        "EXPLORATION_EXHAUSTED": "All reachable states were discovered.",
+        "MAX_PAGES_REACHED": "Discovery stopped at the page limit. Increase max_pages to explore more.",
+        "MAX_DURATION_REACHED": "Discovery stopped at the time limit. Increase max_duration_seconds.",
+        "MAX_DEPTH_REACHED": "Discovery stopped at the depth limit. Increase max_depth.",
+        "ACTION_FAILURES": "Some navigation actions failed. See failed_actions in coverage for details.",
+        "UNEXPLORED_ACTIONS": "Some actions were skipped (destructive or form submissions).",
+        "AUTHENTICATION_FAILED": "The crawler could not log in. Check credentials and login selectors.",
+        "AUTHENTICATION_OR_CRAWL_ERROR": "An error occurred during authentication or crawling.",
+    }.get(reason or "", reason or "Unknown reason.")
 
 
 class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
@@ -79,13 +93,6 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         return keywords
 
     async def _get_login_url(self, credential_ref: str | None, base_url: str) -> str:
-        """
-        Read the stored credential to get login_url if it was saved.
-        Falls back to base_url if no login_url was stored.
-
-        This is what makes the crawler start from the login page instead of
-        jumping straight to the dashboard.
-        """
         if not credential_ref:
             return base_url
         try:
@@ -98,10 +105,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         payload = DiscoveryPayload.model_validate(request.payload)
         keywords = await self._resolve_keywords(request.project_id, payload.focus_requirements)
 
-        # Resolve login_url BEFORE starting the crawler
-        login_url = await self._get_login_url(
-            payload.target.credential_ref, payload.target.url
-        )
+        login_url = await self._get_login_url(payload.target.credential_ref, payload.target.url)
 
         app_map = await self._map_repo.create(
             project_id=request.project_id, base_url=payload.target.url
@@ -133,6 +137,22 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         status = "FAILED"
         error_message: str | None = None
         crawler: Crawler | None = None
+
+        # ── Diagnostic evidence collected during the crawl ────────────────
+        # Captured from the crawler and client on failure or partial result.
+        # Saved to application_maps.diagnostic_evidence so the UI can show
+        # a developer-friendly report (login error, screenshot, console/network).
+        diagnostic: dict[str, Any] = {
+            "auth_attempted": bool(payload.target.credential_ref),
+            "auth_succeeded": False,
+            "login_error": None,
+            "screenshot_ref": None,
+            "console_errors": [],
+            "network_errors": [],
+            "failed_actions": [],
+            "termination_detail": None,
+        }
+
         try:
             async with self._tool_gateway.chrome_devtools(
                 self.name, payload.target.url, payload.target.credential_ref
@@ -141,19 +161,113 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                     client=client,
                     budget=budget,
                     keywords=keywords,
-                    login_url=login_url,   # ← pass login_url so crawler starts from /login
+                    login_url=login_url,
+                    authenticate=bool(payload.target.credential_ref),
                 )
                 status = await crawler.crawl(payload.target.url, _on_state_discovered)
+
+                # ── Capture diagnostic signals after crawl ends ──────────
+                # Whether success or failure — always capture for the record.
+                try:
+                    screenshot_path = await client.take_screenshot()
+                    diagnostic["screenshot_ref"] = screenshot_path
+                except Exception:
+                    pass
+
+                try:
+                    from core.agents.application_discovery.crawler import (
+                        _parse_console_messages,
+                        _parse_network_requests,
+                    )
+
+                    raw_console = await client.list_console_messages()
+                    all_msgs = _parse_console_messages(raw_console)
+                    diagnostic["console_errors"] = [
+                        m for m in all_msgs if m["level"] in ("error", "warning")
+                    ]
+                except Exception:
+                    pass
+
+                try:
+                    raw_net = await client.list_network_requests()
+                    from core.agents.application_discovery.crawler import (
+                        _parse_network_requests,
+                    )
+
+                    all_requests = _parse_network_requests(raw_net)
+                    # Only record non-2xx responses as diagnostic signals
+                    diagnostic["network_errors"] = [
+                        r
+                        for r in all_requests
+                        if r.get("status", "200")
+                        not in ("200", "201", "204", "301", "302", "304", "unknown")
+                    ]
+                except Exception:
+                    pass
+
+                # Pull failed actions out of crawler coverage
+                if crawler:
+                    coverage = getattr(crawler, "coverage", {})
+                    diagnostic["failed_actions"] = coverage.get("failed_actions", [])
+                    auth_explored = coverage.get("authenticated_explored", False)
+                    diagnostic["auth_succeeded"] = auth_explored
+
         except Exception as exc:
             status = "FAILED"
             error_message = str(exc)
+            # Classify the error type for the UI
+            msg_lower = error_message.lower()
+            if any(
+                k in msg_lower
+                for k in (
+                    "login",
+                    "auth",
+                    "credential",
+                    "password",
+                    "username",
+                    "submit",
+                    "captcha",
+                    "sign in",
+                    "log in",
+                )
+            ):
+                diagnostic["login_error"] = error_message
+                diagnostic["termination_detail"] = (
+                    "Authentication failed. The crawler could not log in to the application. "
+                    "Check your stored credentials and login selectors."
+                )
+            else:
+                diagnostic["termination_detail"] = (
+                    f"Discovery failed with an unexpected error: {error_message}"
+                )
 
         termination_reason = getattr(crawler, "termination_reason", None)
-        if status == "FAILED":
+        if status == "FAILED" and error_message is None and crawler is not None:
+            failures = crawler.coverage.get("failed_actions", [])
+            if failures:
+                error_message = (
+                    "Discovery could not persist an application state. "
+                    f"First failure: {failures[0].get('error', 'unknown error')}: "
+                    f"{failures[0].get('detail', 'no detail available')}"
+                )
+        if status == "FAILED" and not termination_reason:
             termination_reason = "AUTHENTICATION_OR_CRAWL_ERROR"
 
+        # Set human-readable termination detail if not already set
+        if not diagnostic["termination_detail"]:
+            diagnostic["termination_detail"] = _human_termination(termination_reason)
+
+        # ── Only save diagnostic evidence on non-complete maps ────────────
+        # For COMPLETE maps the coverage field is enough. For FAILED/PARTIAL
+        # the diagnostic panel in the UI needs the extra detail.
+        save_diagnostic = diagnostic if status in ("FAILED", "PARTIAL") else None
+
         await self._map_repo.set_status(
-            app_map.id, status, termination_reason, getattr(crawler, "coverage", None)
+            app_map.id,
+            status,
+            termination_reason,
+            getattr(crawler, "coverage", None),
+            diagnostic_evidence=save_diagnostic,
         )
         await self._map_repo.session.commit()
 
@@ -162,9 +276,9 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 f"Discovered {state_count} application state(s), status={status}, "
                 f"termination_reason={termination_reason}"
             ),
-            reason="Two-phase crawl: unauthenticated pages first (login/register), then authenticated pages",
+            reason="Two-phase crawl: unauthenticated pages first, then authenticated pages",
             evidence=[f"{state_count} states persisted to application_map {app_map.id}"],
-            confidence=0.9 if status == "COMPLETE" else 0.6,
+            confidence=0.9 if status == "COMPLETE" else (0.6 if status == "PARTIAL" else 0.1),
             source=EvidenceSource.OBSERVED_DOM,
         )
 

@@ -1,0 +1,2648 @@
+[
+  {
+    "id": "a6b263d4-5512-45a2-b333-22038e9a4f46",
+    "tc_code": "TC-001",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate to Practice page from Home page",
+      "objective": "Verify that a user can navigate to the Practice page from the Home page via the navigation link and that the page loads correctly.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on / (Home page)"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-008",
+            "element_name": "Practice",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /practice/",
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": "EL-001",
+            "element_name": "Practice | Practice Test Automation",
+            "element_role": "RootWebArea"
+          },
+          "expected": "name='Practice | Practice Test Automation'",
+          "step_number": 4
+        }
+      ],
+      "expected_result": "The browser successfully navigates to the Practice page (URL: /practice/) and the page title is 'Practice | Practice Test Automation'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "e75fa6eb-53a6-43c0-af9a-f74e64fd2318",
+    "tc_code": "TC-002",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate to Courses page from Home page",
+      "objective": "Verify that a user can navigate to the Courses page from the Home page via the navigation link and that the page loads correctly.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on / (Home page)"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-010",
+            "element_name": "Courses",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-005",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /courses/",
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-005",
+            "element_code": "EL-001",
+            "element_name": "Courses | Practice Test Automation",
+            "element_role": "RootWebArea"
+          },
+          "expected": "name='Courses | Practice Test Automation'",
+          "step_number": 4
+        }
+      ],
+      "expected_result": "The browser successfully navigates to the Courses page (URL: /courses/) and the page title is 'Courses | Practice Test Automation'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "ed876842-e51c-4ee2-ab68-5ac0dbea6633",
+    "tc_code": "TC-003",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate to Blog page from Home page",
+      "objective": "Verify that a user can navigate to the Blog page from the Home page via the navigation link and that the page loads correctly.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on / (Home page)"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-014",
+            "element_name": "Blog",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-006",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /blog/",
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-006",
+            "element_code": "EL-001",
+            "element_name": "Blog | Practice Test Automation",
+            "element_role": "RootWebArea"
+          },
+          "expected": "name='Blog | Practice Test Automation'",
+          "step_number": 4
+        }
+      ],
+      "expected_result": "The browser successfully navigates to the Blog page (URL: /blog/) and the page title is 'Blog | Practice Test Automation'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "47494726-255f-4d66-b615-9898edf6538e",
+    "tc_code": "TC-004",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate to Contact page from Home page",
+      "objective": "Verify that a user can navigate to the Contact page from the Home page via the navigation link and that the page loads correctly.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on / (Home page)"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-016",
+            "element_name": "Contact",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /contact/",
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-001",
+            "element_name": "Contact | Practice Test Automation | Selenium WebDriver",
+            "element_role": "RootWebArea"
+          },
+          "expected": "name='Contact | Practice Test Automation | Selenium WebDriver'",
+          "step_number": 4
+        }
+      ],
+      "expected_result": "The browser successfully navigates to the Contact page (URL: /contact/) and the page title is 'Contact | Practice Test Automation | Selenium WebDriver'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "4c88f202-a575-4a3a-a1fe-73290e27cc11",
+    "tc_code": "TC-005",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate to AI Workshop from Home page",
+      "objective": "Verify that clicking the 'AI Workshop' link navigates to the intended page, assuming it's a valid internal or external link, but the target page state is not observed in the map.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on / (Home page)"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-012",
+            "element_name": "AI Workshop",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "Current URL changes (assuming successful navigation to an external or uncrawled page)",
+          "step_number": 3
+        }
+      ],
+      "expected_result": "The browser attempts to navigate to the AI Workshop page. Given that the target page for 'AI Workshop' is not present in the application map, this test asserts only that the URL changes, implying a successful navigation away from the current page.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1"
+      ],
+      "confidence": 0.5
+    }
+  },
+  {
+    "id": "6d4600ad-3f9c-430f-8d71-352602cd708e",
+    "tc_code": "TC-006",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate to Privacy Policy from Home page footer",
+      "objective": "Verify that a user can navigate to the Privacy Policy page from the Home page footer link and that the page loads correctly.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on / (Home page)"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-060",
+            "element_name": "Privacy Policy",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-008",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /privacy-policy/",
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-008",
+            "element_code": "EL-001",
+            "element_name": "Privacy Policy | Practice Test Automation",
+            "element_role": "RootWebArea"
+          },
+          "expected": "name='Privacy Policy | Practice Test Automation'",
+          "step_number": 4
+        }
+      ],
+      "expected_result": "The browser successfully navigates to the Privacy Policy page (URL: /privacy-policy/) and the page title is 'Privacy Policy | Practice Test Automation'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "b77b5416-61ed-474f-af17-0b69b0c3de4c",
+    "tc_code": "TC-007",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate to Login Page via 'Press' link",
+      "objective": "Verify that clicking the 'Press' link navigates to the Test Login Page and that the page loads correctly.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on / (Home page)"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-002",
+            "element_name": "Press ",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-002",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /practice-test-login/",
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-002",
+            "element_code": "EL-001",
+            "element_name": "Test Login | Practice Test Automation",
+            "element_role": "RootWebArea"
+          },
+          "expected": "name='Test Login | Practice Test Automation'",
+          "step_number": 4
+        }
+      ],
+      "expected_result": "The browser successfully navigates to the Test Login Page (URL: /practice-test-login/) and the page title is 'Test Login | Practice Test Automation'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "faebff1c-3860-4f32-a0e1-958ecb2580c8",
+    "tc_code": "TC-008",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Positive Login with valid credentials",
+      "objective": "Verify that a user can successfully log in using valid credentials and is redirected to the expected page.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on /practice-test-login/"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{valid_credentials.username}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-027",
+            "element_name": "Username",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": "{valid_credentials.password}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-029",
+            "element_name": "Password",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-030",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /logged-in-successfully/",
+          "step_number": 5
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "page contains text 'Congratulations' or 'successfully logged in'",
+          "step_number": 6
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "element with text 'Log out' is displayed",
+          "step_number": 7
+        }
+      ],
+      "expected_result": "User is successfully logged in, redirected to '/logged-in-successfully/', a success message is displayed, and a 'Log out' button is visible.",
+      "test_data": {
+        "valid_credentials": "username: student, password: Password123"
+      },
+      "traceability": [
+        "AC-5",
+        "AC-7",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-4",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "dabf643b-d06a-42c8-a265-39aab37eb4a5",
+    "tc_code": "TC-009",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Negative Login with invalid username",
+      "objective": "Verify that an error message is displayed when attempting to log in with an invalid username.",
+      "category": "NEGATIVE",
+      "preconditions": [
+        "Browser is on /practice-test-login/"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{invalid_username.username}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-027",
+            "element_name": "Username",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": "{invalid_username.password}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-029",
+            "element_name": "Password",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-030",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-031",
+            "element_name": "Your username is invalid!",
+            "element_role": "StaticText"
+          },
+          "expected": "text is 'Your username is invalid!'",
+          "step_number": 5
+        }
+      ],
+      "expected_result": "An error message 'Your username is invalid!' is displayed on the login page.",
+      "test_data": {
+        "invalid_username": "username: incorrectUser, password: Password123"
+      },
+      "traceability": [
+        "AC-6",
+        "AC-8",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-4",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "ed252d96-b450-46bb-8a95-2d40711c1eae",
+    "tc_code": "TC-010",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Negative Login with invalid password",
+      "objective": "Verify that an error message is displayed when attempting to log in with an invalid password.",
+      "category": "NEGATIVE",
+      "preconditions": [
+        "Browser is on /practice-test-login/"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{invalid_password.username}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-027",
+            "element_name": "Username",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": "{invalid_password.password}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-029",
+            "element_name": "Password",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-030",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "element with text 'Your password is invalid!' is displayed",
+          "step_number": 5
+        }
+      ],
+      "expected_result": "An error message 'Your password is invalid!' is displayed on the login page.",
+      "test_data": {
+        "invalid_password": "username: student, password: incorrectPassword"
+      },
+      "traceability": [
+        "AC-6",
+        "AC-8",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-4",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "01941341-902b-482e-a271-753f5017edc9",
+    "tc_code": "TC-011",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Login with empty username field",
+      "objective": "Verify that required field validation prevents login when the username field is empty and an error message is shown.",
+      "category": "EDGE_CASE",
+      "preconditions": [
+        "Browser is on /practice-test-login/"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-027",
+            "element_name": "Username",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": "{valid_password.password}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-029",
+            "element_name": "Password",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-030",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "element with text 'Your username is invalid!' is displayed",
+          "step_number": 5
+        }
+      ],
+      "expected_result": "An error message indicating invalid username (likely 'Your username is invalid!' or a browser-level validation message) is displayed, and the user remains on the login page.",
+      "test_data": {
+        "valid_password": "password: Password123"
+      },
+      "traceability": [
+        "AC-3",
+        "AC-4",
+        "AC-6",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "42217bb6-3ee8-41da-a17e-508150edd649",
+    "tc_code": "TC-012",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Login with empty password field",
+      "objective": "Verify that required field validation prevents login when the password field is empty and an error message is shown.",
+      "category": "EDGE_CASE",
+      "preconditions": [
+        "Browser is on /practice-test-login/"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{valid_username.username}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-027",
+            "element_name": "Username",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": "",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-029",
+            "element_name": "Password",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-030",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "element with text 'Your password is invalid!' is displayed",
+          "step_number": 5
+        }
+      ],
+      "expected_result": "An error message indicating invalid password (likely 'Your password is invalid!' or a browser-level validation message) is displayed, and the user remains on the login page.",
+      "test_data": {
+        "valid_username": "username: student"
+      },
+      "traceability": [
+        "AC-3",
+        "AC-4",
+        "AC-6",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "5e6f17ad-0997-4e17-ae9a-2a141ecc0d57",
+    "tc_code": "TC-013",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Submit Contact Form with valid inputs",
+      "objective": "Verify that submitting the Contact form with all required valid information results in a successful submission.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on /contact/"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{contact_form_valid.first_name}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-024",
+            "element_name": "First",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": "{contact_form_valid.last_name}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-026",
+            "element_name": "Last",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": "{contact_form_valid.email}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-030",
+            "element_name": "Email *",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": "{contact_form_valid.message}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-033",
+            "element_name": "Comment or Message *",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 5
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-036",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 6
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-037",
+            "element_name": "Thank you,",
+            "element_role": "StaticText"
+          },
+          "expected": "text is 'Thank you,'",
+          "step_number": 7
+        }
+      ],
+      "expected_result": "The form is submitted successfully, and a 'Thank you,' message is displayed on the page.",
+      "test_data": {
+        "contact_form_valid": "first_name: John, last_name: Doe, email: john.doe@example.com, message: This is a test message."
+      },
+      "traceability": [
+        "AC-5",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-4",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "393bdc9d-a932-4906-a1f8-b184c6d61560",
+    "tc_code": "TC-014",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Submit Contact Form with empty 'First Name' field",
+      "objective": "Verify that the Contact form enforces required field validation for 'First Name' and prevents submission when it's empty, displaying an error message.",
+      "category": "EDGE_CASE",
+      "preconditions": [
+        "Browser is on /contact/"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-024",
+            "element_name": "First",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": "{contact_form_invalid_first_name.last_name}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-026",
+            "element_name": "Last",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": "{contact_form_invalid_first_name.email}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-030",
+            "element_name": "Email *",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": "{contact_form_invalid_first_name.message}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-033",
+            "element_name": "Comment or Message *",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 5
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-036",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 6
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-024",
+            "element_name": "First",
+            "element_role": "textbox"
+          },
+          "expected": "field validation message is displayed",
+          "step_number": 7
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "URL is still /contact/",
+          "step_number": 8
+        }
+      ],
+      "expected_result": "The form is not submitted, a validation message is displayed for the 'First Name' field (e.g., 'Please fill out this field.'), and the user remains on the Contact page.",
+      "test_data": {
+        "contact_form_invalid_first_name": "last_name: Doe, email: john.doe@example.com, message: This is a test message without a first name."
+      },
+      "traceability": [
+        "AC-3",
+        "AC-4",
+        "AC-6",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "513cac7e-6ae7-49da-9979-4483201f2b02",
+    "tc_code": "TC-015",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Submit Contact Form with invalid email format",
+      "objective": "Verify that the Contact form enforces validation for the 'Email' field with an invalid format, preventing submission and displaying an error message.",
+      "category": "NEGATIVE",
+      "preconditions": [
+        "Browser is on /contact/"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{contact_form_invalid_email.first_name}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-024",
+            "element_name": "First",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": "{contact_form_invalid_email.last_name}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-026",
+            "element_name": "Last",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": "{contact_form_invalid_email.email}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-030",
+            "element_name": "Email *",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": "{contact_form_invalid_email.message}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-033",
+            "element_name": "Comment or Message *",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 5
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-036",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 6
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-030",
+            "element_name": "Email *",
+            "element_role": "textbox"
+          },
+          "expected": "field validation message is displayed",
+          "step_number": 7
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "URL is still /contact/",
+          "step_number": 8
+        }
+      ],
+      "expected_result": "The form is not submitted, a validation message for invalid email format is displayed, and the user remains on the Contact page.",
+      "test_data": {
+        "contact_form_invalid_email": "first_name: Jane, last_name: Doe, email: invalid-email, message: This is a test message with an invalid email."
+      },
+      "traceability": [
+        "AC-6",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "b07d8ff7-f454-4fe5-a550-eee84f68a957",
+    "tc_code": "TC-016",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Verify Practice page links lead to correct target pages",
+      "objective": "Verify that all practice test scenario links on the Practice page lead to their correct target pages.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "Browser is on /practice/"
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": "EL-020",
+            "element_name": "Test Login Page",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-002",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /practice-test-login/",
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": "EL-023",
+            "element_name": "Test Exceptions",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 5
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /exceptions/",
+          "step_number": 6
+        },
+        {
+          "value": null,
+          "action": "navigate",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": null,
+          "step_number": 7
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": "EL-026",
+            "element_name": "Test Table",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 8
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "url contains /tables/",
+          "step_number": 9
+        }
+      ],
+      "expected_result": "All links on the Practice page navigate to their correct respective target URLs without errors.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-9",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-3"
+      ],
+      "confidence": 0.5
+    }
+  },
+  {
+    "id": "84f3565d-a2ac-400b-8dcc-55f70bddbc6a",
+    "tc_code": "TC-017",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate from Home to Practice page",
+      "objective": "Verify a user can navigate to the Practice page from the Home page via its navigation link.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Home page (STATE-003)."
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-008",
+            "element_name": "Practice",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "The current URL is /practice/",
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": "EL-019",
+            "element_name": "Practice",
+            "element_role": "heading"
+          },
+          "expected": "Practice",
+          "step_number": 3
+        }
+      ],
+      "expected_result": "The user is successfully navigated to the Practice page, and the page title is 'Practice | Practice Test Automation'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-4"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "a835f5c6-ed2f-45b5-a463-9857ff8e8e85",
+    "tc_code": "TC-018",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate from Home to Courses page",
+      "objective": "Verify a user can navigate to the Courses page from the Home page via its navigation link.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Home page (STATE-003)."
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-010",
+            "element_name": "Courses",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-005",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "The current URL is /courses/",
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-005",
+            "element_code": "EL-019",
+            "element_name": "Courses",
+            "element_role": "heading"
+          },
+          "expected": "Courses",
+          "step_number": 3
+        }
+      ],
+      "expected_result": "The user is successfully navigated to the Courses page, and the page title is 'Courses | Practice Test Automation'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-4"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "fa953931-a56c-43a0-a1c9-0206e696c69b",
+    "tc_code": "TC-019",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate from Home to AI Workshop page (external link)",
+      "objective": "Verify the 'AI Workshop' navigation link correctly attempts to open the AI Workshop page. Note: The target URL for 'AI Workshop' is not explicitly mapped as a unique state within the provided application map. The assertion will check for the click action only.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Home page (STATE-003)."
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-012",
+            "element_name": "AI Workshop",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 1
+        }
+      ],
+      "expected_result": "The 'AI Workshop' link is clicked. Verification of the target page requires further information not present in the map.",
+      "test_data": {
+        "ai_workshop_url": "https://practicetestautomation.com/ai-workshop/"
+      },
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-4"
+      ],
+      "confidence": 0.5
+    }
+  },
+  {
+    "id": "ab6272f7-d6ad-446a-8790-99e1aeb67f02",
+    "tc_code": "TC-020",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate from Home to Blog page",
+      "objective": "Verify a user can navigate to the Blog page from the Home page via its navigation link.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Home page (STATE-003)."
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-014",
+            "element_name": "Blog",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-006",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "The current URL is /blog/",
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-006",
+            "element_code": "EL-001",
+            "element_name": "Blog | Practice Test Automation",
+            "element_role": "RootWebArea"
+          },
+          "expected": "Blog | Practice Test Automation",
+          "step_number": 3
+        }
+      ],
+      "expected_result": "The user is successfully navigated to the Blog page, and the page title is 'Blog | Practice Test Automation'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-4"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "447a0bae-e9b8-4cb5-b5fd-c46f0d65fc78",
+    "tc_code": "TC-021",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate from Home to Contact page",
+      "objective": "Verify a user can navigate to the Contact page from the Home page via its navigation link.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Home page (STATE-003)."
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-016",
+            "element_name": "Contact",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "The current URL is /contact/",
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-019",
+            "element_name": "Contact",
+            "element_role": "heading"
+          },
+          "expected": "Contact",
+          "step_number": 3
+        }
+      ],
+      "expected_result": "The user is successfully navigated to the Contact page, and the page title is 'Contact | Practice Test Automation | Selenium WebDriver'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-4"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "e621b687-a811-4996-8908-cc9c4dd63d29",
+    "tc_code": "TC-022",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Navigate from Home to Privacy Policy page",
+      "objective": "Verify a user can navigate to the Privacy Policy page from the Home page via its footer link.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Home page (STATE-003)."
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-003",
+            "element_code": "EL-060",
+            "element_name": "Privacy Policy",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-008",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "The current URL is /privacy-policy/",
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-008",
+            "element_code": "EL-019",
+            "element_name": "Privacy Policy",
+            "element_role": "heading"
+          },
+          "expected": "Privacy Policy",
+          "step_number": 3
+        }
+      ],
+      "expected_result": "The user is successfully navigated to the Privacy Policy page, and the page title is 'Privacy Policy | Practice Test Automation'.",
+      "test_data": {},
+      "traceability": [
+        "AC-1",
+        "AC-2",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-4"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "3f8fd4f1-70ca-4a15-a56a-b14546da3a71",
+    "tc_code": "TC-023",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Submit Contact Form with valid inputs",
+      "objective": "Verify that submitting the Contact form with all required valid fields results in a successful submission.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Contact page (STATE-007)."
+      ],
+      "steps": [
+        {
+          "value": "{first_name}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-024",
+            "element_name": "First",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{last_name}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-026",
+            "element_name": "Last",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": "{valid_email}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-030",
+            "element_name": "Email *",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": "{message_text}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-033",
+            "element_name": "Comment or Message *",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 4
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-036",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 5
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-037",
+            "element_name": "Thank you,",
+            "element_role": "StaticText"
+          },
+          "expected": "Thank you,",
+          "step_number": 6
+        }
+      ],
+      "expected_result": "The form is submitted successfully, and a 'Thank you' message is displayed.",
+      "test_data": {
+        "last_name": "Doe",
+        "first_name": "John",
+        "valid_email": "john.doe@example.com",
+        "message_text": "This is a test message.",
+        "valid_contact_details": "valid_contact_details"
+      },
+      "traceability": [
+        "AC-5",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-4"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "633057ae-567f-4b82-9cb4-9ed39f9b45ca",
+    "tc_code": "TC-024",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Submit Contact Form with empty required fields",
+      "objective": "Verify that submitting the Contact form with empty required fields prevents submission and displays appropriate error messages.",
+      "category": "NEGATIVE",
+      "preconditions": [
+        "User is on the Contact page (STATE-007)."
+      ],
+      "steps": [
+        {
+          "value": "",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-024",
+            "element_name": "First",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-030",
+            "element_name": "Email *",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-036",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-024",
+            "element_name": "First",
+            "element_role": "textbox"
+          },
+          "expected": "A validation error message is displayed near the 'First' name field indicating it's required. The specific error message element is not mapped.",
+          "step_number": 4
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-007",
+            "element_code": "EL-030",
+            "element_name": "Email *",
+            "element_role": "textbox"
+          },
+          "expected": "A validation error message is displayed near the 'Email' field indicating it's required. The specific error message element is not mapped.",
+          "step_number": 5
+        }
+      ],
+      "expected_result": "Form submission is prevented, and validation messages for empty required fields (Name, Email, Comment or Message) are displayed.",
+      "test_data": {
+        "empty_fields": "empty_fields"
+      },
+      "traceability": [
+        "AC-3",
+        "AC-4",
+        "AC-6",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-4",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "4fd58d31-ebc9-4c24-8d0a-646362bffe7a",
+    "tc_code": "TC-025",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Login with valid credentials",
+      "objective": "Verify that a user with valid credentials can successfully log in and is redirected to the logged-in page.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Test Login page (STATE-001/STATE-002)."
+      ],
+      "steps": [
+        {
+          "value": "{valid_username}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-027",
+            "element_name": "Username",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{valid_password}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-029",
+            "element_name": "Password",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-030",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "The current URL contains 'practicetestautomation.com/logged-in-successfully/'.",
+          "step_number": 4
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "A success message (e.g., 'Congratulations' or 'successfully logged in') is displayed, and a 'Log out' button is visible. The specific elements for these are not directly mapped on the target success page.",
+          "step_number": 5
+        }
+      ],
+      "expected_result": "The user is successfully logged in, redirected to the logged-in page, a success message is displayed, and a logout option is available.",
+      "test_data": {
+        "valid_password": "Password123",
+        "valid_username": "student",
+        "valid_credentials": "valid_credentials"
+      },
+      "traceability": [
+        "AC-7",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-4",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "6132cd5b-0600-40b3-ab81-a57502e8212c",
+    "tc_code": "TC-026",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Login with invalid username",
+      "objective": "Verify that an attempt to log in with an invalid username results in an error message.",
+      "category": "NEGATIVE",
+      "preconditions": [
+        "User is on the Test Login page (STATE-001/STATE-002)."
+      ],
+      "steps": [
+        {
+          "value": "{invalid_username}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-027",
+            "element_name": "Username",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{valid_password}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-029",
+            "element_name": "Password",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-030",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-031",
+            "element_name": "Your username is invalid!",
+            "element_role": "StaticText"
+          },
+          "expected": "Your username is invalid!",
+          "step_number": 4
+        }
+      ],
+      "expected_result": "An error message 'Your username is invalid!' is displayed.",
+      "test_data": {
+        "valid_password": "Password123",
+        "invalid_username": "incorrectUser",
+        "invalid_username_credentials": "invalid_username_credentials"
+      },
+      "traceability": [
+        "AC-8",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-4",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "405f7712-95dd-4d1d-908d-e354e097081f",
+    "tc_code": "TC-027",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Login with invalid password",
+      "objective": "Verify that an attempt to log in with an invalid password results in an error message.",
+      "category": "NEGATIVE",
+      "preconditions": [
+        "User is on the Test Login page (STATE-001/STATE-002)."
+      ],
+      "steps": [
+        {
+          "value": "{valid_username}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-027",
+            "element_name": "Username",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "{invalid_password}",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-029",
+            "element_name": "Password",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-030",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-031",
+            "element_name": "Your username is invalid!",
+            "element_role": "StaticText"
+          },
+          "expected": "Your password is invalid! (Note: The map only shows 'Your username is invalid!' element on the login page, implying a single error message area. Actual assertion would verify text content.)",
+          "step_number": 4
+        }
+      ],
+      "expected_result": "An error message 'Your password is invalid!' is displayed.",
+      "test_data": {
+        "valid_username": "student",
+        "invalid_password": "incorrectPassword",
+        "invalid_password_credentials": "invalid_password_credentials"
+      },
+      "traceability": [
+        "AC-8",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-4",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "b5215fb5-c96d-41f8-9343-c0d819b78da9",
+    "tc_code": "TC-028",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Login with empty username and password fields",
+      "objective": "Verify that an attempt to log in with empty username and password fields results in an error message.",
+      "category": "EDGE_CASE",
+      "preconditions": [
+        "User is on the Test Login page (STATE-001/STATE-002)."
+      ],
+      "steps": [
+        {
+          "value": "",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-027",
+            "element_name": "Username",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": "",
+          "action": "fill",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-029",
+            "element_name": "Password",
+            "element_role": "textbox"
+          },
+          "expected": null,
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-030",
+            "element_name": "Submit",
+            "element_role": "button"
+          },
+          "expected": null,
+          "step_number": 3
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-031",
+            "element_name": "Your username is invalid!",
+            "element_role": "StaticText"
+          },
+          "expected": "An error message is displayed (e.g., 'Your username is invalid!' or a specific message for empty fields). The exact message for empty fields is not explicitly mapped, only the 'Your username is invalid!' element exists.",
+          "step_number": 4
+        }
+      ],
+      "expected_result": "An error message indicating invalid or missing credentials is displayed.",
+      "test_data": {
+        "empty_password": "",
+        "empty_username": "",
+        "empty_credentials": "empty_credentials"
+      },
+      "traceability": [
+        "AC-3",
+        "AC-4",
+        "AC-6",
+        "AC-8",
+        "AC-CLARIFY-2-1",
+        "AC-CLARIFY-2-2",
+        "AC-CLARIFY-2-3",
+        "AC-CLARIFY-2-4",
+        "AC-CLARIFY-2-5"
+      ],
+      "confidence": 0.7
+    }
+  },
+  {
+    "id": "49714257-77aa-4e1e-957c-9e1d76d175ba",
+    "tc_code": "TC-029",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Start practice test scenario - Test Login Page",
+      "objective": "Verify that the 'Test Login Page' practice test scenario can be started successfully from the Practice page.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Practice page (STATE-004)."
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": "EL-020",
+            "element_name": "Test Login Page",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 1
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": null,
+            "element_name": null,
+            "element_role": null
+          },
+          "expected": "The current URL is /practice-test-login/",
+          "step_number": 2
+        },
+        {
+          "value": null,
+          "action": "assert",
+          "target": {
+            "state_code": "STATE-001",
+            "element_code": "EL-019",
+            "element_name": "Test login",
+            "element_role": "heading"
+          },
+          "expected": "Test login",
+          "step_number": 3
+        }
+      ],
+      "expected_result": "The user is successfully navigated to the 'Test Login Page' practice test scenario.",
+      "test_data": {},
+      "traceability": [
+        "AC-9",
+        "AC-CLARIFY-2-3"
+      ],
+      "confidence": 0.9
+    }
+  },
+  {
+    "id": "3b25b68b-47a8-4cc0-9f91-cbcf051dffa0",
+    "tc_code": "TC-030",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Access unmapped practice test scenario - Test Exceptions",
+      "objective": "Verify that the 'Test Exceptions' practice test scenario can be started successfully. Note: The target page for this link is not mapped.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Practice page (STATE-004)."
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": "EL-023",
+            "element_name": "Test Exceptions",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 1
+        }
+      ],
+      "expected_result": "The 'Test Exceptions' link is clicked. Verification of the target page requires further information not present in the map.",
+      "test_data": {},
+      "traceability": [
+        "AC-9",
+        "AC-CLARIFY-2-3"
+      ],
+      "confidence": 0.5
+    }
+  },
+  {
+    "id": "f6beb478-8d96-4c01-9baa-6e0dbcfddd1f",
+    "tc_code": "TC-031",
+    "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+    "requirement_id": "8d6e938a-8d21-4b9e-bde2-74e4d4c5db0a",
+    "requirement_version": 2,
+    "application_map_id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+    "status": "DRAFT",
+    "current_version": 1,
+    "current": {
+      "version": 1,
+      "title": "Access unmapped practice test scenario - Test Table",
+      "objective": "Verify that the 'Test Table' practice test scenario can be started successfully. Note: The target page for this link is not mapped.",
+      "category": "POSITIVE",
+      "preconditions": [
+        "User is on the Practice page (STATE-004)."
+      ],
+      "steps": [
+        {
+          "value": null,
+          "action": "click",
+          "target": {
+            "state_code": "STATE-004",
+            "element_code": "EL-026",
+            "element_name": "Test Table",
+            "element_role": "link"
+          },
+          "expected": null,
+          "step_number": 1
+        }
+      ],
+      "expected_result": "The 'Test Table' link is clicked. Verification of the target page requires further information not present in the map.",
+      "test_data": {},
+      "traceability": [
+        "AC-9",
+        "AC-CLARIFY-2-3"
+      ],
+      "confidence": 0.5
+    }
+  }
+]

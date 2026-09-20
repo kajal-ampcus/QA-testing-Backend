@@ -20,6 +20,7 @@ class StepTarget(BaseModel):
     one element — requiring element_code on every step was our own schema
     bug, not a model-compliance failure (the model was correctly omitting it
     for exactly those steps)."""
+
     state_code: str = Field(description="e.g. STATE-001")
     element_code: str | None = Field(
         default=None,
@@ -33,6 +34,8 @@ class StepTarget(BaseModel):
     element_name: str | None = Field(default=None, description="e.g. 'Email'")
     element_role: str | None = Field(default=None, description="e.g. 'textbox'")
 
+    model_config = {"extra": "forbid"}
+
 
 class TestStep(BaseModel):
     step_number: int
@@ -42,12 +45,13 @@ class TestStep(BaseModel):
     )
     value: str | None = Field(
         default=None,
-        description="For fill actions: the value to type. Use test_data keys like '{valid_email}'."
+        description="For fill actions: the value to type. Use test_data keys like '{valid_email}'.",
     )
     expected: str | None = Field(
-        default=None,
-        description="For assert actions: what should be true after this step."
+        default=None, description="For assert actions: what should be true after this step."
     )
+
+    model_config = {"extra": "forbid"}
 
 
 class TestCaseSpec(BaseModel):
@@ -67,7 +71,9 @@ class TestCaseSpec(BaseModel):
         description="What must be true before this test runs, e.g. 'User is on /login page'"
     )
     steps: list[TestStep] = Field(min_length=1)
-    expected_result: str = Field(description="What the tester should observe after all steps complete")
+    expected_result: str = Field(
+        description="What the tester should observe after all steps complete"
+    )
     test_data: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -75,32 +81,39 @@ class TestCaseSpec(BaseModel):
             "Keys are data set names (e.g. 'valid_credentials'), "
             "values are dicts of field→value. "
             "For negative tests include invalid variants."
-        )
+        ),
     )
     traceability: list[str] = Field(
         min_length=1,
-        description="Which AC ids from the requirement this test case covers, e.g. ['AC-1', 'AC-2']"
+        description="Which AC ids from the requirement this test case covers, e.g. ['AC-1', 'AC-2']",
     )
     confidence: float = Field(
-        ge=0.0, le=1.0,
+        ge=0.0,
+        le=1.0,
         description=(
             "0.9 if all steps reference observed DOM elements. "
             "0.7 if some steps are inferred. "
             "0.5 if the AC cannot be mapped to any observed state."
-        )
+        ),
     )
+
+    model_config = {"extra": "forbid"}
 
 
 class TestCaseBatch(BaseModel):
     """Root object the LLM must return — a list of test case specs."""
+
     test_cases: list[TestCaseSpec] = Field(
         min_length=1,
-        description="All test cases generated for the given requirement and application map."
+        description="All test cases generated for the given requirement and application map.",
     )
+
+    model_config = {"extra": "forbid"}
 
 
 class TestDesignResult(BaseModel):
     """Agent.run()'s return type: envelope + the generated specs before DB persistence."""
+
     envelope: AgentOutputEnvelope
     test_cases: list[TestCaseSpec]
     uncovered_acs: list[str] = Field(default_factory=list)

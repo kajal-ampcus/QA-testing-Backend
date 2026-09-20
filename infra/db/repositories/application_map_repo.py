@@ -77,8 +77,10 @@ class ApplicationMapRepository(BaseRepository):
         return bool(result.scalar())
 
     async def set_status(
-        self, application_map_id: uuid.UUID, status: str, termination_reason: str | None = None,
+        self, application_map_id: uuid.UUID, status: str,
+        termination_reason: str | None = None,
         coverage: dict[str, Any] | None = None,
+        diagnostic_evidence: dict[str, Any] | None = None,
     ) -> None:
         app_map = await self.session.get(ApplicationMap, application_map_id)
         if app_map is not None:
@@ -86,6 +88,8 @@ class ApplicationMapRepository(BaseRepository):
             app_map.termination_reason = termination_reason
             if coverage is not None:
                 app_map.coverage = coverage
+            if diagnostic_evidence is not None:
+                app_map.diagnostic_evidence = diagnostic_evidence
             await self.session.flush()
 
     async def get_with_states(self, application_map_id: uuid.UUID) -> ApplicationMap | None:

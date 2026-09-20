@@ -11,10 +11,9 @@ import asyncio
 import os
 from typing import Any
 
-from arq.connections import RedisSettings
-
 from apps.worker.tasks.run_discovery import run_discovery
 from infra.db.session import DATABASE_URL
+from infra.queue.settings import QueueSettings
 
 if os.name == "nt" and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
     # MCP's stdio transport uses its Popen fallback on the selector loop.
@@ -36,8 +35,12 @@ class WorkerSettings:
     functions = [run_discovery]
     on_startup = startup
     on_shutdown = shutdown
-    redis_settings = RedisSettings.from_dsn(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
-    max_jobs = 5  # bounds concurrent Discovery crawls — separate from
+    redis_settings = QueueSettings().arq_settings()
+    job_timeout = int(os.environ.get("WORKER_JOB_TIMEOUT", "1200"))
+    health_check_interval = 30
+    max_jobs = int(
+        os.environ.get("WORKER_MAX_JOBS", "5")
+    )  # bounds concurrent Discovery crawls — separate from
     # LLM_MAX_CONCURRENT_REQUESTS (infra/llm/rate_limiter.py), which bounds
     # concurrent LLM calls specifically; this bounds concurrent browser
     # sessions, a different, heavier resource.

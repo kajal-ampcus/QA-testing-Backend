@@ -19,6 +19,7 @@ dependencies = [
     "mcp>=1.2",  # MCP client SDK — connects to chrome-devtools-mcp for Discovery/Failure Reproduction
     "arq>=0.26",  # worker/queue — chosen over Celery: async-native, matches our fully-async stack
     "boto3>=1.35",
+    "cryptography>=43",  # directly used for encrypted discovery credentials
 ]
 
 [project.optional-dependencies]

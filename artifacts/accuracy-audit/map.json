@@ -1,0 +1,5183 @@
+{
+  "id": "d4180430-006b-4a64-9be3-e671c9d8765e",
+  "project_id": "a180dc62-5ef0-49fd-bf2f-f2f07cde1905",
+  "version": 2,
+  "base_url": "https://practicetestautomation.com/practice-test-login/",
+  "status": "COMPLETE",
+  "termination_reason": "EXPLORATION_EXHAUSTED",
+  "coverage": {
+    "queue_exhausted": true,
+    "actions_examined": 10,
+    "actions_remaining": 0,
+    "states_discovered": 8
+  },
+  "states": [
+    {
+      "state_code": "STATE-008",
+      "url_pattern": "/privacy-policy/",
+      "fingerprint": "09af4c7c4a62d7203af640d20878d9e013e355775aa1e07c3918f256dfbcd227",
+      "reached_via": [
+        "click(role=link,name='Privacy Policy')"
+      ],
+      "elements": [
+        {
+          "name": "Privacy Policy | Practice Test Automation",
+          "risk": "SAFE",
+          "role": "RootWebArea",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-001"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-002"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-003"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-004"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-005"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-006"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-007"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-008"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-009"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-010"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-011"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-012"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-013"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-014"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-015"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-016"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-017"
+        },
+        {
+          "name": "open menu",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-018"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-019"
+        },
+        {
+          "name": "Effective date: November 01, 2019",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-020"
+        },
+        {
+          "name": "Practice Test Automation (\u201cus\u201d, \u201cwe\u201d, or \u201cour\u201d) operates ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-021"
+        },
+        {
+          "name": "https://practicetestautomation.com/",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-022"
+        },
+        {
+          "name": "https://practicetestautomation.com/",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-023"
+        },
+        {
+          "name": " (the \u201cSite\u201d). This page informs you of our policies regarding the collection, use, and disclosure of Personal Information we receive from users of the Site.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-024"
+        },
+        {
+          "name": "We use your Personal Information only for providing and improving the Site. By using the Site, you agree to the collection and use of information in accordance with this policy.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-025"
+        },
+        {
+          "name": "Information Collection And Use",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-026"
+        },
+        {
+          "name": "While using our Site, we may ask you to provide us with certain personally identifiable information that can be used to contact or identify you. Personally identifiable information may include but is not limited to your name and email address (\u201cPersonal Information\u201d).",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-027"
+        },
+        {
+          "name": "Log Data",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-028"
+        },
+        {
+          "name": "Like many site operators, we collect information that your browser sends whenever you visit our Site (\u201cLog Data\u201d).",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-029"
+        },
+        {
+          "name": "This Log Data may include information such as your computer\u2019s Internet Protocol (\u201cIP\u201d) address, browser type, browser version, the pages of our Site that you visit, the time and date of your visit, the time spent on those pages and other statistics.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-030"
+        },
+        {
+          "name": "In addition, we may use third party services such as Google Analytics that collect, monitor and analyze this data.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-031"
+        },
+        {
+          "name": "Communications",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-032"
+        },
+        {
+          "name": "We may use your Personal Information to contact you with newsletters, marketing or promotional materials and other information that may benefit you.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-033"
+        },
+        {
+          "name": "Cookies",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-034"
+        },
+        {
+          "name": "Cookies are files with small amount of data, which may include an anonymous unique identifier. Cookies are sent to your browser from a web site and stored on your computer\u2019s hard drive.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-035"
+        },
+        {
+          "name": "Like many sites, we use \u201ccookies\u201d to collect information. You can instruct your browser to refuse all cookies or to indicate when a cookie is being sent. However, if you do not accept cookies, you may not be able to use some portions of our Site.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-036"
+        },
+        {
+          "name": "Security",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-037"
+        },
+        {
+          "name": "The security of your Personal Information is important to us, but remember that no method of transmission over the Internet, or method of electronic storage, is 100% secure. While we strive to use commercially acceptable means to protect your Personal Information, we cannot guarantee its absolute security.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-038"
+        },
+        {
+          "name": "Links to Other Sites",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-039"
+        },
+        {
+          "name": "Our Service may contain links to other sites that are not operated by us. If you click a third party link, you will be directed to that third party\u2019s site. We strongly advise you to review the Privacy Policy of every site you visit.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-040"
+        },
+        {
+          "name": "We have no control over and assume no responsibility for the content, privacy policies or practices of any third party sites or services.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-041"
+        },
+        {
+          "name": "Children\u2019s Privacy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-042"
+        },
+        {
+          "name": "Our Service does not address anyone under the age of 18 (\u201cChildren\u201d).",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-043"
+        },
+        {
+          "name": "We do not knowingly collect personally identifiable information from anyone under the age of 18. If you are a parent or guardian and you are aware that your Child has provided us with Personal Data, please contact us. If we become aware that we have collected Personal Data from children without verification of parental consent, we take steps to remove that information from our servers.",
+          "risk": "DESTRUCTIVE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-044"
+        },
+        {
+          "name": "Changes To This Privacy Policy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-045"
+        },
+        {
+          "name": "This Privacy Policy is effective as of November 01, 2019 and will remain in effect except with respect to any changes in its provisions in the future, which will be in effect immediately after being posted on this page.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-046"
+        },
+        {
+          "name": "We reserve the right to update or change our Privacy Policy at any time and you should check this Privacy Policy periodically. Your continued use of the Service after we post any modifications to the Privacy Policy on this page will constitute your acknowledgment of the modifications and your consent to abide and be bound by the modified Privacy Policy.",
+          "risk": "REVIEW",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-047"
+        },
+        {
+          "name": "If we make any material changes to this Privacy Policy, we will notify you either through the email address you have provided us, or by placing a prominent notice on our website.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-048"
+        },
+        {
+          "name": "Contact Us",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-049"
+        },
+        {
+          "name": "If you have any questions about this Privacy Policy, please contact us by visiting this page on our website: ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-050"
+        },
+        {
+          "name": "https://practicetestautomation.com/contact/",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-051"
+        },
+        {
+          "name": "https://practicetestautomation.com/contact/",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-052"
+        },
+        {
+          "name": "Comments are closed.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-053"
+        },
+        {
+          "name": "\u00a9 Copyright 2020 ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-054"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-055"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-056"
+        },
+        {
+          "name": " All rights reserved | ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-057"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-058"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-059"
+        }
+      ]
+    },
+    {
+      "state_code": "STATE-005",
+      "url_pattern": "/courses/",
+      "fingerprint": "64f3e7310936e7fdf3bdd8a81ad07f532957357e1ede1ea8ed12dca4bce6f106",
+      "reached_via": [
+        "click(role=link,name='Courses')"
+      ],
+      "elements": [
+        {
+          "name": "Courses | Practice Test Automation",
+          "risk": "SAFE",
+          "role": "RootWebArea",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-001"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-002"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-003"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-004"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-005"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-006"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-007"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-008"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-009"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-010"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-011"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-012"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-013"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-014"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-015"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-016"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-017"
+        },
+        {
+          "name": "open menu",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-018"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-019"
+        },
+        {
+          "name": "Selenium WebDriver with Java: AI-Powered Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-020"
+        },
+        {
+          "name": "Selenium WebDriver with Java: AI-Powered Test Automation",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-021"
+        },
+        {
+          "name": "Learn Selenium WebDriver with Java, TestNG, and AI-assisted automation using Cursor and MCP. Perfect for manual testers and engineers ready to build modern, AI-augmented test automation skills.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-022"
+        },
+        {
+          "name": "My top-rated, best-selling course \u2013 2026 edition with a new section on AI-Powered Test Automation",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-023"
+        },
+        {
+          "name": "What you\u2019ll learn in this course:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-024"
+        },
+        {
+          "name": "Leverage AI to write and maintain Selenium tests using Cursor, MCP, and modern AI workflows",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-025"
+        },
+        {
+          "name": "(NEW in 2026)",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-026"
+        },
+        {
+          "name": "Build a complete test automation framework with Selenium WebDriver, Java, and TestNG",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-027"
+        },
+        {
+          "name": "Generate Page Objects and tests from natural language with AI-assisted prompts",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-028"
+        },
+        {
+          "name": "Run cross-browser tests in Chrome, Firefox, Edge, and Safari",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-029"
+        },
+        {
+          "name": "Master the Page Object Model and scalable framework design",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-030"
+        },
+        {
+          "name": "Debug and fix common Selenium failures, exceptions, and waits",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-031"
+        },
+        {
+          "name": "Learn Java programming essentials tailored for test automation",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-032"
+        },
+        {
+          "name": "Prepare for interviews with AI-augmented test automation talking points",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-033"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-034"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-035"
+        },
+        {
+          "name": "Selenium WebDriver: Selenium Automation Testing with Python",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-036"
+        },
+        {
+          "name": "Selenium WebDriver: Selenium Automation Testing with Python",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-037"
+        },
+        {
+          "name": "Learn Selenium WebDriver with Python and PyTest from scratch. This hands-on course is perfect for manual testers and anyone new to automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-038"
+        },
+        {
+          "name": "Top-rated, easy-to-follow course updated in 2024 \u2013 start automating real browser tests fast",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-039"
+        },
+        {
+          "name": "What you\u2019ll learn in this course:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-040"
+        },
+        {
+          "name": "Set up test automation framework with Selenium WebDriver",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-041"
+        },
+        {
+          "name": "Automate your first Selenium WebDriver test",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-042"
+        },
+        {
+          "name": "Automate software tests using Python and PyTest",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-043"
+        },
+        {
+          "name": "Execute tests in Chrome, Firefox, and other browsers",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-044"
+        },
+        {
+          "name": "Recognize test failures and exceptions, and fix them",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-045"
+        },
+        {
+          "name": "Use PyTest for better test structure and maintenance",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-046"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-047"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-048"
+        },
+        {
+          "name": "Java for Testers",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-049"
+        },
+        {
+          "name": "Java for Testers",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-050"
+        },
+        {
+          "name": "Start your test automation career by learning Java from this specifically designed for beginners course.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-051"
+        },
+        {
+          "name": "All Java you need to start learning test automation",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-052"
+        },
+        {
+          "name": "In this course you will learn:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-053"
+        },
+        {
+          "name": "Starting from the scratch, installing Java and IDEs",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-054"
+        },
+        {
+          "name": "Creating a first project",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-055"
+        },
+        {
+          "name": "Learning basic things, data types",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-056"
+        },
+        {
+          "name": "Learning methods, classes, different functions",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-057"
+        },
+        {
+          "name": "Principles of Object Oriented Programimg",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-058"
+        },
+        {
+          "name": "Advanced Java functions",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-059"
+        },
+        {
+          "name": "Working with files",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-060"
+        },
+        {
+          "name": "Test frameworks",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-061"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-062"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-063"
+        },
+        {
+          "name": "Python: The Complete Guide for Software Testers",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-064"
+        },
+        {
+          "name": "Python: The Complete Guide for Software Testers",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-065"
+        },
+        {
+          "name": "Master Python for Testing: Automate Tests, Handle Exceptions, Explore OOP, and Dive into Python Libraries.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-066"
+        },
+        {
+          "name": "Dive Deep Into Python for Professional Software Testing",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-067"
+        },
+        {
+          "name": "In this course you will learn:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-068"
+        },
+        {
+          "name": "Master the basics and advanced concepts of Python programming.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-069"
+        },
+        {
+          "name": "Gain a deep understanding of Python\u2019s data types, structures, and control structures.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-070"
+        },
+        {
+          "name": "Learn Object-Oriented Programming (OOP) in Python and apply OOP concepts like inheritance, encapsulation, and polymorphism.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-071"
+        },
+        {
+          "name": "Acquire skills for software testing in Python, including unit testing with PyTest, and handling exceptions & errors.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-072"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-073"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-074"
+        },
+        {
+          "name": "Advanced Selenium WebDriver with Java and TestNG",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-075"
+        },
+        {
+          "name": "Advanced Selenium WebDriver with Java and TestNG",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-076"
+        },
+        {
+          "name": "A real-world example of Advanced Selenium WebDriver test automation framework with Java and TestNG",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-077"
+        },
+        {
+          "name": "This course will make you a ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-078"
+        },
+        {
+          "name": "Selenium Pro",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-079"
+        },
+        {
+          "name": "In this course you will learn:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-080"
+        },
+        {
+          "name": "Develop Full-Stack Test Automation Framework from scratch",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-081"
+        },
+        {
+          "name": "Implement Data-Driven Test Framework",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-082"
+        },
+        {
+          "name": "Use Page Object Model",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-083"
+        },
+        {
+          "name": "Automate almost any test case",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-084"
+        },
+        {
+          "name": "Use advanced Selenium WebDriver techniques (Taking screenshots, capturing JS console errors, etc)",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-085"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-086"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-087"
+        },
+        {
+          "name": "XPath and CSS Locators for Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-088"
+        },
+        {
+          "name": "XPath and CSS Locators for Test Automation",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-089"
+        },
+        {
+          "name": "Build stable XPath and CSS selectors using DevTools that work in Selenium, Playwright, and any modern web app",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-090"
+        },
+        {
+          "name": "Highest Rated",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-091"
+        },
+        {
+          "name": " course in the Selenium Testing Framework category",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-092"
+        },
+        {
+          "name": "XPath and CSS locators are the foundation of reliable UI test automation. Flaky tests, unstable selectors, and \u201celement not found\u201d errors almost always trace back to a poor locator strategy. This course teaches you to read any DOM and build selectors that survive UI changes.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-093"
+        },
+        {
+          "name": "In this course you will learn:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-094"
+        },
+        {
+          "name": "Build stable XPath locators with predicates, functions, and axes",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-095"
+        },
+        {
+          "name": "Write CSS selectors using attribute matching, combinators, and pseudo-classes",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-096"
+        },
+        {
+          "name": "Decide when to use XPath vs CSS \u2014 and why",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-097"
+        },
+        {
+          "name": "Debug and fix broken locators directly in Chrome DevTools",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-098"
+        },
+        {
+          "name": "Create clean, maintainable selectors for Selenium, Playwright, and modern frameworks",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-099"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-100"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-101"
+        },
+        {
+          "name": "REST Assured. API test automation for beginners",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-102"
+        },
+        {
+          "name": "REST Assured. API test automation for beginners",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-103"
+        },
+        {
+          "name": "Rest API test automation from scratch. Create a cool REST Assured framework with Java and TestNG",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-104"
+        },
+        {
+          "name": "H",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-105"
+        },
+        {
+          "name": "i",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-106"
+        },
+        {
+          "name": "ghest Rated",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-107"
+        },
+        {
+          "name": " course in the ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-108"
+        },
+        {
+          "name": "REST Assured",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-109"
+        },
+        {
+          "name": " category",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-110"
+        },
+        {
+          "name": "In this course you will learn:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-111"
+        },
+        {
+          "name": "How to start REST API Automation using REST Assured",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-112"
+        },
+        {
+          "name": "Creating REST API testing framework from scratch with Maven and TestNG",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-113"
+        },
+        {
+          "name": "Use JsonPath and XmlPath",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-114"
+        },
+        {
+          "name": "Serialize and De-Serialize POJOs",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-115"
+        },
+        {
+          "name": "Work with Headers and Cookies",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-116"
+        },
+        {
+          "name": "Use Basic Authentication",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-117"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-118"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-119"
+        },
+        {
+          "name": "Advanced Selenium Grid and Cloud",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-120"
+        },
+        {
+          "name": "Advanced Selenium Grid and Cloud",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-121"
+        },
+        {
+          "name": "Advanced Selenium WebDriver test automation framework with Selenium Grid, Cloud and continuous test execution in Jenkins",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-122"
+        },
+        {
+          "name": "Become ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-123"
+        },
+        {
+          "name": "SDET",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-124"
+        },
+        {
+          "name": " or even ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-125"
+        },
+        {
+          "name": "Test Automation Architect",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-126"
+        },
+        {
+          "name": " by learning Selenium Grid!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-127"
+        },
+        {
+          "name": "In this course you will learn:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-128"
+        },
+        {
+          "name": "Setting up Selenium Grid",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-129"
+        },
+        {
+          "name": "Running tests on Selenium Grid",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-130"
+        },
+        {
+          "name": "Advantages and disadvantages of Selenium Grid",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-131"
+        },
+        {
+          "name": "Test Automation cloud providers",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-132"
+        },
+        {
+          "name": "Running tests in the cloud",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-133"
+        },
+        {
+          "name": "Running tests on SauceLabs",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-134"
+        },
+        {
+          "name": "Jenkins and continuous test execution",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-135"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-136"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-137"
+        },
+        {
+          "name": "Advanced Selenium testing framework with Java",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-138"
+        },
+        {
+          "name": "Advanced Selenium testing framework with Java",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-139"
+        },
+        {
+          "name": "Selenium WebDriver with Java, TestNG, and Maven. Learn Selenium Testing Framework with Java and TestNG",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-140"
+        },
+        {
+          "name": "Quick-paced course ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-141"
+        },
+        {
+          "name": "for test automation engineers that want to improve their framework-building skills",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-142"
+        },
+        {
+          "name": "In this course you will learn:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-143"
+        },
+        {
+          "name": "Build test framework in Selenium WebDriver from scratch using Java and TestNG",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-144"
+        },
+        {
+          "name": "Create reliable, stable, and easily maintainable automated tests",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-145"
+        },
+        {
+          "name": "Use the Page Object Model for the better test structure",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-146"
+        },
+        {
+          "name": "Master Selenium Webdriver",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-147"
+        },
+        {
+          "name": "Create Data-Driven Test Framework",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-148"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-149"
+        },
+        {
+          "name": "Enroll in this course on Udemy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-150"
+        },
+        {
+          "name": "\u00a9 Copyright 2020 ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-151"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-152"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-153"
+        },
+        {
+          "name": " All rights reserved | ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-154"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-155"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-156"
+        }
+      ]
+    },
+    {
+      "state_code": "STATE-007",
+      "url_pattern": "/contact/",
+      "fingerprint": "7ce7d0f971d089585db228fc6dfc57089c72a3c5a55d7472d7d658e3ee39ccbf",
+      "reached_via": [
+        "click(role=link,name='Contact')"
+      ],
+      "elements": [
+        {
+          "name": "Contact | Practice Test Automation | Selenium WebDriver",
+          "risk": "SAFE",
+          "role": "RootWebArea",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-001"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-002"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-003"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-004"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-005"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-006"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-007"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-008"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-009"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-010"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-011"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-012"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-013"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-014"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-015"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-016"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-017"
+        },
+        {
+          "name": "open menu",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-018"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-019"
+        },
+        {
+          "name": "Dmitry Shyshkin test automation instructor",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-020"
+        },
+        {
+          "name": "If you have questions, suggestions, or business proposals, fill up the form below and I\u2019ll be in touch as soon as I get it!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-021"
+        },
+        {
+          "name": "Name ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-022"
+        },
+        {
+          "name": "*",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-023"
+        },
+        {
+          "name": "First",
+          "risk": "SAFE",
+          "role": "textbox",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-024"
+        },
+        {
+          "name": "First",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-025"
+        },
+        {
+          "name": "Last",
+          "risk": "SAFE",
+          "role": "textbox",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-026"
+        },
+        {
+          "name": "Last",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-027"
+        },
+        {
+          "name": "Email ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-028"
+        },
+        {
+          "name": "*",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-029"
+        },
+        {
+          "name": "Email *",
+          "risk": "SAFE",
+          "role": "textbox",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-030"
+        },
+        {
+          "name": "Comment or Message ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-031"
+        },
+        {
+          "name": "*",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-032"
+        },
+        {
+          "name": "Comment or Message *",
+          "risk": "SAFE",
+          "role": "textbox",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-033"
+        },
+        {
+          "name": "Email",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-034"
+        },
+        {
+          "name": "Email",
+          "risk": "SAFE",
+          "role": "textbox",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-035"
+        },
+        {
+          "name": "Submit",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-036"
+        },
+        {
+          "name": "Thank you,",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-037"
+        },
+        {
+          "name": "Dmitry Shyshkin",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-038"
+        },
+        {
+          "name": "Happy Testing!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-039"
+        },
+        {
+          "name": "\u00a9 Copyright 2020 ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-040"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-041"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-042"
+        },
+        {
+          "name": " All rights reserved | ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-043"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-044"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-045"
+        }
+      ]
+    },
+    {
+      "state_code": "STATE-003",
+      "url_pattern": "/",
+      "fingerprint": "b1589bac281c9be5e888a9d6dddf4a6d3ae68ac828e00b383f708012dcda2aa7",
+      "reached_via": [
+        "click(role=link,name='Home')"
+      ],
+      "elements": [
+        {
+          "name": "Practice Test Automation | Learn Selenium WebDriver",
+          "risk": "SAFE",
+          "role": "RootWebArea",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-001"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-002"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-003"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-004"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-005"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-006"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-007"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-008"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-009"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-010"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-011"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-012"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-013"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-014"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-015"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-016"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-017"
+        },
+        {
+          "name": "open menu",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-018"
+        },
+        {
+          "name": "Hello",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-019"
+        },
+        {
+          "name": "Dmitry Shyshkin, your Selenium WebDriver instructor",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-020"
+        },
+        {
+          "name": "Welcome to Practice Test Automation!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-021"
+        },
+        {
+          "name": "I\u2019m Dmitry Shyshkin, your guide on the path to a thriving QA career. Effortlessly master Selenium WebDriver and test automation to enhance your skills and increase your earnings.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-022"
+        },
+        {
+          "name": "Experience and Expertise",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-023"
+        },
+        {
+          "name": "As a Principal Software Development Engineer in Test, I bring over a decade of experience in automating Web UI, API, and Mobile tests using tools like Selenium WebDriver, Appium, Postman, RestAssured, and more. I began my journey as a manual QA engineer and quickly developed a passion for test automation. Having served as the lead test automation expert in various projects, I\u2019m confident in my ability to help you excel in test automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-024"
+        },
+        {
+          "name": "Beyond Test Automation",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-025"
+        },
+        {
+          "name": "Not only have I automated tests, but I\u2019ve also applied automation to job searches and even finding cheaper flights! Now, I\u2019m eager to share this passion and knowledge with you.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-026"
+        },
+        {
+          "name": "Courses and Achievements",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-027"
+        },
+        {
+          "name": "In 2017, I started sharing my test automation expertise through video courses, beginning with a Selenium WebDriver tutorial on YouTube. Today, I offer ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-028"
+        },
+        {
+          "name": "nine courses with over 100,000 students",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-029"
+        },
+        {
+          "name": "nine courses with over 100,000 students",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-030"
+        },
+        {
+          "name": ", including a ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-031"
+        },
+        {
+          "name": "BestSeller XPath course",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-032"
+        },
+        {
+          "name": "BestSeller XPath course",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-033"
+        },
+        {
+          "name": " and a ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-034"
+        },
+        {
+          "name": "HighestRated Selenium course",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-035"
+        },
+        {
+          "name": "HighestRated Selenium course",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-036"
+        },
+        {
+          "name": ". With a 4.7 out of 5 instructor rating, I\u2019m grateful to every student who has joined me on this journey.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-037"
+        },
+        {
+          "name": "A Resourceful Website",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-038"
+        },
+        {
+          "name": "This website was carefully crafted to host a ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-039"
+        },
+        {
+          "name": "diverse selection of articles, standalone lectures, tips, and examples",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-040"
+        },
+        {
+          "name": "diverse selection of articles, standalone lectures, tips, and examples",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-041"
+        },
+        {
+          "name": " for those interested in test automation. Moreover, with a ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-042"
+        },
+        {
+          "name": "practical platform",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-043"
+        },
+        {
+          "name": "practical platform",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-044"
+        },
+        {
+          "name": " already established, test automation beginners can easily put their skills into practice.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-045"
+        },
+        {
+          "name": "Looking Ahead",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-046"
+        },
+        {
+          "name": "As we look ahead, I\u2019m thrilled about the future of Practice Test Automation and delighted to have you on board!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-047"
+        },
+        {
+          "name": "Explore and Learn",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-048"
+        },
+        {
+          "name": "Please be sure to visit our ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-049"
+        },
+        {
+          "name": "BLOG ",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-050"
+        },
+        {
+          "name": "BLOG ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-051"
+        },
+        {
+          "name": "for engaging articles, speeches, and tutorials, and don\u2019t miss our ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-052"
+        },
+        {
+          "name": "COURSES",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-053"
+        },
+        {
+          "name": "COURSES",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-054"
+        },
+        {
+          "name": ", designed to enrich your learning experience.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-055"
+        },
+        {
+          "name": "\u00a9 Copyright 2020 ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-056"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-057"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-058"
+        },
+        {
+          "name": " All rights reserved | ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-059"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-060"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-061"
+        }
+      ]
+    },
+    {
+      "state_code": "STATE-006",
+      "url_pattern": "/blog/",
+      "fingerprint": "d24359dc263338f250b388f42fa8b6dcbf407b815136dd6adf43cb3d1d6f316c",
+      "reached_via": [
+        "click(role=link,name='Blog')"
+      ],
+      "elements": [
+        {
+          "name": "Blog | Practice Test Automation",
+          "risk": "SAFE",
+          "role": "RootWebArea",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-001"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-002"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-003"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-004"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-005"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-006"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-007"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-008"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-009"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-010"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-011"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-012"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-013"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-014"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-015"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-016"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-017"
+        },
+        {
+          "name": "open menu",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-018"
+        },
+        {
+          "name": "Will AI Replace QA Automation Engineers?",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-019"
+        },
+        {
+          "name": "Will AI Replace QA Automation Engineers?",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-020"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-021"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-022"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-023"
+        },
+        {
+          "name": " August 15, 2026",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-024"
+        },
+        {
+          "name": "Will AI Replace QA Automation Engineers? A QA automation engineer at a laptop directing three AI agents, with the reviewed result flowing out to a checkmark",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-025"
+        },
+        {
+          "name": "Will AI Replace QA Automation Engineers?",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-026"
+        },
+        {
+          "name": "A QA automation engineer at a laptop directing three AI agents, with the reviewed result flowing out to a checkmark",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-027"
+        },
+        {
+          "name": "No. AI is not going to replace test automation engineers, but it is already changing the job day to day. The typing is going away: boilerplate, scaffolding, first drafts. The deciding is not. People who lose ground here will lose it to other engineers who learned to use AI, not to the AI.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-028"
+        },
+        {
+          "name": "I hear this question often, usually from people early enough in their careers to still be deciding whether to commit. So here is what it looks like from my desk.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-029"
+        },
+        {
+          "name": "Read More Will AI Replace QA Automation Engineers?",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-030"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-031"
+        },
+        {
+          "name": "Will AI Replace QA Automation Engineers?",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-032"
+        },
+        {
+          "name": "Teach AI to Diagnose Failing Tests, Not Just Write Them",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-033"
+        },
+        {
+          "name": "Teach AI to Diagnose Failing Tests, Not Just Write Them",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-034"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-035"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-036"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-037"
+        },
+        {
+          "name": " July 26, 2026",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-038"
+        },
+        {
+          "name": "Teach AI to Diagnose Failing Tests, Not Just Write Them AI diagnosing failing tests under a magnifying glass among passing tests",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-039"
+        },
+        {
+          "name": "Teach AI to Diagnose Failing Tests, Not Just Write Them",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-040"
+        },
+        {
+          "name": "AI diagnosing failing tests under a magnifying glass among passing tests",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-041"
+        },
+        {
+          "name": "Once AI is writing your tests, the next skill worth building is teaching it to diagnose failing tests. It reads the failure, works out which kind it is, and proposes the fix.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-042"
+        },
+        {
+          "name": "Read More Teach AI to Diagnose Failing Tests, Not Just Write Them",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-043"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-044"
+        },
+        {
+          "name": "Teach AI to Diagnose Failing Tests, Not Just Write Them",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-045"
+        },
+        {
+          "name": "The Assertion Is the Hard Part",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-046"
+        },
+        {
+          "name": "The Assertion Is the Hard Part",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-047"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-048"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-049"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-050"
+        },
+        {
+          "name": " July 17, 2026",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-051"
+        },
+        {
+          "name": "The Assertion Is the Hard Part",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-052"
+        },
+        {
+          "name": "The Assertion Is the Hard Part",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-053"
+        },
+        {
+          "name": "AI is good at driving a test. It\u2019s much worse at deciding what \u201cpassing\u201d should mean \u2014 and that\u2019s where the real bugs hide.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-054"
+        },
+        {
+          "name": "I had an agent write a test the other week. Straightforward case \u2014 point it at the page, generate the flow, add the assertions, run it. Most of the checks went green immediately. One didn\u2019t.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-055"
+        },
+        {
+          "name": "What happened next is the part I keep thinking about.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-056"
+        },
+        {
+          "name": "Read More The Assertion Is the Hard Part",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-057"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-058"
+        },
+        {
+          "name": "The Assertion Is the Hard Part",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-059"
+        },
+        {
+          "name": "The Framework Was Never the Hard Part. AI Changed That.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-060"
+        },
+        {
+          "name": "The Framework Was Never the Hard Part. AI Changed That.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-061"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-062"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-063"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-064"
+        },
+        {
+          "name": " June 29, 2026",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-065"
+        },
+        {
+          "name": "The Framework Was Never the Hard Part. AI Changed That. Diagram contrasting AI drafting a test on the left with a human reviewing and validating it on the right",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-066"
+        },
+        {
+          "name": "The Framework Was Never the Hard Part. AI Changed That.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-067"
+        },
+        {
+          "name": "Diagram contrasting AI drafting a test on the left with a human reviewing and validating it on the right",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-068"
+        },
+        {
+          "name": "I switched from Selenium to Playwright a few years ago. I like it. But if I\u2019m honest, the switch barely changed my work. Selenium was fine. Playwright is fine. When you know what you\u2019re doing, the framework is just syntax \u2014 a set of method names wrapped around the same testing judgment you already have. I could go back to Selenium next week and write tests just as good. The framework was never the hard part.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-069"
+        },
+        {
+          "name": "What actually changed my work is AI. Not \u201cI asked ChatGPT for a snippet\u201d AI \u2014 the kind that lives inside your repo and does real work.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-070"
+        },
+        {
+          "name": "Read More The Framework Was Never the Hard Part. AI Changed That.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-071"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-072"
+        },
+        {
+          "name": "The Framework Was Never the Hard Part. AI Changed That.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-073"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 6",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-074"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 6",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-075"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-076"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-077"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-078"
+        },
+        {
+          "name": " July 22, 2024",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-079"
+        },
+        {
+          "name": "Engaging with the Selenium Community and Expanding Your Network",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-080"
+        },
+        {
+          "name": "Introduction",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-081"
+        },
+        {
+          "name": "Welcome back to our ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-082"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-083"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-084"
+        },
+        {
+          "name": " series! In this sixth part, we will explore the invaluable benefits of engaging with the Selenium community and expanding your professional network. Active participation in the test automation community can significantly enhance your career prospects, keep you updated with the latest trends, and connect you with industry leaders.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-085"
+        },
+        {
+          "name": "The Importance of Community Engagement",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-086"
+        },
+        {
+          "name": "Engaging with the test automation community is more than just staying informed; it\u2019s about building connections, sharing knowledge, and growing professionally. By actively participating in forums, following industry leaders, and attending events, you can gain insights, solve problems more efficiently, and establish yourself as a thought leader in the field.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-087"
+        },
+        {
+          "name": "Evening meetup scene with 20 people. A speaker is at the front, and a TV displays the Java, Python, or Selenium logo. Attendees with pizza and drinks, engaging with the Selenium community.",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-088"
+        },
+        {
+          "name": "Read More Unlock Your Future: Selenium WebDriver Career Launcher Part 6",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-089"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-090"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 6",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-091"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 5",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-092"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 5",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-093"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-094"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-095"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-096"
+        },
+        {
+          "name": " July 15, 2024",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-097"
+        },
+        {
+          "name": "Acing Selenium WebDriver Job Interviews",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-098"
+        },
+        {
+          "name": "Introduction",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-099"
+        },
+        {
+          "name": "Welcome back to our ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-100"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-101"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-102"
+        },
+        {
+          "name": " series! In this fifth installment, we will focus on preparing for Selenium WebDriver job interviews. This post will equip you with the insights and strategies needed to make a strong impression during your interview. Let\u2019s dive into understanding potential employers, tailoring your personal story, and strategically presenting your projects.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-103"
+        },
+        {
+          "name": "Understanding the Company",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-104"
+        },
+        {
+          "name": "First and foremost, understanding the company is crucial for acing Selenium WebDriver Job Interviews. This knowledge allows you to tailor your responses to align with the company\u2019s values and needs. Start by researching the company\u2019s website, particularly their \u201cAbout\u201d page, to gain insights into their mission, services, and culture.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-105"
+        },
+        {
+          "name": "For instance, if you applied to Udemy, exploring ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-106"
+        },
+        {
+          "name": "Udemy\u2019s about page",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-107"
+        },
+        {
+          "name": "Udemy\u2019s about page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-108"
+        },
+        {
+          "name": " can provide valuable information. You can learn about their mission to improve lives through learning, their extensive global reach with over 70 million learners and 220,000 courses, and their commitment to diversity and inclusion.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-109"
+        },
+        {
+          "name": "Additionally, utilizing LinkedIn to look up the company can be incredibly beneficial. Search for profiles of employees in similar roles to understand their backgrounds and the kind of experience valued by the company. Investigate the company\u2019s tech stack and other relevant details to get a comprehensive understanding of their operations. This thorough research will help you craft responses that demonstrate how your skills and experiences align with their goals.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-110"
+        },
+        {
+          "name": "Selenium WebDriver Job Interviews",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-111"
+        },
+        {
+          "name": "Read More Unlock Your Future: Selenium WebDriver Career Launcher Part 5",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-112"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-113"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 5",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-114"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 4",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-115"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 4",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-116"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-117"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-118"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-119"
+        },
+        {
+          "name": " July 8, 2024",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-120"
+        },
+        {
+          "name": "Strategically Navigating Selenium Job Listings",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-121"
+        },
+        {
+          "name": "Welcome back to our ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-122"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-123"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-124"
+        },
+        {
+          "name": " series! In this fourth installment, we will explore effective strategies for navigating job listings specifically for Selenium-related roles. Whether you\u2019re just starting out or looking to advance your career in test automation, understanding how to search and apply for these positions is crucial.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-125"
+        },
+        {
+          "name": "Effective Selenium Job Searching",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-126"
+        },
+        {
+          "name": "Finding the right job starts with effective searching. Use precise keywords such as \u201cSelenium WebDriver,\u201d \u201cQA Automation with Selenium,\u201d or specific programming languages like \u201cJava Selenium\u201d or \u201cPython Selenium.\u201d Broad terms like \u201ctest automation\u201d may yield too many unrelated results. Take advantage of job platform filters to refine your search based on location, experience level, and job type. ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-127"
+        },
+        {
+          "name": "LinkedIn\u2019s job search",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-128"
+        },
+        {
+          "name": "LinkedIn\u2019s job search",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-129"
+        },
+        {
+          "name": " feature is a great starting point.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-130"
+        },
+        {
+          "name": "Using multiple job platforms can also increase your chances of finding the right job. In addition to LinkedIn, consider using sites like Indeed, Glassdoor, and specialized tech job boards like Stack Overflow Jobs. Setting up job alerts on these platforms can ensure you receive notifications for new job postings that match your criteria.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-131"
+        },
+        {
+          "name": "A realistic image of a person focused on navigating Selenium job listings online, seated at a desk with a laptop, coffee mug, papers, and a smartphone.",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-132"
+        },
+        {
+          "name": "Read More Unlock Your Future: Selenium WebDriver Career Launcher Part 4",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-133"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-134"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 4",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-135"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 3",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-136"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 3",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-137"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-138"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-139"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-140"
+        },
+        {
+          "name": " July 1, 2024",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-141"
+        },
+        {
+          "name": "Crafting a Winning Resume for Selenium Automation Roles",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-142"
+        },
+        {
+          "name": "Introduction",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-143"
+        },
+        {
+          "name": "Welcome back to our ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-144"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-145"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-146"
+        },
+        {
+          "name": " series! In this third part, we will explore the essentials of creating a winning resume for Selenium automation. Your resume is often the first impression you make on potential employers, so it\u2019s crucial to present your skills and experiences effectively. A well-structured resume can open doors and significantly impact your job search journey. We\u2019ll cover how to highlight your technical skills and project experiences to craft a standout resume for Selenium automation roles.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-147"
+        },
+        {
+          "name": "Highlighting Your Selenium Skills",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-148"
+        },
+        {
+          "name": "Your technical skills are the backbone of your resume. When listing your Selenium WebDriver proficiency, make sure it stands out. Start by prominently featuring your experience with Selenium WebDriver and any relevant programming languages such as Java, Python, or JavaScript. This showcases your capability to handle automation tasks efficiently and is essential for creating a winning resume for Selenium automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-149"
+        },
+        {
+          "name": "For frameworks and tools, mention your experience with TestNG, JUnit, or PyTest, and any integration with CI/CD tools like Jenkins or Docker. Highlighting these skills demonstrates your familiarity with modern development practices and testing environments.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-150"
+        },
+        {
+          "name": "Man handing over a winning resume for Selenium automation job interview",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-151"
+        },
+        {
+          "name": "Read More Unlock Your Future: Selenium WebDriver Career Launcher Part 3",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-152"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-153"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 3",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-154"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 2",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-155"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 2",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-156"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-157"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-158"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-159"
+        },
+        {
+          "name": " June 24, 2024",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-160"
+        },
+        {
+          "name": "Mastering Portfolio Development with Selenium WebDriver",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-161"
+        },
+        {
+          "name": "Introduction",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-162"
+        },
+        {
+          "name": "Welcome back to our ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-163"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-164"
+        },
+        {
+          "name": "\u201cSelenium WebDriver Career Launcher\u201d",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-165"
+        },
+        {
+          "name": " series! In this second part, we delve into the crucial aspect of Selenium WebDriver portfolio development. Building a robust portfolio is essential for showcasing your practical skills and making you an ideal candidate for automation roles. We will explore various projects that demonstrate your Selenium expertise and provide practical advice on documenting and presenting your work effectively.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-166"
+        },
+        {
+          "name": "Building a strong portfolio with practical ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-167"
+        },
+        {
+          "name": "Selenium WebDriver portfolio development",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-168"
+        },
+        {
+          "name": " projects is a crucial step in securing your first automation role. These projects not only highlight your technical skills but also showcase your ability to apply them to real-world scenarios.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-169"
+        },
+        {
+          "name": "The Importance of a Strong Portfolio",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-170"
+        },
+        {
+          "name": "Your portfolio serves as tangible proof of your abilities. It not only highlights your technical skills but also demonstrates your problem-solving capabilities and creativity. Employers are looking for candidates who can apply their knowledge to real-world scenarios, and a well-crafted portfolio can set you apart from the competition.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-171"
+        },
+        {
+          "name": "Selenium WebDriver Portfolio Development Projects",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-172"
+        },
+        {
+          "name": "Read More Unlock Your Future: Selenium WebDriver Career Launcher Part 2",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-173"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-174"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 2",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-175"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 1",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-176"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 1",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-177"
+        },
+        {
+          "name": "Published by",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-178"
+        },
+        {
+          "name": " Dmitry Shyshkin ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-179"
+        },
+        {
+          "name": "on",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-180"
+        },
+        {
+          "name": " June 17, 2024",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-181"
+        },
+        {
+          "name": "Elevating Your Career with Selenium WebDriver",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-182"
+        },
+        {
+          "name": "Introduction",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-183"
+        },
+        {
+          "name": "Welcome to the first part of our series, \u201cSelenium WebDriver Career Launcher.\u201d This series is crafted for those who have mastered the basics of Selenium WebDriver. It is designed for those ready to start their careers in test automation. While having Selenium skills is a tremendous asset, getting your first job requires proactive and strategic efforts. This series aims to provide you with the necessary tools and knowledge. It will help you navigate the job market and secure your first position in automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-184"
+        },
+        {
+          "name": "The Critical Role of Selenium WebDriver in Test Automation",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-185"
+        },
+        {
+          "name": "Selenium WebDriver is essential in the field of test automation. It automates web browsers to perform complex test scenarios that mimic real user interactions. This makes Selenium WebDriver a crucial tool for any tech professional. It is indispensable for those aiming to excel in the dynamic field of software testing. By mastering Selenium WebDriver, you are taking a significant step toward advancing your Selenium WebDriver career.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-186"
+        },
+        {
+          "name": "Selenium WebDriver Career Launcher Logo",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-187"
+        },
+        {
+          "name": "Read More Unlock Your Future: Selenium WebDriver Career Launcher Part 1",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-188"
+        },
+        {
+          "name": "Read More",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-189"
+        },
+        {
+          "name": "Unlock Your Future: Selenium WebDriver Career Launcher Part 1",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-190"
+        },
+        {
+          "name": "Posts pagination",
+          "risk": "SAFE",
+          "role": "navigation",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-191"
+        },
+        {
+          "name": "Posts pagination",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-192"
+        },
+        {
+          "name": "1",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-193"
+        },
+        {
+          "name": " ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-194"
+        },
+        {
+          "name": "2",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-195"
+        },
+        {
+          "name": "2",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-196"
+        },
+        {
+          "name": " ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-197"
+        },
+        {
+          "name": "3",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-198"
+        },
+        {
+          "name": "3",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-199"
+        },
+        {
+          "name": " ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-200"
+        },
+        {
+          "name": "Next",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-201"
+        },
+        {
+          "name": "Next",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-202"
+        },
+        {
+          "name": "\u00a9 Copyright 2020 ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-203"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-204"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-205"
+        },
+        {
+          "name": " All rights reserved | ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-206"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-207"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-208"
+        }
+      ]
+    },
+    {
+      "state_code": "STATE-002",
+      "url_pattern": "/practice-test-login/",
+      "fingerprint": "d2ad00f7452ac28ca562cedbc12d85a18a62b22e63babc39f786b55473971ccf",
+      "reached_via": [
+        "click(role=link,name='Press ')"
+      ],
+      "elements": [
+        {
+          "name": "Test Login | Practice Test Automation",
+          "risk": "SAFE",
+          "role": "RootWebArea",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-001"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-002"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-003"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-004"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-005"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-006"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-007"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-008"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-009"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-010"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-011"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-012"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-013"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-014"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-015"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-016"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-017"
+        },
+        {
+          "name": "open menu",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-018"
+        },
+        {
+          "name": "Test login",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-019"
+        },
+        {
+          "name": "This is a simple Login page. Students can use this page to practice writing simple positive and negative LogIn tests. Login functionality is something that most of the test automation engineers need to automate.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-020"
+        },
+        {
+          "name": "Use next credentials to execute Login:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-021"
+        },
+        {
+          "name": "Username: ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-022"
+        },
+        {
+          "name": "student",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-023"
+        },
+        {
+          "name": "Password: ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-024"
+        },
+        {
+          "name": "Password123",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-025"
+        },
+        {
+          "name": "Username",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-026"
+        },
+        {
+          "name": "Username",
+          "risk": "SAFE",
+          "role": "textbox",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-027"
+        },
+        {
+          "name": "Password",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-028"
+        },
+        {
+          "name": "Password",
+          "risk": "SAFE",
+          "role": "textbox",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-029"
+        },
+        {
+          "name": "Submit",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-030"
+        },
+        {
+          "name": "Your username is invalid!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-031"
+        },
+        {
+          "name": "Test case 1: Positive LogIn test",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-032"
+        },
+        {
+          "name": "Open page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-033"
+        },
+        {
+          "name": "Type username ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-034"
+        },
+        {
+          "name": "student",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-035"
+        },
+        {
+          "name": " into Username field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-036"
+        },
+        {
+          "name": "Type password ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-037"
+        },
+        {
+          "name": "Password123",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-038"
+        },
+        {
+          "name": " into Password field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-039"
+        },
+        {
+          "name": "Push ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-040"
+        },
+        {
+          "name": "Submit",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-041"
+        },
+        {
+          "name": " button",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-042"
+        },
+        {
+          "name": "Verify new page URL contains ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-043"
+        },
+        {
+          "name": "practicetestautomation.com/logged-in-successfully/",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-044"
+        },
+        {
+          "name": "Verify new page contains expected text ('Congratulations' or 'successfully logged in')",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-045"
+        },
+        {
+          "name": "Verify button ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-046"
+        },
+        {
+          "name": "Log out",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-047"
+        },
+        {
+          "name": " is displayed on the new page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-048"
+        },
+        {
+          "name": "Test case 2: Negative username test",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-049"
+        },
+        {
+          "name": "Open page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-050"
+        },
+        {
+          "name": "Type username ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-051"
+        },
+        {
+          "name": "incorrectUser",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-052"
+        },
+        {
+          "name": " into Username field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-053"
+        },
+        {
+          "name": "Type password ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-054"
+        },
+        {
+          "name": "Password123",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-055"
+        },
+        {
+          "name": " into Password field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-056"
+        },
+        {
+          "name": "Push ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-057"
+        },
+        {
+          "name": "Submit",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-058"
+        },
+        {
+          "name": " button",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-059"
+        },
+        {
+          "name": "Verify error message is displayed",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-060"
+        },
+        {
+          "name": "Verify error message text is ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-061"
+        },
+        {
+          "name": "Your username is invalid!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-062"
+        },
+        {
+          "name": "Test case 3: Negative password test",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-063"
+        },
+        {
+          "name": "Open page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-064"
+        },
+        {
+          "name": "Type username ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-065"
+        },
+        {
+          "name": "student",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-066"
+        },
+        {
+          "name": " into Username field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-067"
+        },
+        {
+          "name": "Type password ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-068"
+        },
+        {
+          "name": "incorrectPassword",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-069"
+        },
+        {
+          "name": " into Password field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-070"
+        },
+        {
+          "name": "Push ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-071"
+        },
+        {
+          "name": "Submit",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-072"
+        },
+        {
+          "name": " button",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-073"
+        },
+        {
+          "name": "Verify error message is displayed",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-074"
+        },
+        {
+          "name": "Verify error message text is ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-075"
+        },
+        {
+          "name": "Your password is invalid!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-076"
+        },
+        {
+          "name": "\u00a9 Copyright 2020 ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-077"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-078"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-079"
+        },
+        {
+          "name": " All rights reserved | ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-080"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-081"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-082"
+        }
+      ]
+    },
+    {
+      "state_code": "STATE-001",
+      "url_pattern": "/practice-test-login/",
+      "fingerprint": "d47cc7a6f397092762538efb76fc14e0d814ebd64a79dd6714f7e75c082e0122",
+      "reached_via": [],
+      "elements": [
+        {
+          "name": "Test Login | Practice Test Automation",
+          "risk": "SAFE",
+          "role": "RootWebArea",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-001"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-002"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-003"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-004"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-005"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-006"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-007"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-008"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-009"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-010"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-011"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-012"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-013"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-014"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-015"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-016"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-017"
+        },
+        {
+          "name": "open menu",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-018"
+        },
+        {
+          "name": "Test login",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-019"
+        },
+        {
+          "name": "This is a simple Login page. Students can use this page to practice writing simple positive and negative LogIn tests. Login functionality is something that most of the test automation engineers need to automate.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-020"
+        },
+        {
+          "name": "Use next credentials to execute Login:",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-021"
+        },
+        {
+          "name": "Username: ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-022"
+        },
+        {
+          "name": "student",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-023"
+        },
+        {
+          "name": "Password: ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-024"
+        },
+        {
+          "name": "Password123",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-025"
+        },
+        {
+          "name": "Username",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-026"
+        },
+        {
+          "name": "Username",
+          "risk": "SAFE",
+          "role": "textbox",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-027"
+        },
+        {
+          "name": "Password",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-028"
+        },
+        {
+          "name": "Password",
+          "risk": "SAFE",
+          "role": "textbox",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-029"
+        },
+        {
+          "name": "Submit",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-030"
+        },
+        {
+          "name": "Your username is invalid!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-031"
+        },
+        {
+          "name": "Test case 1: Positive LogIn test",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-032"
+        },
+        {
+          "name": "Open page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-033"
+        },
+        {
+          "name": "Type username ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-034"
+        },
+        {
+          "name": "student",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-035"
+        },
+        {
+          "name": " into Username field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-036"
+        },
+        {
+          "name": "Type password ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-037"
+        },
+        {
+          "name": "Password123",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-038"
+        },
+        {
+          "name": " into Password field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-039"
+        },
+        {
+          "name": "Push ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-040"
+        },
+        {
+          "name": "Submit",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-041"
+        },
+        {
+          "name": " button",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-042"
+        },
+        {
+          "name": "Verify new page URL contains ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-043"
+        },
+        {
+          "name": "practicetestautomation.com/logged-in-successfully/",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-044"
+        },
+        {
+          "name": "Verify new page contains expected text ('Congratulations' or 'successfully logged in')",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-045"
+        },
+        {
+          "name": "Verify button ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-046"
+        },
+        {
+          "name": "Log out",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-047"
+        },
+        {
+          "name": " is displayed on the new page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-048"
+        },
+        {
+          "name": "Test case 2: Negative username test",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-049"
+        },
+        {
+          "name": "Open page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-050"
+        },
+        {
+          "name": "Type username ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-051"
+        },
+        {
+          "name": "incorrectUser",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-052"
+        },
+        {
+          "name": " into Username field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-053"
+        },
+        {
+          "name": "Type password ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-054"
+        },
+        {
+          "name": "Password123",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-055"
+        },
+        {
+          "name": " into Password field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-056"
+        },
+        {
+          "name": "Push ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-057"
+        },
+        {
+          "name": "Submit",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-058"
+        },
+        {
+          "name": " button",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-059"
+        },
+        {
+          "name": "Verify error message is displayed",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-060"
+        },
+        {
+          "name": "Verify error message text is ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-061"
+        },
+        {
+          "name": "Your username is invalid!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-062"
+        },
+        {
+          "name": "Test case 3: Negative password test",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-063"
+        },
+        {
+          "name": "Open page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-064"
+        },
+        {
+          "name": "Type username ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-065"
+        },
+        {
+          "name": "student",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-066"
+        },
+        {
+          "name": " into Username field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-067"
+        },
+        {
+          "name": "Type password ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-068"
+        },
+        {
+          "name": "incorrectPassword",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-069"
+        },
+        {
+          "name": " into Password field",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-070"
+        },
+        {
+          "name": "Push ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-071"
+        },
+        {
+          "name": "Submit",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-072"
+        },
+        {
+          "name": " button",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-073"
+        },
+        {
+          "name": "Verify error message is displayed",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-074"
+        },
+        {
+          "name": "Verify error message text is ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-075"
+        },
+        {
+          "name": "Your password is invalid!",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-076"
+        },
+        {
+          "name": "\u00a9 Copyright 2020 ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-077"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-078"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-079"
+        },
+        {
+          "name": " All rights reserved | ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-080"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-081"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-082"
+        }
+      ]
+    },
+    {
+      "state_code": "STATE-004",
+      "url_pattern": "/practice/",
+      "fingerprint": "da73c4c45a70a9c623c67367e0bfd18d3d239a26fc0f5766332d64a9df5bd342",
+      "reached_via": [
+        "click(role=link,name='Practice')"
+      ],
+      "elements": [
+        {
+          "name": "Practice | Practice Test Automation",
+          "risk": "SAFE",
+          "role": "RootWebArea",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-001"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-002"
+        },
+        {
+          "name": "Press ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-003"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-004"
+        },
+        {
+          "name": "Practice Test Automation",
+          "risk": "SAFE",
+          "role": "image",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-005"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-006"
+        },
+        {
+          "name": "Home",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-007"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-008"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-009"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-010"
+        },
+        {
+          "name": "Courses",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-011"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-012"
+        },
+        {
+          "name": "AI Workshop",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-013"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-014"
+        },
+        {
+          "name": "Blog",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-015"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-016"
+        },
+        {
+          "name": "Contact",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-017"
+        },
+        {
+          "name": "open menu",
+          "risk": "SAFE",
+          "role": "button",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-018"
+        },
+        {
+          "name": "Practice",
+          "risk": "SAFE",
+          "role": "heading",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-019"
+        },
+        {
+          "name": "Test Login Page",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-020"
+        },
+        {
+          "name": "Test Login Page",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-021"
+        },
+        {
+          "name": "Simple login page where testers can execute positive and negative login test cases",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-022"
+        },
+        {
+          "name": "Test Exceptions",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-023"
+        },
+        {
+          "name": "Test Exceptions",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-024"
+        },
+        {
+          "name": "Page to reproduce the most common Selenium Exceptions.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-025"
+        },
+        {
+          "name": "Test Table",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-026"
+        },
+        {
+          "name": "Test Table",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-027"
+        },
+        {
+          "name": "Page to practice UI interactions and data validation with dynamic tables, filters, and sorting controls.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-028"
+        },
+        {
+          "name": "\u00a9 Copyright 2020 ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-029"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-030"
+        },
+        {
+          "name": "Practice Test Automation.",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-031"
+        },
+        {
+          "name": " All rights reserved | ",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-032"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "link",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-033"
+        },
+        {
+          "name": "Privacy Policy",
+          "risk": "SAFE",
+          "role": "StaticText",
+          "source": "OBSERVED_DOM",
+          "element_code": "EL-034"
+        }
+      ]
+    }
+  ]
+}

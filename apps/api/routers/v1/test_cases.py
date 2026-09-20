@@ -127,6 +127,21 @@ async def generate_test_cases(
         # LLM call failed after retries/schema-repair (infra/llm/*) — a real
         # upstream failure, not a client input problem, so 502 not 422/500.
         raise HTTPException(status_code=502, detail=f"Test case generation failed: {exc}") from exc
+    except Exception as exc:
+        # Catch SDK-level errors that aren't wrapped as RuntimeError:
+        # e.g. openai.NotFoundError (unknown model), openai.AuthenticationError
+        # (bad API key), anthropic.AuthenticationError, etc. These are all
+        # provider-config problems, not server bugs — surface as 502 with a
+        # meaningful message instead of letting FastAPI emit an opaque 500.
+        exc_type = type(exc).__name__
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"LLM provider error ({exc_type}): {exc}. "
+                "Check LLM_PROVIDER, LLM_MODEL, LLM_BASE_URL, and LLM_API_KEY in qa-platform/.env."
+            ),
+        ) from exc
+
 
     # Build response from persisted test cases
     pairs = await tc_repo.list_for_requirement(body.requirement_id)
