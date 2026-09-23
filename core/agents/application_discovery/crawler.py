@@ -45,6 +45,7 @@ class CrawlBudget:
     max_pages: int = 150
     max_depth: int = 6
     max_duration_seconds: int = 900
+    automatic_limits: bool = False
 
 
 @dataclass
@@ -282,6 +283,11 @@ class Crawler:
             snapshot = await self._navigate_to_login(self._base_url, clear_session=False)
         else:
             snapshot = await self._go_to_auth_start()
+
+        return await self._apply_path(snapshot, path)
+
+    async def _apply_path(self, snapshot: object, path: list[ClickStep]) -> object:
+        """Apply a path from the caller's current browser/session state."""
 
         for step in path:
             if step.role == "link" and step.url:

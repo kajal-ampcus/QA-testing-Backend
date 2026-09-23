@@ -38,6 +38,9 @@ class WorkerSettings:
     redis_settings = QueueSettings().arq_settings()
     job_timeout = int(os.environ.get("WORKER_JOB_TIMEOUT", "1200"))
     health_check_interval = 30
+    # Required for Job.abort() to interrupt an in-progress crawl. The worker
+    # remains alive and can immediately process the next queued job.
+    allow_abort_jobs = True
     max_jobs = int(
         os.environ.get("WORKER_MAX_JOBS", "5")
     )  # bounds concurrent Discovery crawls — separate from

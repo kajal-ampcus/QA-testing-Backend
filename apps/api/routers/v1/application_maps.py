@@ -4,6 +4,7 @@ separate worker process, never synchronously inside this request — a real
 crawl can take minutes) and surfaces the resulting map.
 """
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -32,6 +33,8 @@ class DiscoveryTriggerRequest(BaseModel):
     max_pages: int = Field(default=150, ge=1)
     max_depth: int = Field(default=6, ge=0)
     max_duration_seconds: int = Field(default=900, ge=1)
+    worker_limit: int = Field(default=3, ge=1, le=5)
+    automatic_limits: bool = True
 
     model_config = {
         "json_schema_extra": {
@@ -42,6 +45,7 @@ class DiscoveryTriggerRequest(BaseModel):
                     "max_pages": 150,
                     "max_depth": 6,
                     "max_duration_seconds": 900,
+                    "automatic_limits": True,
                 }
             ]
         }
@@ -56,6 +60,11 @@ class DiscoveryJobResponse(BaseModel):
     job_id: str
     status: str
     result: dict[str, Any] | None = None
+
+
+class DiscoveryCancelResponse(BaseModel):
+    job_id: str
+    status: str
 
 
 class ApplicationMapStateResponse(BaseModel):
@@ -133,6 +142,8 @@ async def trigger_discovery(
             "max_pages": body.max_pages,
             "max_depth": body.max_depth,
             "max_duration_seconds": body.max_duration_seconds,
+            "worker_limit": body.worker_limit,
+            "automatic_limits": body.automatic_limits,
         },
     }
     try:
@@ -152,11 +163,32 @@ async def get_discovery_job(job_id: str) -> DiscoveryJobResponse:
         return DiscoveryJobResponse(job_id=job_id, status=status.value)
     try:
         result = await job.result()
+    except asyncio.CancelledError:
+        return DiscoveryJobResponse(job_id=job_id, status="cancelled", result=None)
     except Exception as exc:  # noqa: BLE001 - job exceptions are internal worker details
         return DiscoveryJobResponse(
             job_id=job_id, status="failed", result={"error": type(exc).__name__}
         )
     return DiscoveryJobResponse(job_id=job_id, status=status.value, result=result)
+
+
+@router.delete("/jobs/{job_id}", response_model=DiscoveryCancelResponse)
+async def cancel_discovery_job(job_id: str) -> DiscoveryCancelResponse:
+    """Cancel a queued or running discovery without stopping the worker process."""
+    job = Job(job_id, await get_arq_pool())
+    status = await job.status()
+    if status == JobStatus.not_found:
+        raise HTTPException(status_code=404, detail="Discovery job not found")
+    if status == JobStatus.complete:
+        raise HTTPException(status_code=409, detail="Discovery job has already finished")
+
+    cancelled = await job.abort(timeout=15)
+    if not cancelled:
+        raise HTTPException(
+            status_code=409,
+            detail="Discovery could not be stopped because it has already finished",
+        )
+    return DiscoveryCancelResponse(job_id=job_id, status="cancelled")
 
 
 @router.get("/projects/{project_id}", response_model=ApplicationMapResponse)

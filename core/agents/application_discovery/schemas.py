@@ -19,6 +19,8 @@ class DiscoveryCrawlBudgetPayload(BaseModel):
     max_pages: int = 150
     max_depth: int = 6
     max_duration_seconds: int = 900
+    worker_limit: int = Field(default=3, ge=1, le=5)
+    automatic_limits: bool = True
 
 
 class DiscoveryPayload(BaseModel):

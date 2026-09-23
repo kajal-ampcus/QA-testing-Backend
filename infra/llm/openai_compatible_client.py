@@ -1,15 +1,24 @@
 """
-Generic OpenAI-compatible client — OpenAI, Groq, xAI/Grok, local Ollama, or
-any provider speaking the OpenAI chat-completions wire format. Same
-retry/concurrency wrapping as anthropic_client.py, and returns real token
-usage — every provider in the OpenAI-compatible family reports usage the
-same way (response.usage.prompt_tokens / completion_tokens), so this is one
-implementation, not one per provider.
+Generic OpenAI-compatible client — works with OpenAI, Groq, xAI/Grok,
+OpenRouter, Google Gemini (via OpenAI-compat endpoint), and local Ollama.
 
-NOTE: tool/function calling support varies by provider and model. On Groq's
-free tier specifically, Llama 3.1/3.3 models are confirmed to support forced
-tool calling; smaller/other free models may not — that shows up as the
-RuntimeError below, not a silent bad result.
+Fixes applied in this version:
+──────────────────────────────
+1. finish_reason=length retry now fires for ALL providers, not just Gemini.
+   gpt-oss-120b on Groq truncates JSON mid-object — we double the token
+   budget and ask the model to produce complete JSON or fewer test cases.
+
+2. _is_groq and _is_openrouter flags properly set so inline_schema_refs
+   runs for every provider that needs $ref flattening.
+
+3. Groq reasoning_effort="low" applied to gpt-oss-120b and gpt-oss-20b so
+   those models don't burn their thinking budget on structured output tasks.
+
+4. _repair_error_message helper strips failed_generation from error bodies
+   before echoing them into repair messages — prevents a truncated multi-KB
+   generation from filling the context window of the repair call.
+
+5. schema validation error marker list extended with Groq-specific strings.
 """
 
 import json
@@ -24,14 +33,20 @@ from infra.llm.gemini_schema import inline_schema_refs
 from infra.llm.rate_limiter import get_llm_semaphore
 from infra.llm.retry import with_retry
 
-# Small/free-tier models sometimes ignore the tool JSON schema and return
-# their own ad-hoc structure. Some OpenAI-compatible providers (Groq's
-# 'tool_use_failed' is the confirmed case) validate the tool call against the
-# schema server-side and reject it with a 400 BadRequestError that names
-# exactly which required properties were missing — that's a genuine signal
-# we can hand straight back to the model, not a real "bad request" from us.
-_SCHEMA_ERROR_MARKERS = ("tool_use_failed", "did not match schema", "tool call validation failed")
-_PARSE_ERROR_MARKERS = ("failed to parse tool call arguments", "invalid json")
+_SCHEMA_ERROR_MARKERS = (
+    "tool_use_failed",
+    "did not match schema",
+    "tool call validation failed",
+    "required property",
+    "missing required",
+)
+_PARSE_ERROR_MARKERS = (
+    "failed to parse tool call arguments",
+    "invalid json",
+    "json parse",
+    "unterminated string",
+    "unexpected end",
+)
 
 
 def _is_schema_validation_error(exc: BadRequestError) -> bool:
@@ -42,15 +57,40 @@ def _is_json_parse_error(exc: BadRequestError) -> bool:
     return any(marker in str(exc).lower() for marker in _PARSE_ERROR_MARKERS)
 
 
+def _repair_error_message(exc: BadRequestError) -> str:
+    """
+    Extract only the human-readable error message from a BadRequestError.
+    Never include failed_generation — it can be thousands of tokens of
+    truncated JSON which would overflow the repair call's context window.
+    """
+    body = exc.body if isinstance(exc.body, dict) else {}
+    error = body.get("error", body)
+    if isinstance(error, dict):
+        msg = error.get("message", "Tool output did not match the JSON schema.")
+        # Strip failed_generation from the message if present
+        if "failed_generation" in msg:
+            msg = msg.split("failed_generation")[0].strip().rstrip(",").rstrip("'")
+    else:
+        msg = "Invalid tool output."
+    return str(msg)[:600]
+
+
+# Models on Groq that benefit from reasoning_effort="low" for structured tasks
+_GROQ_LOW_REASONING_MODELS = {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
+
+
 class OpenAICompatibleClient(LLMClient):
     def __init__(self, api_key: str | None, base_url: str, model: str) -> None:
         self._client = AsyncOpenAI(api_key=api_key or "not-needed", base_url=base_url)
         self.model = model
         self._max_retries = int(os.environ.get("LLM_MAX_RETRIES", "3"))
-        self._is_gemini = (
-            self._client.base_url.host == "generativelanguage.googleapis.com"
-            and model.startswith("gemini-")
-        )
+
+        host = self._client.base_url.host
+        self._is_gemini = host == "generativelanguage.googleapis.com" and model.startswith("gemini-")
+        self._is_groq = host == "api.groq.com"
+        self._is_openrouter = host == "openrouter.ai"
+        # Any provider whose schema validator chokes on $ref needs inlining
+        self._needs_schema_inline = self._is_groq or self._is_gemini or self._is_openrouter
 
     async def call_structured(
         self,
@@ -64,16 +104,27 @@ class OpenAICompatibleClient(LLMClient):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        response_tokens = max_tokens
-        if self._is_gemini:
+
+        # Inline $ref for providers that don't resolve JSON Schema references
+        if self._needs_schema_inline:
             tool_schema = inline_schema_refs(tool_schema)
-            # Nested batches need substantially more space on Gemini. Start
-            # with headroom rather than repeatedly paying for truncated output.
+
+        # Start with a generous token budget — truncation is the #1 failure
+        # mode for structured output tasks that generate multiple test cases.
+        # Gemini needs extra headroom for its shared thinking/output budget.
+        if self._is_gemini:
             response_tokens = max(max_tokens, min(max_tokens * 4, 16000))
+        else:
+            response_tokens = max_tokens
+
         input_tokens = output_tokens = 0
-        # Gemini 2.5 shares the completion budget between thinking and output.
-        # Bound thinking so structured output has room; leave other models alone.
+
+        # Per-model options
         request_options: dict[str, Any] = {}
+        if self._is_groq and self.model in _GROQ_LOW_REASONING_MODELS:
+            # These models run chain-of-thought internally; "low" stops them
+            # spending their budget thinking about structured output format
+            request_options["reasoning_effort"] = "low"
         if self._is_gemini and self.model.startswith("gemini-2.5-"):
             request_options["reasoning_effort"] = "low"
 
@@ -88,7 +139,10 @@ class OpenAICompatibleClient(LLMClient):
                             "type": "function",
                             "function": {
                                 "name": tool_name,
-                                "description": f"Return the structured {tool_name} result. This is the only way to respond.",
+                                "description": (
+                                    f"Return the structured {tool_name} result. "
+                                    "This is the only way to respond."
+                                ),
                                 "parameters": tool_schema,
                             },
                         }
@@ -97,116 +151,127 @@ class OpenAICompatibleClient(LLMClient):
                     **request_options,
                 )
 
-        # Bounded repair attempts: if the provider rejects the tool call
-        # because it didn't match the schema (or wasn't even valid JSON), feed
-        # a corrective message back to the model and ask it to try again —
-        # much cheaper and more reliable than failing the whole agent run over
-        # one malformed generation. The two failure modes need different
-        # messages: a schema mismatch names the exact violations, but a raw
-        # JSON parse failure (most often caused by the model sprinkling in
-        # // comments, which aren't valid JSON) gives no such detail, so the
-        # generic "fix the violations above" message does nothing useful —
-        # it has to spell out the likely cause instead.
         max_repair_attempts = 2
+        response: ChatCompletion | None = None
+
         for attempt in range(max_repair_attempts + 1):
             try:
                 response = await with_retry(_do_call, max_retries=self._max_retries)
                 if response.usage:
                     input_tokens += response.usage.prompt_tokens
                     output_tokens += response.usage.completion_tokens
-                if response.choices and response.choices[0].finish_reason == "length":
-                    # Never parse a truncated function call. Gemini may omit it
-                    # entirely when its shared thinking/output budget runs out.
-                    if (
-                        self._is_gemini
-                        and attempt < max_repair_attempts
-                        and response_tokens < 32000
-                    ):
-                        response_tokens = min(response_tokens * 2, 32000)
+
+                finish = response.choices[0].finish_reason if response.choices else None
+
+                # ── Truncation: JSON cut mid-object ──────────────────────
+                # Fires for ALL providers when finish_reason=length.
+                # On Groq (gpt-oss-120b) this is the primary failure mode.
+                if finish == "length":
+                    max_budget = 32000 if self._is_gemini else 16000
+                    if attempt < max_repair_attempts and response_tokens < max_budget:
+                        response_tokens = min(response_tokens * 2, max_budget)
+                        messages = [messages[0], messages[1]]  # reset to original only
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Your previous response was cut off mid-JSON because the output "
+                                f"exceeded the token limit. Call {tool_name} again with COMPLETE, "
+                                "valid JSON — every object and array properly closed. "
+                                "If you cannot fit all items in the budget, generate FEWER items "
+                                "but ensure every item you do generate is complete and valid."
+                            ),
+                        })
                         continue
                     raise RuntimeError(
                         f"Model '{self.model}' exhausted the {response_tokens}-token response "
-                        f"budget while generating '{tool_name}' (finish_reason=length). "
-                        "Reduce the requirement scope or increase the response token budget."
+                        f"budget (finish_reason=length) while generating '{tool_name}'. "
+                        "Increase max_tokens in the agent call or reduce the number of ACs "
+                        "processed per batch."
                     )
-                if (
-                    self._is_gemini
-                    and response.choices
-                    and "MALFORMED_FUNCTION_CALL" in response.choices[0].finish_reason
-                ):
+
+                # ── Gemini malformed function call ────────────────────────
+                if self._is_gemini and finish and "MALFORMED_FUNCTION_CALL" in finish:
                     if attempt == max_repair_attempts:
                         raise RuntimeError(
                             f"Model '{self.model}' returned MALFORMED_FUNCTION_CALL for "
                             f"'{tool_name}' after {max_repair_attempts} repair attempts."
                         )
-                    response_tokens = max(response_tokens, min(response_tokens * 2, 32000))
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"The provider rejected the previous function call. Call only {tool_name} "
-                                "once, with the complete root object matching its parameters. "
-                                "Nested objects must be JSON values, never separate function calls. "
-                                "Use strict JSON without comments or trailing commas."
-                            ),
-                        }
-                    )
+                    response_tokens = min(max(response_tokens, response_tokens * 2), 32000)
+                    messages = [messages[0], messages[1]]
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"The provider rejected the previous function call. "
+                            f"Call only {tool_name} once with a complete root object. "
+                            "Use strict JSON — no comments, no trailing commas."
+                        ),
+                    })
                     continue
-                break
+
+                break  # success
+
             except BadRequestError as exc:
                 if not (_is_json_parse_error(exc) or _is_schema_validation_error(exc)):
                     raise
-                if attempt < max_repair_attempts and _is_json_parse_error(exc):
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Your last response could not even be parsed as JSON "
-                                f"(error: {exc}). This almost always means you included a "
-                                "// or /* */ comment, or a trailing comma, somewhere in the "
-                                f"arguments. Call {tool_name} again with STRICT, plain JSON — "
-                                "zero comments anywhere, no trailing commas. If you need to "
-                                "note an assumption or gap, put that sentence inside the "
-                                "`objective` field's text, never as a comment token."
-                            ),
-                        }
-                    )
-                    continue
-                if attempt < max_repair_attempts and _is_schema_validation_error(exc):
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Your last response did not match the required schema:\n"
-                                f"{exc}\n\n"
-                                f"Call {tool_name} again and fix EXACTLY the violations listed "
-                                "above — missing required properties must be added, and any "
-                                "value flagged as invalid must be replaced with one of the "
-                                "allowed values from the schema. Use the exact property names "
-                                "from the schema, not your own names for the same idea."
-                            ),
-                        }
-                    )
-                    continue
-                raise RuntimeError(
-                    f"Model '{self.model}' returned a tool call that didn't match the "
-                    f"'{tool_name}' schema, and {max_repair_attempts} repair "
-                    f"attempt(s) also failed: {exc}"
-                ) from exc
-        else:
-            raise RuntimeError(
-                f"Model '{self.model}' failed to produce a valid '{tool_name}' tool call "
-                f"after {max_repair_attempts} repair attempt(s)."
-            )
+                if attempt >= max_repair_attempts:
+                    raise RuntimeError(
+                        f"Model '{self.model}' returned a tool call that didn't match the "
+                        f"'{tool_name}' schema, and {max_repair_attempts} repair "
+                        f"attempt(s) also failed: {_repair_error_message(exc)}"
+                    ) from exc
 
-        if not response.choices:
+                # Reset conversation to original two messages before repair prompt
+                messages = [messages[0], messages[1]]
+
+                if _is_json_parse_error(exc):
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Your last response could not be parsed as JSON "
+                            f"({_repair_error_message(exc)}). "
+                            "This almost always means you added a // comment, a /* */ comment, "
+                            "or a trailing comma somewhere in the JSON. "
+                            f"Call {tool_name} again with STRICT, plain JSON — "
+                            "zero comments, no trailing commas. "
+                            "Put any explanatory notes inside a string field value, "
+                            "never as a JSON comment."
+                        ),
+                    })
+                else:
+                    # Schema validation error — the model used wrong field names or values
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Your last response did not match the required schema:\n"
+                            f"{_repair_error_message(exc)}\n\n"
+                            f"Call {tool_name} again and fix EXACTLY the violations above. "
+                            "Common mistakes:\n"
+                            "- action must be one of: navigate, fill, click, assert, wait\n"
+                            "- category must be exactly: POSITIVE, NEGATIVE, or EDGE_CASE\n"
+                            "- traceability must be a non-empty list of AC ids like ['AC-1']\n"
+                            "- every step needs step_number starting at 1, consecutive\n"
+                            "Use exact property names from the schema."
+                        ),
+                    })
+                continue
+
+        # ── Parse the successful response ─────────────────────────────────
+        if not response or not response.choices:
             raise RuntimeError(f"Model '{self.model}' returned no choices for '{tool_name}'.")
+
         message = response.choices[0].message
         if message.tool_calls:
             for call in message.tool_calls:
                 if call.type == "function" and call.function.name == tool_name:
+                    try:
+                        parsed = json.loads(call.function.arguments)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError(
+                            f"Model '{self.model}' returned syntactically invalid JSON for "
+                            f"'{tool_name}' even after repair attempts: {exc}"
+                        ) from exc
                     return LLMStructuredResult(
-                        data=json.loads(call.function.arguments),
+                        data=parsed,
                         model=self.model,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,

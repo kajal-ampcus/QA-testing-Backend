@@ -87,6 +87,7 @@ def build_user_prompt(
     acceptance_criteria: list[dict[str, Any]],
     app_map_states: list[dict[str, Any]],
     base_url: str,
+    required_categories: list[str] | None = None,
 ) -> str:
     ac_lines = "\n".join(
         f"  {ac['id']}: {ac['text']} [source={ac.get('source', 'REQUIREMENT')}]"
@@ -105,6 +106,15 @@ def build_user_prompt(
 
     states_block = "\n\n".join(states_lines)
 
+    category_instruction = ""
+    if required_categories:
+        category_instruction = (
+            "\nTARGETED COVERAGE\n=================\n"
+            "Generate ONLY these missing categories: "
+            + ", ".join(required_categories)
+            + ". Do not regenerate categories that already exist.\n"
+        )
+
     return f"""REQUIREMENT
 ===========
 Title: {requirement_title}
@@ -116,6 +126,7 @@ Acceptance Criteria:
 APPLICATION MAP  (base_url={base_url})
 ===============
 {states_block}
+{category_instruction}
 
 Generate test cases covering ALL acceptance criteria listed above.
 Reference only state_codes and element_codes from the APPLICATION MAP above."""

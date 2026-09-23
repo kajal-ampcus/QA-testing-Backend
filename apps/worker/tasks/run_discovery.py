@@ -6,6 +6,7 @@ so they can't reuse apps.api.dependencies.get_db_session, which is FastAPI-
 specific dependency injection).
 """
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -42,7 +43,30 @@ async def run_discovery(
             trigger="manual",
             payload=payload,
         )
-        result = await agent.run(input_envelope)
+        try:
+            result = await agent.run(input_envelope)
+        except asyncio.CancelledError:
+            # Discovery states are committed incrementally. Preserve them and
+            # make the latest map usable/inspectable instead of leaving it in
+            # RUNNING forever after the ARQ job is aborted.
+            await session.rollback()
+            app_map = await map_repo.get_latest_for_project(input_envelope.project_id)
+            if app_map is not None and app_map.status == "RUNNING":
+                await map_repo.set_status(
+                    app_map.id,
+                    "PARTIAL",
+                    termination_reason="CANCELLED_BY_USER",
+                    coverage={
+                        **(app_map.coverage or {}),
+                        "cancelled": True,
+                        "states_discovered": len(app_map.states),
+                    },
+                    diagnostic_evidence={
+                        "termination_detail": "Discovery was stopped by the user.",
+                    },
+                )
+                await session.commit()
+            raise
         session.add(
             AgentRun(
                 id=input_envelope.agent_run_id,

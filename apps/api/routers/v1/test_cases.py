@@ -25,6 +25,7 @@ router = APIRouter(prefix="/test-cases", tags=["test-cases"])
 class GenerateTestCasesRequest(BaseModel):
     requirement_id: uuid.UUID
     application_map_id: uuid.UUID | None = None  # defaults to latest COMPLETE map
+    target_categories: dict[str, list[str]] | None = None
 
 
 class TestStepOut(BaseModel):
@@ -116,6 +117,7 @@ async def generate_test_cases(
         payload={
             "requirement_id": str(body.requirement_id),
             **({"application_map_id": str(body.application_map_id)} if body.application_map_id else {}),
+            **({"target_categories": body.target_categories} if body.target_categories else {}),
         },
     )
 

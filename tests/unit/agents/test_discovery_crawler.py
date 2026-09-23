@@ -1,10 +1,12 @@
 """Behavioral checks for deterministic discovery and safety boundaries."""
 
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
 
 from core.agents.application_discovery.crawler import CrawlBudget, Crawler
+from core.agents.application_discovery.parallel_crawler import ParallelCrawler
 
 
 class TextBlock:
@@ -171,3 +173,62 @@ async def test_crawler_follows_safe_registration_link_and_records_authentication
     ]
     assert all("link Register" not in action for action in crawler.coverage["skipped_actions"])
     assert any("button Create account" in action for action in crawler.coverage["skipped_actions"])
+
+
+@pytest.mark.asyncio
+async def test_parallel_crawler_uses_isolated_pool_and_preserves_flow_edges() -> None:
+    browsers: list[FakeBrowser] = []
+
+    @asynccontextmanager
+    async def browser_context():
+        browser = FakeBrowser()
+        browsers.append(browser)
+        yield browser
+
+    states: list[dict[str, Any]] = []
+
+    async def record(state: dict[str, Any]) -> None:
+        states.append(state)
+
+    crawler = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=5, max_depth=2),
+        [],
+        login_url=None,
+        authenticate=False,
+        worker_limit=3,
+    )
+    status = await crawler.crawl("https://sample.test/", record)
+
+    assert status == "COMPLETE"
+    assert len(browsers) == 3
+    assert {state["url_pattern"] for state in states} == {"/", "/details"}
+    graph = crawler.coverage["app_flow_graph"]
+    assert len(graph["nodes"]) == 2
+    assert len(graph["edges"]) == 1
+    assert graph["edges"][0]["action"] == "click(role=button,name='Details')"
+
+
+@pytest.mark.asyncio
+async def test_automatic_discovery_reports_internal_safety_breaker() -> None:
+    @asynccontextmanager
+    async def browser_context():
+        yield FakeBrowser()
+
+    crawler = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=10000, max_depth=0, max_duration_seconds=21600, automatic_limits=True),
+        [],
+        login_url=None,
+        authenticate=False,
+        worker_limit=2,
+    )
+    status = await crawler.crawl("https://sample.test/", lambda state: _noop())
+
+    assert status == "PARTIAL"
+    assert crawler.termination_reason == "SAFETY_LIMIT_REACHED"
+    assert crawler.coverage["safety_limit_kind"] == "depth"
+
+
+async def _noop() -> None:
+    return None

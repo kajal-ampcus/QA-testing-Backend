@@ -10,10 +10,12 @@ actions) and persists it to application_maps.diagnostic_evidence so the UI
 can display a developer-friendly report rather than a blank error state.
 """
 
+import os
 import uuid
 from typing import Any
 
-from core.agents.application_discovery.crawler import CrawlBudget, Crawler
+from core.agents.application_discovery.crawler import CrawlBudget
+from core.agents.application_discovery.parallel_crawler import ParallelCrawler
 from core.agents.application_discovery.schemas import DiscoveryPayload
 from core.agents.base import BaseAgent
 from core.tool_gateway.gateway import ToolGateway
@@ -47,6 +49,8 @@ def _human_termination(reason: str | None) -> str:
         "UNEXPLORED_ACTIONS": "Some actions were skipped (destructive or form submissions).",
         "AUTHENTICATION_FAILED": "The crawler could not log in. Check credentials and login selectors.",
         "AUTHENTICATION_OR_CRAWL_ERROR": "An error occurred during authentication or crawling.",
+        "CANCELLED_BY_USER": "Discovery was stopped by the user.",
+        "SAFETY_LIMIT_REACHED": "Automatic discovery reached an internal safety circuit breaker.",
     }.get(reason or "", reason or "Unknown reason.")
 
 
@@ -112,10 +116,21 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         )
         await self._map_repo.session.commit()
 
+        automatic_limits = payload.crawl_budget.automatic_limits
         budget = CrawlBudget(
-            max_pages=payload.crawl_budget.max_pages,
-            max_depth=payload.crawl_budget.max_depth,
-            max_duration_seconds=payload.crawl_budget.max_duration_seconds,
+            max_pages=(
+                int(os.environ.get("DISCOVERY_AUTO_MAX_STATES", "10000"))
+                if automatic_limits else payload.crawl_budget.max_pages
+            ),
+            max_depth=(
+                int(os.environ.get("DISCOVERY_AUTO_MAX_DEPTH", "50"))
+                if automatic_limits else payload.crawl_budget.max_depth
+            ),
+            max_duration_seconds=(
+                int(os.environ.get("DISCOVERY_AUTO_MAX_DURATION_SECONDS", "21600"))
+                if automatic_limits else payload.crawl_budget.max_duration_seconds
+            ),
+            automatic_limits=automatic_limits,
         )
 
         state_count = 0
@@ -154,63 +169,20 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         }
 
         try:
-            async with self._tool_gateway.chrome_devtools(
-                self.name, payload.target.url, payload.target.credential_ref
-            ) as client:
-                crawler = Crawler(
-                    client=client,
+            crawler = ParallelCrawler(
+                    client_factory=lambda: self._tool_gateway.chrome_devtools(
+                        self.name, payload.target.url, payload.target.credential_ref
+                    ),
                     budget=budget,
                     keywords=keywords,
                     login_url=login_url,
                     authenticate=bool(payload.target.credential_ref),
+                    worker_limit=payload.crawl_budget.worker_limit,
                 )
-                status = await crawler.crawl(payload.target.url, _on_state_discovered)
-
-                # ── Capture diagnostic signals after crawl ends ──────────
-                # Whether success or failure — always capture for the record.
-                try:
-                    screenshot_path = await client.take_screenshot()
-                    diagnostic["screenshot_ref"] = screenshot_path
-                except Exception:
-                    pass
-
-                try:
-                    from core.agents.application_discovery.crawler import (
-                        _parse_console_messages,
-                        _parse_network_requests,
-                    )
-
-                    raw_console = await client.list_console_messages()
-                    all_msgs = _parse_console_messages(raw_console)
-                    diagnostic["console_errors"] = [
-                        m for m in all_msgs if m["level"] in ("error", "warning")
-                    ]
-                except Exception:
-                    pass
-
-                try:
-                    raw_net = await client.list_network_requests()
-                    from core.agents.application_discovery.crawler import (
-                        _parse_network_requests,
-                    )
-
-                    all_requests = _parse_network_requests(raw_net)
-                    # Only record non-2xx responses as diagnostic signals
-                    diagnostic["network_errors"] = [
-                        r
-                        for r in all_requests
-                        if r.get("status", "200")
-                        not in ("200", "201", "204", "301", "302", "304", "unknown")
-                    ]
-                except Exception:
-                    pass
-
-                # Pull failed actions out of crawler coverage
-                if crawler:
-                    coverage = getattr(crawler, "coverage", {})
-                    diagnostic["failed_actions"] = coverage.get("failed_actions", [])
-                    auth_explored = coverage.get("authenticated_explored", False)
-                    diagnostic["auth_succeeded"] = auth_explored
+            status = await crawler.crawl(payload.target.url, _on_state_discovered)
+            coverage = crawler.coverage
+            diagnostic["failed_actions"] = coverage.get("failed_actions", [])
+            diagnostic["auth_succeeded"] = coverage.get("authenticated_explored", False)
 
         except Exception as exc:
             status = "FAILED"

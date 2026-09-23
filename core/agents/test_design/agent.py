@@ -1,28 +1,35 @@
 """
 Agent 3 — Test Design Agent (architecture doc Section 6, 12).
 
-Reads: approved requirement (with ACs) + latest COMPLETE application map.
-Writes: one TestCase + TestCaseVersion row per generated test case.
-Calls: LLM via structured tool use (AnthropicClient).
-No browser access — reads the already-captured Application Map only.
+Per-AC batching strategy
+─────────────────────────
+One LLM call per acceptance criterion. This is the fix for the token
+truncation failure: sending all ACs + full app map in a single call
+produces a response that is too large for small/free-tier models
+(gpt-oss-120b, llama variants) — the JSON is cut mid-object at the token
+limit and fails to parse. Per-AC calls are:
 
-AC coverage rules, all validated after LLM output (WARNING decisions rather
-than silently passing):
-  1. Every AC must appear in at least one test case's traceability list.
-  2. Every AC that IS covered must have both a POSITIVE and a NEGATIVE test
-     case (RULE 2 in prompts.py) — rule 1 alone would pass an AC that only
-     ever got a happy-path test.
-  3. Any test case below the confidence threshold is surfaced by name —
-     these are usually cases where the LLM correctly declined to invent UI
-     it never observed, and need the application map extended before they're
-     safely executable.
-Any of the three sets run_status=PARTIAL instead of SUCCESS.
+  • Bounded: each call generates 2–4 test cases (POSITIVE + NEGATIVE +
+    optional EDGE_CASE), never the full batch at once.
+  • Independent: a single AC failing does not cancel the others.
+  • Auditable: token usage and model are accumulated across all calls
+    and reported in the final envelope so cost is visible.
 
-Output requires human approval (requires_human_approval=True) — the generated
-test cases land in DRAFT status and must be approved before Automation
-Generation (Agent 5) can proceed.
+Validation
+───────────
+After all LLM calls, every generated test case is run through the
+deterministic validator (validation.py) which checks:
+  - steps reference only observed states and elements
+  - step numbers are consecutive (renumbered if not)
+  - assertions have non-empty expected values
+  - test_data placeholders resolve
+
+Cases that fail validation are collected and reported as WARNING decisions
+rather than crashing the whole run — a bad case for AC-3 should not block
+the perfectly valid cases for AC-1 and AC-2.
 """
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -50,10 +57,7 @@ def _check_ac_coverage(
     acceptance_criteria: list[dict[str, Any]],
     test_cases: list[TestCaseSpec],
 ) -> list[str]:
-    """Return AC ids not covered by any generated test case."""
-    covered = set()
-    for tc in test_cases:
-        covered.update(tc.traceability)
+    covered = {ac_id for tc in test_cases for ac_id in tc.traceability}
     return [ac["id"] for ac in acceptance_criteria if ac["id"] not in covered]
 
 
@@ -61,41 +65,39 @@ def _check_positive_negative_pairing(
     acceptance_criteria: list[dict[str, Any]],
     test_cases: list[TestCaseSpec],
 ) -> list[str]:
-    """RULE 2 in prompts.py asks for at least one POSITIVE and one NEGATIVE
-    test case per AC. _check_ac_coverage only checks an AC appears SOMEWHERE
-    in traceability — it would pass an AC covered by a single POSITIVE test
-    case with no negative counterpart. Return AC ids missing either category
-    (as 'AC-1: missing NEGATIVE' style strings) so that gap is visible
-    instead of silently passing."""
     categories_by_ac: dict[str, set[str]] = {}
     for tc in test_cases:
         for ac_id in tc.traceability:
             categories_by_ac.setdefault(ac_id, set()).add(tc.category)
-
-    gaps: list[str] = []
+    gaps = []
     for ac in acceptance_criteria:
         ac_id = ac["id"]
-        present = categories_by_ac.get(ac_id, set())
         if ac_id not in categories_by_ac:
-            continue  # already reported by _check_ac_coverage — don't double-report
-        missing = [c for c in ("POSITIVE", "NEGATIVE") if c not in present]
+            continue  # already in uncovered list
+        missing = [c for c in ("POSITIVE", "NEGATIVE") if c not in categories_by_ac[ac_id]]
         if missing:
             gaps.append(f"{ac_id}: missing {'/'.join(missing)}")
     return gaps
 
 
-def _low_confidence_test_cases(test_cases: list[TestCaseSpec], threshold: float = 0.6) -> list[str]:
-    """Test cases below the confidence threshold are usually ones where the
-    LLM correctly declined to invent UI it never observed (see RULE 1) —
-    real, but not safely executable as written until the application map
-    covers that page. Surface them by title so a human reviewer knows
-    exactly which ones need the map extended before approval, rather than
-    this being buried in a per-test-case confidence number nobody scans."""
+def _low_confidence(test_cases: list[TestCaseSpec], threshold: float = 0.6) -> list[str]:
     return [
         f"{tc.title} (confidence={tc.confidence:.1f})"
         for tc in test_cases
         if tc.confidence < threshold
     ]
+
+
+def _renumber_steps(tc: TestCaseSpec) -> TestCaseSpec:
+    """
+    Renumber steps so they are always consecutive starting at 1.
+    The validator rejects non-consecutive step numbers — models sometimes
+    emit gaps when they delete a step during generation.
+    This runs before validation so the validator sees clean data.
+    """
+    for i, step in enumerate(tc.steps, 1):
+        step.step_number = i
+    return tc
 
 
 def _states_to_dict(app_map: ApplicationMap) -> list[dict[str, Any]]:
@@ -125,9 +127,74 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         self._test_case_repo = test_case_repo
         self._llm = llm_client or get_llm_client()
 
+    async def _generate_for_ac(
+        self,
+        ac: dict[str, Any],
+        req_title: str,
+        req_description: str,
+        map_states: list[dict[str, Any]],
+        base_url: str,
+        required_categories: set[str] | None = None,
+    ) -> tuple[list[TestCaseSpec], int, int, str, str | None]:
+        """
+        Call the LLM for a single AC and return:
+          (test_cases, input_tokens, output_tokens, model, error_message)
+
+        Returns an empty list + error string on failure so the caller can
+        continue processing other ACs instead of crashing the whole run.
+        """
+        user_prompt = build_user_prompt(
+            requirement_title=req_title,
+            requirement_description=req_description,
+            acceptance_criteria=[ac],
+            app_map_states=map_states,
+            base_url=base_url,
+            required_categories=sorted(required_categories) if required_categories else None,
+        )
+        try:
+            llm_result = await asyncio.wait_for(
+                self._llm.call_structured(
+                    system_prompt=SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    tool_schema=TestCaseBatch.model_json_schema(),
+                    tool_name="generate_test_cases",
+                    # 4000 tokens per AC call — enough for 2–4 test cases
+                    # (POSITIVE + NEGATIVE + optional EDGE_CASE).
+                    # The LLM client doubles this automatically on finish_reason=length.
+                    max_tokens=4000,
+                ),
+                timeout=120.0,
+            )
+        except TimeoutError:
+            return (
+                [], 0, 0, "",
+                f"LLM call timed out after 120 s for AC '{ac.get('id', '?')}'. "
+                "Check that the LLM provider is reachable.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                [], 0, 0, "",
+                f"LLM call failed for AC '{ac.get('id', '?')}': {exc}",
+            )
+
+        try:
+            batch = TestCaseBatch.model_validate(llm_result.data)
+        except Exception as exc:  # noqa: BLE001
+            return (
+                [], llm_result.input_tokens, llm_result.output_tokens, llm_result.model,
+                f"Schema validation failed for AC '{ac.get('id', '?')}': {exc}",
+            )
+
+        return (
+            batch.test_cases,
+            llm_result.input_tokens,
+            llm_result.output_tokens,
+            llm_result.model,
+            None,
+        )
+
     async def run(self, request: AgentInputEnvelope) -> TestDesignResult:
         requirement_id = uuid.UUID(request.payload["requirement_id"])
-        # Optional: caller can pin a specific application_map_id; otherwise use latest
         map_id_raw = request.payload.get("application_map_id")
 
         # ── Load requirement ──────────────────────────────────────────────
@@ -142,16 +209,10 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 f"(status={requirement.status}). Approve it before generating test cases."
             )
 
-        # Guard against a URL project_id that doesn't match the requirement's
-        # actual project. Without this check, a wrong/stale project_id in the
-        # request sails through requirement lookup (requirement_id alone is
-        # enough to find it) and only fails later as an opaque Postgres FK
-        # violation on the test_cases insert.
         if requirement.project_id != request.project_id:
             raise ValueError(
                 f"Requirement {requirement.req_code} belongs to project "
-                f"{requirement.project_id}, not {request.project_id}. "
-                "Check the project_id in the URL."
+                f"{requirement.project_id}, not {request.project_id}."
             )
 
         # ── Load application map ──────────────────────────────────────────
@@ -163,57 +224,108 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         if app_map is None:
             raise ValueError(
                 "No application map found for this project. "
-                "Run discovery (POST /api/v1/application-maps/projects/{id}/discover) first."
+                "Run discovery first."
             )
         if app_map.status not in {"COMPLETE", "PARTIAL"}:
             raise ValueError(
                 f"Application map {app_map.id} has status={app_map.status}. "
-                "Only COMPLETE or PARTIAL maps with observed states can be used for test design."
+                "Only COMPLETE or PARTIAL maps can be used for test design."
             )
         if not app_map.states:
             raise ValueError(f"Application map {app_map.id} has no observed states.")
 
-        # ── Call LLM ─────────────────────────────────────────────────────
-        user_prompt = build_user_prompt(
-            requirement_title=req_version.title,
-            requirement_description=req_version.description,
-            acceptance_criteria=req_version.acceptance_criteria,
-            app_map_states=_states_to_dict(app_map),
-            base_url=app_map.base_url,
-        )
-
-        llm_result = await self._llm.call_structured(
-            system_prompt=SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            tool_schema=TestCaseBatch.model_json_schema(),
-            tool_name="generate_test_cases",
-            max_tokens=4000,
-        )
-
-        batch = TestCaseBatch.model_validate(llm_result.data)
-        test_cases = batch.test_cases
+        # ── Per-AC LLM calls ──────────────────────────────────────────────
+        # One call per AC keeps each response bounded to 2–4 test cases.
+        # This is the core fix: a single call for all ACs produces JSON that
+        # is too large for small models and gets truncated mid-object.
         map_states = _states_to_dict(app_map)
-        ac_ids = {ac["id"] for ac in req_version.acceptance_criteria}
-        invalid = [(case.title, validate_case(case, map_states, ac_ids)) for case in test_cases]
-        invalid = [(title, issues) for title, issues in invalid if issues]
-        if invalid:
-            detail = "; ".join(f"{title}: {' | '.join(issues)}" for title, issues in invalid[:10])
+        requested_categories: dict[str, set[str]] = {
+            ac_id: set(categories)
+            for ac_id, categories in request.payload.get("target_categories", {}).items()
+        }
+        all_test_cases: list[TestCaseSpec] = []
+        llm_errors: list[str] = []
+        total_input_tokens = total_output_tokens = 0
+        model_name = ""
+
+        for ac in req_version.acceptance_criteria:
+            if requested_categories and ac["id"] not in requested_categories:
+                continue
+            tcs, inp, out, model, err = await self._generate_for_ac(
+                ac=ac,
+                req_title=req_version.title,
+                req_description=req_version.description,
+                map_states=map_states,
+                base_url=app_map.base_url,
+                required_categories=requested_categories.get(ac["id"]),
+            )
+            if err:
+                llm_errors.append(err)
+            required = requested_categories.get(ac["id"])
+            all_test_cases.extend(tc for tc in tcs if not required or tc.category in required)
+            total_input_tokens += inp
+            total_output_tokens += out
+            if model:
+                model_name = model
+
+        # If EVERY AC failed, raise — there is nothing to persist
+        if not all_test_cases and llm_errors:
             raise RuntimeError(
-                f"Generated test cases failed deterministic validation and were not saved. {detail}"
+                f"All {len(req_version.acceptance_criteria)} AC generation calls failed.\n"
+                + "\n".join(f"  • {e}" for e in llm_errors)
             )
 
-        # ── AC coverage checks ───────────────────────────────────────────
-        uncovered = _check_ac_coverage(req_version.acceptance_criteria, test_cases)
-        partial_pairing = _check_positive_negative_pairing(
-            req_version.acceptance_criteria, test_cases
-        )
-        needs_review = _low_confidence_test_cases(test_cases)
+        # ── Renumber + validate ───────────────────────────────────────────
+        ac_ids = {ac["id"] for ac in req_version.acceptance_criteria}
+        valid_cases: list[TestCaseSpec] = []
+        validation_errors: list[str] = []
 
-        # ── Persist test cases ────────────────────────────────────────────
+        for tc in all_test_cases:
+            # Renumber steps before validation so gaps don't fail the check
+            tc = _renumber_steps(tc)
+            issues = validate_case(tc, map_states, ac_ids)
+            if issues:
+                validation_errors.append(
+                    f"'{tc.title}': {' | '.join(issues)}"
+                )
+            else:
+                valid_cases.append(tc)
+
+        # If validation wiped everything, raise
+        if not valid_cases:
+            raise RuntimeError(
+                f"All generated test cases failed validation and were not saved.\n"
+                + "\n".join(f"  • {e}" for e in validation_errors[:10])
+            )
+
+        # ── AC coverage checks ────────────────────────────────────────────
+        coverage_cases = list(valid_cases)
+        if requested_categories:
+            for _, version in await self._test_case_repo.list_for_requirement(requirement_id):
+                coverage_cases.append(
+                    TestCaseSpec.model_validate(
+                        {
+                            "title": version.title,
+                            "objective": version.objective,
+                            "category": version.category,
+                            "preconditions": version.preconditions,
+                            "steps": version.steps,
+                            "expected_result": version.expected_result,
+                            "test_data": version.test_data,
+                            "traceability": version.traceability,
+                            "confidence": version.confidence,
+                        }
+                    )
+                )
+        uncovered = _check_ac_coverage(req_version.acceptance_criteria, coverage_cases)
+        partial_pairing = _check_positive_negative_pairing(req_version.acceptance_criteria, coverage_cases)
+        needs_review = _low_confidence(coverage_cases)
+
+        # ── Persist valid test cases ──────────────────────────────────────
         artifacts: list[AgentArtifactRef] = []
-        for tc_spec in test_cases:
+        for tc_spec in valid_cases:
             tc_code = await self._test_case_repo.next_tc_code(request.project_id)
-            tc, version = await self._test_case_repo.create(
+            tc, _ = await self._test_case_repo.create(
                 project_id=request.project_id,
                 tc_code=tc_code,
                 requirement_id=requirement_id,
@@ -236,81 +348,85 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
 
         # ── Build decisions ───────────────────────────────────────────────
         avg_confidence = (
-            sum(tc.confidence for tc in test_cases) / len(test_cases) if test_cases else 0.0
+            sum(tc.confidence for tc in valid_cases) / len(valid_cases)
+            if valid_cases else 0.0
         )
         band = confidence_band(avg_confidence)
 
         decisions: list[AgentDecision] = [
             AgentDecision(
                 decision=(
-                    f"Generated {len(test_cases)} test cases for {requirement.req_code} "
+                    f"Generated {len(valid_cases)} test cases for {requirement.req_code} "
                     f"(confidence={avg_confidence:.2f}, band={band})"
                 ),
                 reason=(
-                    "LLM structured extraction from approved requirement ACs "
-                    "mapped to observed application states via tool use"
+                    f"Per-AC LLM calls ({len(req_version.acceptance_criteria)} ACs, "
+                    f"{len(req_version.acceptance_criteria)} calls) mapped to "
+                    f"{len(app_map.states)} observed application states"
                 ),
                 evidence=[
                     f"Requirement: {requirement.req_code} @ v{requirement.current_version}",
                     f"Application map: {app_map.id} v{app_map.version} ({len(app_map.states)} states)",
-                    f"ACs covered: {len(req_version.acceptance_criteria) - len(uncovered)}"
-                    f"/{len(req_version.acceptance_criteria)}",
-                    f"Test cases: {len(test_cases)} ({sum(1 for tc in test_cases if tc.category == 'POSITIVE')} positive, "
-                    f"{sum(1 for tc in test_cases if tc.category == 'NEGATIVE')} negative, "
-                    f"{sum(1 for tc in test_cases if tc.category == 'EDGE_CASE')} edge case)",
+                    f"ACs covered: {len(req_version.acceptance_criteria) - len(uncovered)}/{len(req_version.acceptance_criteria)}",
+                    f"Test cases: {len(valid_cases)} total "
+                    f"({sum(1 for tc in valid_cases if tc.category == 'POSITIVE')} positive, "
+                    f"{sum(1 for tc in valid_cases if tc.category == 'NEGATIVE')} negative, "
+                    f"{sum(1 for tc in valid_cases if tc.category == 'EDGE_CASE')} edge case)",
                 ],
                 confidence=avg_confidence,
                 source=EvidenceSource.REQUIREMENT,
             )
         ]
 
+        # LLM errors (some ACs failed but others succeeded)
+        if llm_errors:
+            decisions.append(AgentDecision(
+                decision=f"WARNING: {len(llm_errors)} AC(s) failed LLM generation and produced no test cases",
+                reason="LLM call failed or timed out for these ACs",
+                evidence=llm_errors[:5],
+                confidence=0.0,
+                source=EvidenceSource.INFERENCE,
+            ))
+
+        # Validation errors (cases generated but rejected)
+        if validation_errors:
+            decisions.append(AgentDecision(
+                decision=f"WARNING: {len(validation_errors)} generated test case(s) failed validation and were not saved",
+                reason="Deterministic validation rejected these cases (invented elements, missing assertions, etc.)",
+                evidence=validation_errors[:5],
+                confidence=0.2,
+                source=EvidenceSource.INFERENCE,
+            ))
+
         if uncovered:
-            decisions.append(
-                AgentDecision(
-                    decision=f"WARNING: {len(uncovered)} AC(s) not covered: {uncovered}",
-                    reason="No generated test case referenced these AC ids in its traceability list",
-                    evidence=[
-                        f"Uncovered ACs: {uncovered}",
-                        "Check application map — these ACs may reference UI not yet discovered",
-                    ],
-                    confidence=0.3,
-                    source=EvidenceSource.INFERENCE,
-                )
-            )
+            decisions.append(AgentDecision(
+                decision=f"WARNING: {len(uncovered)} AC(s) not covered: {uncovered}",
+                reason="No valid test case referenced these AC ids in its traceability list",
+                evidence=[f"Uncovered ACs: {uncovered}", "Extend the application map or clarify the requirement"],
+                confidence=0.3,
+                source=EvidenceSource.INFERENCE,
+            ))
 
         if partial_pairing:
-            decisions.append(
-                AgentDecision(
-                    decision=f"WARNING: {len(partial_pairing)} AC(s) missing POSITIVE/NEGATIVE pairing: {partial_pairing}",
-                    reason="RULE 2 requires at least one POSITIVE and one NEGATIVE test case per AC; these ACs have coverage but not both categories",
-                    evidence=[
-                        f"Partially covered ACs: {partial_pairing}",
-                        "Usually means the missing side needs UI not yet in the application map, or the LLM simply skipped it — review before approval",
-                    ],
-                    confidence=0.3,
-                    source=EvidenceSource.INFERENCE,
-                )
-            )
+            decisions.append(AgentDecision(
+                decision=f"WARNING: {len(partial_pairing)} AC(s) missing POSITIVE/NEGATIVE pairing",
+                reason="Rule 2 requires both POSITIVE and NEGATIVE for each AC",
+                evidence=[f"Partially covered: {partial_pairing}"],
+                confidence=0.3,
+                source=EvidenceSource.INFERENCE,
+            ))
 
         if needs_review:
-            decisions.append(
-                AgentDecision(
-                    decision=f"WARNING: {len(needs_review)} test case(s) below confidence threshold, likely referencing UI not in the application map: {needs_review}",
-                    reason="confidence < 0.6 per RULE 6 in prompts.py — the AC could not be fully mapped to observed states",
-                    evidence=[
-                        f"Low-confidence test cases: {needs_review}",
-                        "Extend Discovery to crawl the missing page(s), then regenerate or manually fill in element codes before approving",
-                    ],
-                    confidence=0.3,
-                    source=EvidenceSource.INFERENCE,
-                )
-            )
+            decisions.append(AgentDecision(
+                decision=f"WARNING: {len(needs_review)} low-confidence test case(s) need review",
+                reason="confidence < 0.6 — AC could not be fully mapped to observed states",
+                evidence=needs_review[:5],
+                confidence=0.3,
+                source=EvidenceSource.INFERENCE,
+            ))
 
-        run_status = (
-            AgentRunStatus.PARTIAL
-            if (uncovered or partial_pairing or needs_review)
-            else AgentRunStatus.SUCCESS
-        )
+        has_warnings = bool(llm_errors or validation_errors or uncovered or partial_pairing or needs_review)
+        run_status = AgentRunStatus.PARTIAL if has_warnings else AgentRunStatus.SUCCESS
 
         envelope = AgentOutputEnvelope(
             agent_run_id=request.agent_run_id,
@@ -320,16 +436,16 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             requires_human_approval=True,
             errors=[],
             token_usage={
-                "model": llm_result.model,
-                "input_tokens": llm_result.input_tokens,
-                "output_tokens": llm_result.output_tokens,
-                "total_tokens": llm_result.total_tokens,
+                "model": model_name,
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens,
+                "total_tokens": total_input_tokens + total_output_tokens,
             },
         )
 
         return TestDesignResult(
             envelope=envelope,
-            test_cases=test_cases,
+            test_cases=valid_cases,
             uncovered_acs=uncovered,
             partial_pairing_acs=partial_pairing,
             needs_review_test_cases=needs_review,
