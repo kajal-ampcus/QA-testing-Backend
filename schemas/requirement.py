@@ -29,6 +29,15 @@ class RequirementClarificationRequest(BaseModel):
     resolutions: list[AmbiguityResolution] = Field(min_length=1)
 
 
+class AcceptanceCriterionEdit(BaseModel):
+    id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class AcceptanceCriteriaEditRequest(BaseModel):
+    items: list[AcceptanceCriterionEdit] = Field(min_length=1)
+
+
 class AcceptanceCriterionOut(BaseModel):
     id: str
     text: str

@@ -127,6 +127,31 @@ class RequirementRepository(BaseRepository):
         await self.session.flush()
         return version
 
+    async def append_edited_criteria_version(
+        self,
+        requirement: Requirement,
+        current: RequirementVersion,
+        acceptance_criteria: list[dict[str, Any]],
+    ) -> RequirementVersion:
+        """Record tester edits to acceptance criteria as a new immutable
+        version, without another LLM pass — same pattern as
+        append_clarified_version."""
+        next_version = requirement.current_version + 1
+        version = RequirementVersion(
+            requirement_id=requirement.id,
+            version=next_version,
+            raw_text=current.raw_text,
+            title=current.title,
+            description=current.description,
+            acceptance_criteria=acceptance_criteria,
+            ambiguities=list(current.ambiguities),
+            domain_tags=list(current.domain_tags),
+        )
+        self.session.add(version)
+        requirement.current_version = next_version
+        await self.session.flush()
+        return version
+
     async def get_with_current_version(
         self, requirement_id: uuid.UUID
     ) -> tuple[Requirement, RequirementVersion] | None:

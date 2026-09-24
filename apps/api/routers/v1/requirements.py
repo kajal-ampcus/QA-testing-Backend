@@ -32,6 +32,7 @@ from schemas.envelope import (
     AgentRunStatus,
 )
 from schemas.requirement import (
+    AcceptanceCriteriaEditRequest,
     RequirementClarificationRequest,
     RequirementCreateRequest,
     RequirementResponse,
@@ -250,6 +251,48 @@ async def clarify_requirement(
     requirement.status = RequirementStatus.PENDING_APPROVAL
     await _supersede_pending_approvals(session, requirement_id)
     _request_approval(session, requirement)
+    await session.commit()
+    return _to_response(requirement, version)
+
+
+@router.post(
+    "/{requirement_id}/acceptance-criteria", response_model=RequirementResponse, status_code=201
+)
+async def edit_acceptance_criteria(
+    requirement_id: uuid.UUID,
+    body: AcceptanceCriteriaEditRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> RequirementResponse:
+    """Let a tester edit AC wording before approving — not just accept/reject.
+    Recorded as a new version (no LLM pass), same as clarifications."""
+    locked = await session.execute(
+        select(Requirement).where(Requirement.id == requirement_id).with_for_update()
+    )
+    requirement = locked.scalar_one_or_none()
+    if requirement is None:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    if requirement.status == RequirementStatus.APPROVED:
+        raise HTTPException(
+            status_code=409,
+            detail="Requirement is already approved — revise it instead of editing criteria directly",
+        )
+    current_result = await session.execute(
+        select(RequirementVersion).where(
+            RequirementVersion.requirement_id == requirement_id,
+            RequirementVersion.version == requirement.current_version,
+        )
+    )
+    current = current_result.scalar_one()
+    edits = {item.id: item.text.strip() for item in body.items}
+    existing_ids = {ac["id"] for ac in current.acceptance_criteria}
+    if set(edits) != existing_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide exactly one edit for every current acceptance criterion",
+        )
+    updated_criteria = [{**ac, "text": edits[ac["id"]]} for ac in current.acceptance_criteria]
+    repo = RequirementRepository(session)
+    version = await repo.append_edited_criteria_version(requirement, current, updated_criteria)
     await session.commit()
     return _to_response(requirement, version)
 
