@@ -51,7 +51,7 @@ shows something older, use the `py` launcher to pick a supported version
 ```bash
 # 1. venv on a supported Python version
 py -3.13 -m venv .venv
-.venv\Scripts\activate          # Windows
+py -3.13 -m venv .venv         # Windows
 # source .venv/bin/activate     # macOS/Linux
 
 # 2. install deps (editable, with dev extras)

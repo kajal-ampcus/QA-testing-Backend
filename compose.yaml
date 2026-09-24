@@ -143,6 +143,8 @@ services:
       CHROME_NO_SANDBOX: "true"
       WORKER_MAX_JOBS: ${WORKER_MAX_JOBS:-1}
       WORKER_JOB_TIMEOUT: ${WORKER_JOB_TIMEOUT:-1200}
+      # ADD THIS
+      CHROME_IGNORE_CERTIFICATE_ERRORS: "true"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -171,7 +173,7 @@ services:
   frontend:
     image: qa-platform-frontend:local
     build:
-      context: ../frontend
+      context: ../QA-testing-Frontend
       dockerfile: Dockerfile
     ports: ["127.0.0.1:${FRONTEND_PORT:-3000}:80"]
     depends_on:

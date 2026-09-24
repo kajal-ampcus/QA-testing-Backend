@@ -131,17 +131,55 @@ class ChromeDevToolsClient:
         self._exit_stack: AsyncExitStack | None = None
         self._page_id: int | None = None
 
+    # def _server_params(self) -> StdioServerParameters:
+    #     command = os.environ.get("CHROME_DEVTOOLS_MCP_COMMAND")
+    #     args = [] if command else ["-y", "chrome-devtools-mcp@latest"]
+    #     if executable_path := os.environ.get("CHROME_EXECUTABLE_PATH"):
+    #         args.extend(["--executablePath", executable_path])
+    #     if os.environ.get("CHROME_NO_SANDBOX", "false").lower() == "true":
+    #         args.append("--chromeArg=--no-sandbox")
+    #     if os.environ.get("CHROME_DEVTOOLS_MCP_ISOLATED", "true").lower() == "true":
+    #         args.append("--isolated")
+    #     if self._headless:
+    #         args.append("--headless=true")
+    #     if self._allowed_url_pattern:
+    #         parsed = urlparse(self._allowed_url_pattern)
+    #         allowed_pattern = (
+    #             f"{parsed.scheme}://{parsed.netloc}/*"
+    #             if parsed.scheme in {"http", "https"} and parsed.netloc
+    #             else self._allowed_url_pattern
+    #         )
+    #         args.extend(["--allowedUrlPattern", allowed_pattern])
+    #     if os.environ.get("CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true").lower() == "true":
+    #         args.append("--redactNetworkHeaders")
+    #     return StdioServerParameters(
+    #         command=command or ("npx.cmd" if os.name == "nt" else "npx"), args=args
+    #     )
+
     def _server_params(self) -> StdioServerParameters:
         command = os.environ.get("CHROME_DEVTOOLS_MCP_COMMAND")
         args = [] if command else ["-y", "chrome-devtools-mcp@latest"]
+
         if executable_path := os.environ.get("CHROME_EXECUTABLE_PATH"):
             args.extend(["--executablePath", executable_path])
+
         if os.environ.get("CHROME_NO_SANDBOX", "false").lower() == "true":
             args.append("--chromeArg=--no-sandbox")
-        if os.environ.get("CHROME_DEVTOOLS_MCP_ISOLATED", "true").lower() == "true":
+
+        # Allow internal/self-signed HTTPS certificates
+        if os.environ.get(
+            "CHROME_IGNORE_CERTIFICATE_ERRORS", "false"
+        ).lower() == "true":
+            args.append("--chromeArg=--ignore-certificate-errors")
+
+        if os.environ.get(
+            "CHROME_DEVTOOLS_MCP_ISOLATED", "true"
+        ).lower() == "true":
             args.append("--isolated")
+
         if self._headless:
             args.append("--headless=true")
+
         if self._allowed_url_pattern:
             parsed = urlparse(self._allowed_url_pattern)
             allowed_pattern = (
@@ -150,12 +188,16 @@ class ChromeDevToolsClient:
                 else self._allowed_url_pattern
             )
             args.extend(["--allowedUrlPattern", allowed_pattern])
-        if os.environ.get("CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true").lower() == "true":
-            args.append("--redactNetworkHeaders")
-        return StdioServerParameters(
-            command=command or ("npx.cmd" if os.name == "nt" else "npx"), args=args
-        )
 
+        if os.environ.get(
+            "CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true"
+        ).lower() == "true":
+            args.append("--redactNetworkHeaders")
+
+        return StdioServerParameters(
+            command=command or ("npx.cmd" if os.name == "nt" else "npx"),
+            args=args,
+        )
     async def __aenter__(self) -> "ChromeDevToolsClient":
         self._exit_stack = AsyncExitStack()
         read, write = await self._exit_stack.enter_async_context(

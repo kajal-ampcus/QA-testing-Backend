@@ -15,7 +15,7 @@ COPY infra/ infra/
 RUN pip install --no-cache-dir .
 # Install browser and MCP at build time; no runtime package downloads.
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
-    && npm install --global chrome-devtools-mcp@latest \
+    && npm install --global chrome-devtools-mcp@latest pkce-challenge \
     && playwright install --with-deps chrome \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
