@@ -38,7 +38,6 @@ from core.agents.test_design.prompts import SYSTEM_PROMPT, build_user_prompt
 from core.agents.test_design.schemas import TestCaseBatch, TestCaseSpec, TestDesignResult
 from core.agents.test_design.validation import validate_case
 from domain.enums import EvidenceSource, confidence_band
-from infra.db.models.application_map import ApplicationMap
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.requirement_repo import RequirementRepository
 from infra.db.repositories.test_case_repo import TestCaseRepository
@@ -100,16 +99,24 @@ def _renumber_steps(tc: TestCaseSpec) -> TestCaseSpec:
     return tc
 
 
-def _states_to_dict(app_map: ApplicationMap) -> list[dict[str, Any]]:
-    return [
-        {
-            "state_code": s.state_code,
-            "url_pattern": s.url_pattern,
-            "reached_via": s.reached_via,
-            "elements": s.elements,
-        }
-        for s in app_map.states
+def _states_for_generation(
+    states: list[Any],
+    generation_scope: str,
+    previously_generated: set[str],
+    selected_fingerprints: set[str] | None = None,
+) -> list[Any]:
+    scoped = [
+        state
+        for state in states
+        if selected_fingerprints is None or state.fingerprint in selected_fingerprints
     ]
+    if generation_scope == "ungenerated":
+        scoped = [
+            state
+            for state in scoped
+            if state.fingerprint not in previously_generated
+        ]
+    return scoped
 
 
 class TestDesignAgent(BaseAgent[TestDesignResult]):
@@ -238,7 +245,56 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         # One call per AC keeps each response bounded to 2–4 test cases.
         # This is the core fix: a single call for all ACs produces JSON that
         # is too large for small models and gets truncated mid-object.
-        map_states = _states_to_dict(app_map)
+        generation_scope = request.payload.get("generation_scope", "all")
+        selected_area_ids = set(request.payload.get("selected_area_ids", []))
+        selected_module_ids = set(request.payload.get("selected_module_ids", []))
+        selected_fingerprints: set[str] | None = None
+        graph = (app_map.coverage or {}).get("app_flow_graph", {})
+        graph_nodes = graph.get("nodes", [])
+        if selected_module_ids:
+            selected_fingerprints = {
+                node["fingerprint"]
+                for node in graph_nodes
+                if node.get("module_id") in selected_module_ids
+                or node.get("area_id") in selected_area_ids
+            }
+            dashboard_roots = {
+                fingerprint
+                for area in graph.get("subgraphs", [])
+                if area.get("id") == "dashboard"
+                for fingerprint in area.get("state_fingerprints", [])[:1]
+            }
+            selected_fingerprints.update(dashboard_roots)
+        elif selected_area_ids:
+            selected_fingerprints = {
+                node["fingerprint"]
+                for node in graph_nodes
+                if node.get("area_id") in selected_area_ids
+            }
+        previously_generated: set[str] = set()
+        if generation_scope == "ungenerated":
+            previously_generated = await self._map_repo.generated_fingerprints(
+                request.project_id, requirement_id
+            )
+        scoped_states = _states_for_generation(
+            app_map.states,
+            generation_scope,
+            previously_generated,
+            selected_fingerprints,
+        )
+        if not scoped_states:
+            raise ValueError(
+                "No application states match the selected generation scope."
+            )
+        map_states = [
+            {
+                "state_code": state.state_code,
+                "url_pattern": state.url_pattern,
+                "reached_via": state.reached_via,
+                "elements": state.elements,
+            }
+            for state in scoped_states
+        ]
         requested_categories: dict[str, set[str]] = {
             ac_id: set(categories)
             for ac_id, categories in request.payload.get("target_categories", {}).items()
@@ -344,6 +400,11 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 },
             )
             artifacts.append(AgentArtifactRef(type="test_case", id=str(tc.id), version=1))
+        await self._map_repo.mark_generated_fingerprints(
+            app_map.id,
+            requirement_id,
+            {state.fingerprint for state in scoped_states},
+        )
         await self._test_case_repo.session.commit()
 
         # ── Build decisions ───────────────────────────────────────────────

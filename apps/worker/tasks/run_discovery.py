@@ -59,10 +59,54 @@ async def run_discovery(
                     coverage={
                         **(app_map.coverage or {}),
                         "cancelled": True,
-                        "states_discovered": len(app_map.states),
+                        "states_discovered": await map_repo.count_states(app_map.id),
                     },
                     diagnostic_evidence={
+                        "auth_attempted": bool(
+                            payload.get("target", {}).get("credential_ref")
+                        ),
+                        "auth_succeeded": False,
+                        "login_error": None,
+                        "screenshot_ref": None,
+                        "console_errors": [],
+                        "network_errors": [],
+                        "failed_actions": [],
                         "termination_detail": "Discovery was stopped by the user.",
+                    },
+                )
+                await session.commit()
+            raise
+        except Exception as exc:
+            # Preserve committed graph/checkpoint data and make unexpected
+            # worker failures resumable instead of leaving the map RUNNING.
+            await session.rollback()
+            app_map = await map_repo.get_latest_for_project(input_envelope.project_id)
+            if app_map is not None and app_map.status == "RUNNING":
+                await map_repo.set_status(
+                    app_map.id,
+                    "PARTIAL",
+                    termination_reason="WORKER_FAILURE",
+                    coverage={
+                        **(app_map.coverage or {}),
+                        "states_discovered": await map_repo.count_states(app_map.id),
+                        "recoverable": True,
+                    },
+                    diagnostic_evidence={
+                        "auth_attempted": bool(
+                            payload.get("target", {}).get("credential_ref")
+                        ),
+                        "auth_succeeded": False,
+                        "login_error": None,
+                        "screenshot_ref": None,
+                        "console_errors": [],
+                        "network_errors": [],
+                        "termination_detail": (
+                            "The discovery worker stopped unexpectedly. "
+                            "Saved observations can be continued."
+                        ),
+                        "failed_actions": [
+                            {"error": type(exc).__name__, "phase": "worker"}
+                        ],
                     },
                 )
                 await session.commit()

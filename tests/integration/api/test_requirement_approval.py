@@ -1,6 +1,7 @@
 """Milestone 1 acceptance and negative-path checks against a test PostgreSQL DB."""
 
 import os
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -191,11 +192,29 @@ def test_discovery_accepts_explicit_target_for_project(
     ).json()
     response = client.post(
         f"/api/v1/application-maps/projects/{project['id']}/discover",
-        json={"url": "https://staging.example.test/"},
+        json={
+            "url": "https://staging.example.test/",
+            "discovery_mode": "deep",
+            "selected_areas": ["dashboard"],
+            "selected_modules": ["users", "reports"],
+            "start_from_scratch": True,
+        },
     )
     assert response.status_code == 202
     assert response.json()["job_id"] == "test-job"
     assert queued[0]["target"]["url"] == "https://staging.example.test/"
+    assert queued[0]["discovery_scope"] == {
+        "mode": "deep",
+        "selected_areas": ["dashboard"],
+        "selected_modules": ["users", "reports"],
+    }
+    assert queued[0]["start_from_scratch"] is True
     fallback = client.post(f"/api/v1/application-maps/projects/{project['id']}/discover", json={})
     assert fallback.status_code == 202
     assert queued[1]["target"]["url"] == "https://chatgpt.com/"
+    assert queued[1]["start_from_scratch"] is False
+    missing_resume = client.post(
+        f"/api/v1/application-maps/projects/{project['id']}/discover",
+        json={"resume_application_map_id": str(uuid.uuid4())},
+    )
+    assert missing_resume.status_code == 404

@@ -48,6 +48,12 @@ class ApplicationMap(Base):
     # failed_actions, and termination_detail. Used by the UI to show a
     # developer-friendly diagnostic panel instead of a blank error state.
     diagnostic_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
+    discovery_checkpoint: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True, default=None
+    )
+    test_generation_coverage: Mapped[dict[str, list[str]]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     states: Mapped[list["ApplicationMapState"]] = relationship(back_populates="application_map")

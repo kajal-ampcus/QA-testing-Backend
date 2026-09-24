@@ -16,6 +16,7 @@ unmounted until its own milestone gives it real content.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from apps.api.middleware.request_logging import RequestLoggingMiddleware
 from apps.api.routers.health import router as health_router
 from apps.api.routers.v1.application_maps import router as application_maps_router
 from apps.api.routers.v1.approvals import router as approvals_router
@@ -24,16 +25,23 @@ from apps.api.routers.v1.projects import router as projects_router
 from apps.api.routers.v1.requirements import router as requirements_router
 from apps.api.routers.v1.test_cases import router as test_cases_router
 from apps.api.settings import ApiSettings
+from infra.logging_config import configure_logging
+
+
+api_logger = configure_logging("api", log_level=ApiSettings().log_level)
 
 
 def create_app() -> FastAPI:
+    api_logger.info("API startup complete; logger initialized at %s", ApiSettings().cors_origins)
     app = FastAPI(title="QA Platform API", version="0.1.0")
+    app.state.logger = api_logger
     app.add_middleware(
         CORSMiddleware,
         allow_origins=ApiSettings().cors_origins,
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type", "Accept"],
     )
+    app.add_middleware(RequestLoggingMiddleware)
 
     app.include_router(health_router)
     app.include_router(projects_router, prefix="/api/v1")

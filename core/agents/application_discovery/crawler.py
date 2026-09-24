@@ -389,7 +389,7 @@ class Crawler:
                     for s in path
                 ],
                 "elements": all_elements,
-                "evidence_ref": f"screenshot:{screenshot}" if screenshot else None,
+                "evidence_ref": screenshot,
             }
         )
         return fingerprint, raw_elements

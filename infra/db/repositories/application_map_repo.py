@@ -92,6 +92,58 @@ class ApplicationMapRepository(BaseRepository):
                 app_map.diagnostic_evidence = diagnostic_evidence
             await self.session.flush()
 
+    async def set_checkpoint(
+        self, application_map_id: uuid.UUID, checkpoint: dict[str, Any]
+    ) -> None:
+        app_map = await self.session.get(ApplicationMap, application_map_id)
+        if app_map is not None:
+            app_map.discovery_checkpoint = checkpoint
+            await self.session.flush()
+
+    async def generated_fingerprints(
+        self, project_id: uuid.UUID, requirement_id: uuid.UUID
+    ) -> set[str]:
+        result = await self.session.execute(
+            select(ApplicationMap.test_generation_coverage).where(
+                ApplicationMap.project_id == project_id
+            )
+        )
+        key = str(requirement_id)
+        return {
+            fingerprint
+            for coverage in result.scalars().all()
+            for fingerprint in (coverage or {}).get(key, [])
+        }
+
+    async def project_generation_coverage(
+        self, project_id: uuid.UUID
+    ) -> dict[str, list[str]]:
+        result = await self.session.execute(
+            select(ApplicationMap.test_generation_coverage).where(
+                ApplicationMap.project_id == project_id
+            )
+        )
+        merged: dict[str, set[str]] = {}
+        for coverage in result.scalars().all():
+            for requirement_id, fingerprints in (coverage or {}).items():
+                merged.setdefault(requirement_id, set()).update(fingerprints)
+        return {key: sorted(values) for key, values in merged.items()}
+
+    async def mark_generated_fingerprints(
+        self,
+        application_map_id: uuid.UUID,
+        requirement_id: uuid.UUID,
+        fingerprints: set[str],
+    ) -> None:
+        app_map = await self.session.get(ApplicationMap, application_map_id)
+        if app_map is None:
+            return
+        coverage = dict(app_map.test_generation_coverage or {})
+        key = str(requirement_id)
+        coverage[key] = sorted(set(coverage.get(key, [])) | fingerprints)
+        app_map.test_generation_coverage = coverage
+        await self.session.flush()
+
     async def get_with_states(self, application_map_id: uuid.UUID) -> ApplicationMap | None:
         result = await self.session.execute(
             select(ApplicationMap)

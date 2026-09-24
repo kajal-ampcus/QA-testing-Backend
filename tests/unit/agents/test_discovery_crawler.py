@@ -104,6 +104,54 @@ class RegistrationBrowser(FakeBrowser):
         return [TextBlock(text)]
 
 
+class DashboardBrowser(FakeBrowser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.authenticated = False
+
+    async def authenticate(self) -> None:
+        self.authenticated = True
+        self.page = "dashboard"
+
+    async def take_snapshot(self) -> list[TextBlock]:
+        snapshots = {
+            "root": (
+                'uid=1_0 RootWebArea "Login" url="https://sample.test/login"\n'
+                'uid=1_1 textbox "Username"\nuid=1_2 button "Log in"'
+            ),
+            "dashboard": (
+                'uid=2_0 RootWebArea "Dashboard" url="https://sample.test/dashboard"\n'
+                'uid=2_1 link "Users" url="https://sample.test/dashboard/users"\n'
+                'uid=2_2 link "Reports" url="https://sample.test/dashboard/reports"'
+            ),
+            "users": (
+                'uid=3_0 RootWebArea "Users" url="https://sample.test/dashboard/users"\n'
+                'uid=3_1 button "User details"'
+            ),
+            "user-details": (
+                'uid=4_0 RootWebArea "User details" url="https://sample.test/dashboard/users/1"\n'
+                'uid=4_1 heading "User details"'
+            ),
+            "reports": (
+                'uid=5_0 RootWebArea "Reports" url="https://sample.test/dashboard/reports"\n'
+                'uid=5_1 heading "Reports"'
+            ),
+        }
+        return [TextBlock(snapshots[self.page])]
+
+    async def navigate_page(self, url: str) -> None:
+        if url.endswith("/dashboard/users"):
+            self.page = "users"
+        elif url.endswith("/dashboard/reports"):
+            self.page = "reports"
+        else:
+            self.page = "dashboard" if self.authenticated else "root"
+
+    async def click(self, element_ref: str) -> None:
+        if element_ref == "3_1":
+            self.page = "user-details"
+
+
 @pytest.mark.asyncio
 async def test_crawler_records_observed_states_without_destructive_or_external_clicks() -> None:
     browser = FakeBrowser()
@@ -228,6 +276,241 @@ async def test_automatic_discovery_reports_internal_safety_breaker() -> None:
     assert status == "PARTIAL"
     assert crawler.termination_reason == "SAFETY_LIMIT_REACHED"
     assert crawler.coverage["safety_limit_kind"] == "depth"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "areas", "modules", "expected_urls"),
+    [
+        ("inventory", [], [], {"/login", "/dashboard"}),
+        (
+            "deep",
+            ["dashboard"],
+            ["users"],
+            {"/login", "/dashboard", "/dashboard/users", "/dashboard/users/1"},
+        ),
+        (
+            "deep",
+            ["dashboard"],
+            [],
+            {
+                "/login",
+                "/dashboard",
+                "/dashboard/users",
+                "/dashboard/users/1",
+                "/dashboard/reports",
+            },
+        ),
+    ],
+)
+async def test_scoped_dashboard_discovery(mode, areas, modules, expected_urls) -> None:
+    browsers: list[DashboardBrowser] = []
+
+    @asynccontextmanager
+    async def browser_context():
+        browser = DashboardBrowser()
+        browsers.append(browser)
+        yield browser
+
+    states: list[dict[str, Any]] = []
+    crawler = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=20, max_depth=5),
+        [],
+        login_url="https://sample.test/login",
+        authenticate=True,
+        worker_limit=2,
+        discovery_mode=mode,
+        selected_areas=areas,
+        selected_modules=modules,
+    )
+
+    async def record(state: dict[str, Any]) -> None:
+        states.append(state)
+
+    await crawler.crawl("https://sample.test/", record)
+
+    assert {state["url_pattern"] for state in states} == expected_urls
+    catalog = crawler.coverage["discovery_catalog"]
+    assert {area["id"] for area in catalog["areas"]} >= {"login", "dashboard"}
+    assert {module["id"] for module in catalog["modules"]} >= {"users", "reports"}
+    graph = crawler.coverage["app_flow_graph"]
+    assert any(edge["action"] == "authenticate(completion=dashboard)" for edge in graph["edges"])
+
+
+@pytest.mark.asyncio
+async def test_resume_crosses_old_page_limit_without_rediscovering_completed_states() -> None:
+    checkpoints: list[dict[str, Any]] = []
+
+    @asynccontextmanager
+    async def browser_context():
+        yield DashboardBrowser()
+
+    first_states: list[dict[str, Any]] = []
+
+    async def save_checkpoint(value: dict[str, Any]) -> None:
+        checkpoints.append(value)
+
+    async def record_first(state: dict[str, Any]) -> None:
+        first_states.append(state)
+
+    first = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=2, max_depth=5, automatic_limits=False),
+        [],
+        login_url="https://sample.test/login",
+        authenticate=True,
+        worker_limit=1,
+        discovery_mode="deep",
+        selected_areas=["dashboard"],
+        on_checkpoint=save_checkpoint,
+    )
+    assert await first.crawl("https://sample.test/", record_first) == "PARTIAL"
+    assert first.termination_reason == "MAX_PAGES_REACHED"
+
+    completed_fingerprints = {state["fingerprint"] for state in first_states}
+    resumed_states: list[dict[str, Any]] = []
+
+    async def record_resumed(state: dict[str, Any]) -> None:
+        resumed_states.append(state)
+
+    resumed = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=10, max_depth=5, automatic_limits=False),
+        [],
+        login_url="https://sample.test/login",
+        authenticate=True,
+        worker_limit=1,
+        discovery_mode="deep",
+        selected_areas=["dashboard"],
+        checkpoint=checkpoints[-1],
+        on_checkpoint=save_checkpoint,
+    )
+    assert await resumed.crawl("https://sample.test/", record_resumed) == "COMPLETE"
+    assert completed_fingerprints.isdisjoint(
+        {state["fingerprint"] for state in resumed_states}
+    )
+    assert resumed.coverage["states_discovered"] > len(first_states)
+    assert not checkpoints[-1]["pending_nodes"]
+    assert not checkpoints[-1]["failed_nodes"]
+
+
+@pytest.mark.asyncio
+async def test_resume_with_increased_depth_expands_saved_boundary() -> None:
+    checkpoints: list[dict[str, Any]] = []
+
+    @asynccontextmanager
+    async def browser_context():
+        yield FakeBrowser()
+
+    async def save_checkpoint(value: dict[str, Any]) -> None:
+        checkpoints.append(value)
+
+    first = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=5, max_depth=0, automatic_limits=False),
+        [],
+        login_url=None,
+        authenticate=False,
+        worker_limit=1,
+        on_checkpoint=save_checkpoint,
+    )
+    first_states: list[dict[str, Any]] = []
+
+    async def record_first(state: dict[str, Any]) -> None:
+        first_states.append(state)
+
+    assert await first.crawl("https://sample.test/", record_first) == "PARTIAL"
+    assert first.termination_reason == "MAX_DEPTH_REACHED"
+
+    resumed_states: list[dict[str, Any]] = []
+    resumed = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=5, max_depth=2, automatic_limits=False),
+        [],
+        login_url=None,
+        authenticate=False,
+        worker_limit=1,
+        checkpoint=checkpoints[-1],
+        on_checkpoint=save_checkpoint,
+    )
+
+    async def record_resumed(state: dict[str, Any]) -> None:
+        resumed_states.append(state)
+
+    assert await resumed.crawl("https://sample.test/", record_resumed) == "COMPLETE"
+    assert {state["url_pattern"] for state in resumed_states} == {"/details"}
+
+
+@pytest.mark.asyncio
+async def test_separate_runs_merge_into_one_deduplicated_application_graph() -> None:
+    public_browsers: list[RegistrationBrowser] = []
+
+    @asynccontextmanager
+    async def public_context():
+        browser = RegistrationBrowser()
+        public_browsers.append(browser)
+        yield browser
+
+    public = ParallelCrawler(
+        public_context,
+        CrawlBudget(max_pages=10, max_depth=3),
+        [],
+        login_url="https://sample.test/login",
+        authenticate=False,
+        worker_limit=1,
+        discovery_mode="complete",
+    )
+    public_states: list[dict[str, Any]] = []
+
+    async def record_public(state: dict[str, Any]) -> None:
+        public_states.append(state)
+
+    await public.crawl("https://sample.test/", record_public)
+    first_graph = public.coverage["app_flow_graph"]
+    checkpoint = {
+        "version": 1,
+        "jobs": [],
+        "completed_nodes": [],
+        "graph": first_graph,
+        "modules": public.coverage["discovery_catalog"]["modules"],
+    }
+
+    @asynccontextmanager
+    async def authenticated_context():
+        yield RegistrationBrowser()
+
+    authenticated = ParallelCrawler(
+        authenticated_context,
+        CrawlBudget(max_pages=10, max_depth=3),
+        [],
+        login_url="https://sample.test/login",
+        authenticate=True,
+        worker_limit=1,
+        discovery_mode="deep",
+        selected_areas=["dashboard"],
+        checkpoint=checkpoint,
+    )
+    newly_persisted: list[dict[str, Any]] = []
+
+    async def record_authenticated(state: dict[str, Any]) -> None:
+        newly_persisted.append(state)
+
+    await authenticated.crawl("https://sample.test/", record_authenticated)
+    combined = authenticated.coverage["app_flow_graph"]
+    fingerprints = [node["fingerprint"] for node in combined["nodes"]]
+
+    assert len(fingerprints) == len(set(fingerprints))
+    assert {node["url_pattern"] for node in combined["nodes"]} == {
+        "/login",
+        "/register",
+        "/dashboard",
+    }
+    assert {state["url_pattern"] for state in newly_persisted} == {"/dashboard"}
+    assert any(
+        edge["action"] == "authenticate(completion=dashboard)"
+        for edge in combined["edges"]
+    )
 
 
 async def _noop() -> None:

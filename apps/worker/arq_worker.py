@@ -13,7 +13,10 @@ from typing import Any
 
 from apps.worker.tasks.run_discovery import run_discovery
 from infra.db.session import DATABASE_URL
+from infra.logging_config import configure_logging
 from infra.queue.settings import QueueSettings
+
+logger = configure_logging("worker", log_level=os.environ.get("LOG_LEVEL", "INFO"))
 
 if os.name == "nt" and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
     # MCP's stdio transport uses its Popen fallback on the selector loop.
@@ -25,6 +28,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     # Per-worker-process resources go here as later milestones need them
     # (e.g. a shared object-storage client). Nothing needed yet.
     ctx["database_url"] = DATABASE_URL
+    logger.info("Worker startup complete; queue=%s", QueueSettings().redis_url)
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:

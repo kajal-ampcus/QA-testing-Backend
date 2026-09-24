@@ -12,7 +12,7 @@ import json
 import os
 import re
 import uuid
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -22,6 +22,9 @@ from mcp.client.stdio import stdio_client
 
 from core.tool_gateway.secret_resolver import resolve_login
 from core.tool_gateway.snapshot import parse_elements
+
+
+_MATH_EXPRESSION = re.compile(r"\b(\d+)\s*([+\-*/x×÷−–])\s*(\d+)\b")
 
 
 def _snapshot_text(snapshot: object) -> str:
@@ -101,7 +104,7 @@ def _solve_math_captcha(text: str) -> int | None:
     Handles: 'What is 3 + 3?', 'What is 6 - 2?', 'What is 8 + 1?' etc.
     Returns the integer answer or None if no math expression found.
     """
-    match = re.search(r"\b(\d+)\s*([+\-*/x×÷])\s*(\d+)\b", text)
+    match = _MATH_EXPRESSION.search(text)
     if not match:
         return None
     a, op, b = int(match.group(1)), match.group(2), int(match.group(3))
@@ -113,6 +116,8 @@ def _solve_math_captcha(text: str) -> int | None:
         "×": a * b,
         "/": (a // b if b and a % b == 0 else None),
         "÷": (a // b if b and a % b == 0 else None),
+        "−": a - b,
+        "–": a - b,
     }.get(op)
 
 
@@ -157,9 +162,36 @@ class ChromeDevToolsClient:
     #     )
 
     def _server_params(self) -> StdioServerParameters:
-        command = os.environ.get("CHROME_DEVTOOLS_MCP_COMMAND")
-        args = [] if command else ["-y", "chrome-devtools-mcp@latest"]
+        """
+        Build StdioServerParameters for chrome-devtools-mcp.
 
+        Priority:
+          1. CHROME_DEVTOOLS_MCP_COMMAND env var  (Docker: chrome-devtools-mcp)
+          2. Globally installed chrome-devtools-mcp binary  (fastest, no download)
+          3. npx without @latest  (uses npm cache; slow on first run)
+
+        Root cause of MCPError: Connection closed in a fresh directory:
+          `npx -y chrome-devtools-mcp@latest` downloads the package every time
+          the npm cache is empty. The stdio stream never opens in time, so
+          the MCP client gets Connection closed before Chrome even starts.
+          Fix: use the global binary (npm install -g chrome-devtools-mcp) or
+          set CHROME_DEVTOOLS_MCP_COMMAND=chrome-devtools-mcp in .env.
+        """
+        import shutil
+
+        command = os.environ.get("CHROME_DEVTOOLS_MCP_COMMAND")
+        using_npx = False
+
+        if not command:
+            if shutil.which("chrome-devtools-mcp"):
+                # Global binary is on PATH — use it directly, no npm overhead
+                command = "chrome-devtools-mcp"
+            else:
+                # Fallback to npx without @latest so the local npm cache is used
+                command = "npx.cmd" if os.name == "nt" else "npx"
+                using_npx = True
+
+        args = ["chrome-devtools-mcp"] if using_npx else []
         if executable_path := os.environ.get("CHROME_EXECUTABLE_PATH"):
             args.extend(["--executablePath", executable_path])
 
@@ -188,6 +220,9 @@ class ChromeDevToolsClient:
                 else self._allowed_url_pattern
             )
             args.extend(["--allowedUrlPattern", allowed_pattern])
+        if os.environ.get("CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true").lower() == "true":
+            args.append("--redactNetworkHeaders")
+        return StdioServerParameters(command=command, args=args)
 
         if os.environ.get(
             "CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true"
@@ -267,7 +302,7 @@ class ChromeDevToolsClient:
         if image is None or not getattr(image, "data", None):
             raise RuntimeError("Discovery screenshot returned no image data")
         target.write_bytes(base64.b64decode(image.data))
-        return str(target)
+        return f"/api/v1/application-maps/evidence/{target.name}"
 
     async def inspect_elements(self, snapshot: object) -> list[dict[str, Any]]:
         """Attach browser-read attributes to the exact observed MCP controls."""
@@ -362,11 +397,24 @@ class ChromeDevToolsClient:
         before we can read it.
         """
         previous_signature: tuple[tuple[str, str, str], ...] = ()
+        last_text = ""
         for _ in range(30):
             text = _snapshot_text(await self.take_snapshot())
-            loading = bool(re.search(r"\b(?:loading|please wait|starting service)\b", text, re.I))
+            last_text = text
+            elements = parse_elements(text)
+            usable_controls = any(
+                element["role"] in {"link", "button", "textbox", "combobox", "checkbox", "radio"}
+                for element in elements
+            )
+            # Accessibility snapshots can retain hidden loading labels after the
+            # page is usable. Do not let that stale text block discovery when the
+            # application already exposes actionable controls.
+            loading = (
+                bool(re.search(r"\b(?:loading|please wait|starting service)\b", text, re.I))
+                and not usable_controls
+            )
             has_captcha_label = "captcha" in text.lower()
-            has_math_question = bool(re.search(r"\b\d+\s*[+\-*/x×÷]\s*\d+\b", text))
+            has_math_question = bool(_MATH_EXPRESSION.search(text))
             captcha_still_loading = (
                 has_captcha_label
                 and not has_math_question
@@ -378,7 +426,7 @@ class ChromeDevToolsClient:
                     re.sub(r"\d+", "#", element["name"]),
                     element.get("url", ""),
                 )
-                for element in parse_elements(text)
+                for element in elements
                 if element["role"]
                 in {
                     "RootWebArea",
@@ -395,14 +443,56 @@ class ChromeDevToolsClient:
                 signature
                 and signature == previous_signature
                 and not loading
-                and not captcha_still_loading
+                and (not captcha_still_loading or usable_controls)
             ):
                 return
             previous_signature = signature
             await asyncio.sleep(0.5)
-        raise RuntimeError("Application did not become ready (timed out after 15 s)")
+        available_controls = [
+            f'{element["role"]}:{element["name"][:80]}'
+            for element in parse_elements(last_text)
+            if element["role"] in {"link", "button", "textbox", "combobox", "checkbox", "radio"}
+        ][:10]
+        raise RuntimeError(
+            "Application did not become ready (timed out after 15 s); "
+            f"available_controls={available_controls!r}"
+        )
 
     # ── Authentication ───────────────────────────────────────────────────────
+    async def _read_visible_login_text(self) -> str:
+        """Read DOM text plus text embedded in an inline SVG CAPTCHA image."""
+        result = await self._call(
+            "evaluate_script",
+            self._page_args(
+                function="""() => {
+                    const bodyText = document.body?.innerText || "";
+                    const captchaImage = Array.from(document.images).find((image) =>
+                        /captcha/i.test(`${image.alt || ""} ${image.title || ""}`)
+                    );
+                    if (!captchaImage?.src?.startsWith("data:image/svg+xml")) {
+                        return bodyText;
+                    }
+                    try {
+                        const separator = captchaImage.src.indexOf(",");
+                        if (separator < 0) return bodyText;
+                        const encodedSvg = captchaImage.src.slice(separator + 1);
+                        const svg = captchaImage.src.includes(";base64,")
+                            ? atob(encodedSvg)
+                            : decodeURIComponent(encodedSvg);
+                        const captchaText = new DOMParser()
+                            .parseFromString(svg, "image/svg+xml")
+                            .documentElement.textContent || "";
+                        return `${bodyText}\n${captchaText}`;
+                    } catch (_error) {
+                        return bodyText;
+                    }
+                }""",
+                args=[],
+                waitForStableDom=False,
+            ),
+        )
+        return _snapshot_text(result)
+
     async def authenticate(self) -> None:
         """
         Fill the login form — including arithmetic CAPTCHA — and submit.
@@ -442,6 +532,14 @@ class ChromeDevToolsClient:
             # Always re-read the snapshot fresh — CAPTCHA changes on each attempt
             await self.wait_until_ready()
             text = _snapshot_text(await self.take_snapshot())
+            if not _MATH_EXPRESSION.search(text):
+                # A visual CAPTCHA can be absent from the accessibility tree.
+                # Read visible DOM text and inline SVG text through the same
+                # isolated MCP session. Cafinity renders the question as an
+                # SVG image, so document.body.innerText alone cannot see it.
+                with suppress(Exception):
+                    dom_text = await self._read_visible_login_text()
+                    text = f"{text}\n{dom_text}"
             controls = _parse_controls(text)
 
             # ── Locate form fields ──────────────────────────────────────────
@@ -558,10 +656,33 @@ class ChromeDevToolsClient:
             if captcha_uid:
                 answer = _solve_math_captcha(text)
                 if answer is None:
-                    raise RuntimeError(
-                        f"CAPTCHA input found but could not parse math question from page text.\n"
-                        f"Page text snippet: {text[:500]}"
+                    refresh_uid = _find_uid(
+                        controls,
+                        ["refresh captcha", "reload captcha", "new captcha", "refresh"],
+                        {"button", "link"},
                     )
+                    # Cafinity occasionally returns an empty CAPTCHA and asks
+                    # the user to refresh it. Mirror that recovery automatically.
+                    if refresh_uid:
+                        for _refresh_attempt in range(3):
+                            await self.click(refresh_uid)
+                            for _ in range(10):
+                                await asyncio.sleep(0.5)
+                                text = _snapshot_text(await self.take_snapshot())
+                                if not _MATH_EXPRESSION.search(text):
+                                    with suppress(Exception):
+                                        dom_text = await self._read_visible_login_text()
+                                        text = f"{text}\n{dom_text}"
+                                answer = _solve_math_captcha(text)
+                                if answer is not None:
+                                    break
+                            if answer is not None:
+                                break
+                    if answer is None:
+                        raise RuntimeError(
+                            "CAPTCHA remained unavailable after 3 automatic refreshes. "
+                            f"Page text snippet: {text[:500]}"
+                        )
                 await self.fill(captcha_uid, str(answer))
 
             # ── Submit ──────────────────────────────────────────────────────

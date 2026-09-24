@@ -23,9 +23,20 @@ class DiscoveryCrawlBudgetPayload(BaseModel):
     automatic_limits: bool = True
 
 
+class DiscoveryScopePayload(BaseModel):
+    """User-controlled crawl scope. Limits remain safety guards only."""
+
+    mode: str = Field(default="complete", pattern="^(inventory|deep|complete)$")
+    selected_areas: list[str] = Field(default_factory=list)
+    selected_modules: list[str] = Field(default_factory=list)
+
+
 class DiscoveryPayload(BaseModel):
     target: DiscoveryTarget
     focus_requirements: list[str] = Field(
         default_factory=list, description="REQ-IDs (with or without @version) used to derive crawl keywords"
     )
     crawl_budget: DiscoveryCrawlBudgetPayload = Field(default_factory=DiscoveryCrawlBudgetPayload)
+    discovery_scope: DiscoveryScopePayload = Field(default_factory=DiscoveryScopePayload)
+    resume_application_map_id: str | None = None
+    start_from_scratch: bool = False

@@ -51,6 +51,7 @@ def _human_termination(reason: str | None) -> str:
         "AUTHENTICATION_OR_CRAWL_ERROR": "An error occurred during authentication or crawling.",
         "CANCELLED_BY_USER": "Discovery was stopped by the user.",
         "SAFETY_LIMIT_REACHED": "Automatic discovery reached an internal safety circuit breaker.",
+        "WORKER_FAILURE": "The discovery worker stopped unexpectedly. Continue from the saved checkpoint.",
     }.get(reason or "", reason or "Unknown reason.")
 
 
@@ -111,9 +112,80 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
 
         login_url = await self._get_login_url(payload.target.credential_ref, payload.target.url)
 
-        app_map = await self._map_repo.create(
-            project_id=request.project_id, base_url=payload.target.url
-        )
+        checkpoint: dict[str, Any] | None = None
+        if payload.resume_application_map_id:
+            app_map = await self._map_repo.get_with_states(
+                uuid.UUID(payload.resume_application_map_id)
+            )
+            if app_map is None or app_map.project_id != request.project_id:
+                raise ValueError("Discovery checkpoint not found")
+            if app_map.status != "PARTIAL" or not app_map.discovery_checkpoint:
+                raise ValueError("Discovery is not resumable")
+            checkpoint = app_map.discovery_checkpoint
+            graph = checkpoint.setdefault("graph", {})
+            checkpoint_nodes = {
+                node["fingerprint"]: node for node in graph.setdefault("nodes", [])
+            }
+            for persisted_state in app_map.states:
+                checkpoint_nodes.setdefault(
+                    persisted_state.fingerprint,
+                    {
+                        "fingerprint": persisted_state.fingerprint,
+                        "url_pattern": persisted_state.url_pattern,
+                        "area_id": "unknown",
+                    },
+                )
+            graph["nodes"] = list(checkpoint_nodes.values())
+            app_map.status = "RUNNING"
+            app_map.termination_reason = None
+        elif payload.start_from_scratch:
+            # A user-requested scratch run creates a new canonical map version
+            # with no inherited nodes, graph, catalog, or checkpoint frontier.
+            # The previous version remains available as history, but it cannot
+            # leak states into this run.
+            app_map = await self._map_repo.create(
+                project_id=request.project_id, base_url=payload.target.url
+            )
+        else:
+            # Every separate run contributes to the project's canonical map.
+            # Ordinary non-resume runs incrementally retain the combined graph.
+            app_map = await self._map_repo.get_latest_for_project(request.project_id)
+            if app_map is None:
+                app_map = await self._map_repo.create(
+                    project_id=request.project_id, base_url=payload.target.url
+                )
+            else:
+                previous_graph = (app_map.coverage or {}).get("app_flow_graph", {})
+                previous_catalog = (app_map.coverage or {}).get(
+                    "discovery_catalog", {}
+                )
+                checkpoint = {
+                    "version": 1,
+                    "jobs": [],
+                    "completed_nodes": [],
+                    "graph": {
+                        "nodes": list(previous_graph.get("nodes", [])),
+                        "edges": list(previous_graph.get("edges", [])),
+                        "subgraphs": list(previous_graph.get("subgraphs", [])),
+                    },
+                    "modules": list(previous_catalog.get("modules", [])),
+                }
+                checkpoint_nodes = {
+                    node["fingerprint"]: node
+                    for node in checkpoint["graph"]["nodes"]
+                }
+                for persisted_state in app_map.states:
+                    checkpoint_nodes.setdefault(
+                        persisted_state.fingerprint,
+                        {
+                            "fingerprint": persisted_state.fingerprint,
+                            "url_pattern": persisted_state.url_pattern,
+                            "area_id": "unknown",
+                        },
+                    )
+                checkpoint["graph"]["nodes"] = list(checkpoint_nodes.values())
+                app_map.status = "RUNNING"
+                app_map.termination_reason = None
         await self._map_repo.session.commit()
 
         automatic_limits = payload.crawl_budget.automatic_limits
@@ -133,7 +205,9 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             automatic_limits=automatic_limits,
         )
 
-        state_count = 0
+        # Newly inserted maps do not have this async relationship loaded.
+        # An explicit query avoids implicit lazy loading (MissingGreenlet).
+        state_count = await self._map_repo.count_states(app_map.id)
 
         async def _on_state_discovered(state: dict[str, Any]) -> None:
             nonlocal state_count
@@ -147,6 +221,10 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 elements=state["elements"],
                 evidence_ref=state.get("evidence_ref"),
             )
+            await self._map_repo.session.commit()
+
+        async def _on_checkpoint(checkpoint_value: dict[str, Any]) -> None:
+            await self._map_repo.set_checkpoint(app_map.id, checkpoint_value)
             await self._map_repo.session.commit()
 
         status = "FAILED"
@@ -169,6 +247,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         }
 
         try:
+            saved_config = (checkpoint or {}).get("configuration", {})
             crawler = ParallelCrawler(
                     client_factory=lambda: self._tool_gateway.chrome_devtools(
                         self.name, payload.target.url, payload.target.credential_ref
@@ -178,14 +257,33 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                     login_url=login_url,
                     authenticate=bool(payload.target.credential_ref),
                     worker_limit=payload.crawl_budget.worker_limit,
+                    discovery_mode=saved_config.get(
+                        "mode", payload.discovery_scope.mode
+                    ),
+                    selected_areas=saved_config.get(
+                        "selected_areas", payload.discovery_scope.selected_areas
+                    ),
+                    selected_modules=saved_config.get(
+                        "selected_modules", payload.discovery_scope.selected_modules
+                    ),
+                    checkpoint=checkpoint,
+                    on_checkpoint=_on_checkpoint,
                 )
             status = await crawler.crawl(payload.target.url, _on_state_discovered)
             coverage = crawler.coverage
             diagnostic["failed_actions"] = coverage.get("failed_actions", [])
+            diagnostic["screenshot_ref"] = next(
+                (
+                    failure.get("screenshot_ref")
+                    for failure in diagnostic["failed_actions"]
+                    if failure.get("screenshot_ref")
+                ),
+                None,
+            )
             diagnostic["auth_succeeded"] = coverage.get("authenticated_explored", False)
 
         except Exception as exc:
-            status = "FAILED"
+            status = "PARTIAL"
             error_message = str(exc)
             # Classify the error type for the UI
             msg_lower = error_message.lower()

@@ -5,11 +5,14 @@ crawl can take minutes) and surfaces the resulting map.
 """
 
 import asyncio
+import os
 import uuid
+from pathlib import Path
 from typing import Any
 
 from arq.jobs import Job, JobStatus
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import AnyHttpUrl, BaseModel, Field
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -35,6 +38,11 @@ class DiscoveryTriggerRequest(BaseModel):
     max_duration_seconds: int = Field(default=900, ge=1)
     worker_limit: int = Field(default=3, ge=1, le=5)
     automatic_limits: bool = True
+    discovery_mode: str = Field(default="complete", pattern="^(inventory|deep|complete)$")
+    selected_areas: list[str] = Field(default_factory=list)
+    selected_modules: list[str] = Field(default_factory=list)
+    resume_application_map_id: uuid.UUID | None = None
+    start_from_scratch: bool = False
 
     model_config = {
         "json_schema_extra": {
@@ -85,6 +93,10 @@ class ApplicationMapResponse(BaseModel):
     termination_reason: str | None
     coverage: dict[str, Any]
     states: list[ApplicationMapStateResponse]
+    diagnostic_evidence: dict[str, Any] | None = None
+    discovery_checkpoint: dict[str, Any] | None = None
+    test_generation_coverage: dict[str, list[str]] = Field(default_factory=dict)
+    project_test_generation_coverage: dict[str, list[str]] = Field(default_factory=dict)
 
 
 @router.post(
@@ -111,6 +123,15 @@ async def trigger_discovery(
             detail="Provide a discovery URL or set the project's application_url",
         )
     target_url = str(body.url) if body.url is not None else str(project.application_url)
+    if body.resume_application_map_id:
+        resumable = await ApplicationMapRepository(session).get_with_states(
+            body.resume_application_map_id
+        )
+        if resumable is None or resumable.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Discovery checkpoint not found")
+        if resumable.status != "PARTIAL" or not resumable.discovery_checkpoint:
+            raise HTTPException(status_code=409, detail="Discovery is not resumable")
+        target_url = resumable.base_url
     approved_refs: list[str] = []
     for ref in body.focus_requirements:
         code, _, version_ref = ref.partition("@v")
@@ -145,6 +166,17 @@ async def trigger_discovery(
             "worker_limit": body.worker_limit,
             "automatic_limits": body.automatic_limits,
         },
+        "discovery_scope": {
+            "mode": body.discovery_mode,
+            "selected_areas": body.selected_areas,
+            "selected_modules": body.selected_modules,
+        },
+        "resume_application_map_id": (
+            str(body.resume_application_map_id)
+            if body.resume_application_map_id
+            else None
+        ),
+        "start_from_scratch": body.start_from_scratch,
     }
     try:
         job_id = await enqueue("run_discovery", str(project_id), payload)
@@ -180,15 +212,28 @@ async def cancel_discovery_job(job_id: str) -> DiscoveryCancelResponse:
     if status == JobStatus.not_found:
         raise HTTPException(status_code=404, detail="Discovery job not found")
     if status == JobStatus.complete:
-        raise HTTPException(status_code=409, detail="Discovery job has already finished")
+        return DiscoveryCancelResponse(job_id=job_id, status="already_finished")
 
     cancelled = await job.abort(timeout=15)
     if not cancelled:
-        raise HTTPException(
-            status_code=409,
-            detail="Discovery could not be stopped because it has already finished",
-        )
+        return DiscoveryCancelResponse(job_id=job_id, status="already_finished")
     return DiscoveryCancelResponse(job_id=job_id, status="cancelled")
+
+
+@router.get("/evidence/{filename}", response_class=FileResponse)
+async def get_discovery_evidence(filename: str) -> FileResponse:
+    """Serve a discovery screenshot without permitting arbitrary file access."""
+    try:
+        screenshot_id = uuid.UUID(Path(filename).stem)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Discovery evidence not found") from exc
+    if filename != f"{screenshot_id}.png":
+        raise HTTPException(status_code=404, detail="Discovery evidence not found")
+    directory = Path(os.environ.get("DISCOVERY_EVIDENCE_DIR", "artifacts/discovery")).resolve()
+    target = directory / filename
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Discovery evidence not found")
+    return FileResponse(target, media_type="image/png", filename=filename)
 
 
 @router.get("/projects/{project_id}", response_model=ApplicationMapResponse)
@@ -202,6 +247,7 @@ async def get_latest_map(
             status_code=404,
             detail="No application map yet for this project — trigger discovery first",
         )
+    project_generation_coverage = await repo.project_generation_coverage(project_id)
     return ApplicationMapResponse(
         id=app_map.id,
         project_id=app_map.project_id,
@@ -210,6 +256,7 @@ async def get_latest_map(
         status=app_map.status,
         termination_reason=app_map.termination_reason,
         coverage=app_map.coverage,
+        diagnostic_evidence=app_map.diagnostic_evidence,
         states=[
             ApplicationMapStateResponse(
                 state_code=s.state_code,
@@ -221,4 +268,7 @@ async def get_latest_map(
             )
             for s in app_map.states
         ],
+        discovery_checkpoint=app_map.discovery_checkpoint,
+        test_generation_coverage=app_map.test_generation_coverage,
+        project_test_generation_coverage=project_generation_coverage,
     )

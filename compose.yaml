@@ -16,6 +16,7 @@ x-backend-env: &backend-env
   OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-qa-platform-evidence}
   OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
   OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  LOG_BASE_DIR: /app/logs
 
 x-backend: &backend
   image: qa-platform-api:local
@@ -107,6 +108,9 @@ services:
   api:
     <<: *backend
     ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
+    volumes:
+      - ./logs:/app/logs
+      - ./artifacts:/app/artifacts
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -145,6 +149,10 @@ services:
       WORKER_JOB_TIMEOUT: ${WORKER_JOB_TIMEOUT:-1200}
       # ADD THIS
       CHROME_IGNORE_CERTIFICATE_ERRORS: "true"
+      DISCOVERY_EVIDENCE_DIR: /app/artifacts/discovery
+    volumes:
+      - ./logs:/app/logs
+      - ./artifacts:/app/artifacts
     depends_on:
       migrate:
         condition: service_completed_successfully

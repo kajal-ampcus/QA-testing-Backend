@@ -71,7 +71,13 @@ def test_requirement_to_discovery_to_test_cases():
             response = state["map"] or {"detail": "No map yet"}
             code = 200 if state["map"] else 404
         elif path == "/test-cases/projects/p1/generate":
-            assert data == {"requirement_id": "r1", "application_map_id": "m1"}
+            assert data == {
+                "requirement_id": "r1",
+                "application_map_id": "m1",
+                "generation_scope": "all",
+                "selected_area_ids": [],
+                "selected_module_ids": [],
+            }
             state["tests"] = [{"id": "t1", "tc_code": "TC-001", "requirement_id": "r1", "requirement_version": 2, "status": "DRAFT", "current": {"version": 1, "title": "Successful sign in", "objective": "Verify sign in", "category": "positive", "preconditions": [], "steps": [{"step_number": 1, "action": "Click sign in", "target": {"role": "button"}, "expected": "Dashboard"}], "expected_result": "Dashboard is visible", "test_data": {}, "traceability": ["REQ-001:AC-1"], "confidence": 0.9}}]
             response = {"generated": 1, "test_cases": state["tests"], "uncovered_acs": [], "partial_pairing_acs": [], "needs_review_test_cases": []}
         elif path == "/test-cases/projects/p1":

@@ -4,9 +4,10 @@ Includes generation trigger, list, get, and approval gate.
 """
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
@@ -24,8 +25,11 @@ router = APIRouter(prefix="/test-cases", tags=["test-cases"])
 
 class GenerateTestCasesRequest(BaseModel):
     requirement_id: uuid.UUID
-    application_map_id: uuid.UUID | None = None  # defaults to latest COMPLETE map
+    application_map_id: uuid.UUID | None = None  # defaults to latest usable map
     target_categories: dict[str, list[str]] | None = None
+    generation_scope: Literal["all", "ungenerated"] = "all"
+    selected_area_ids: list[str] = Field(default_factory=list)
+    selected_module_ids: list[str] = Field(default_factory=list)
 
 
 class TestStepOut(BaseModel):
@@ -83,7 +87,7 @@ async def generate_test_cases(
 
     Flow:
       1. Load approved requirement + its current version (ACs, description)
-      2. Load latest COMPLETE application map (or pinned map_id)
+      2. Load latest COMPLETE or PARTIAL application map (or pinned map_id)
       3. Call LLM with structured tool use → list of TestCaseSpec
       4. Validate AC coverage (warn but don't block if some ACs uncovered)
       5. Persist each test case as TestCase + TestCaseVersion (status=DRAFT)
@@ -91,7 +95,7 @@ async def generate_test_cases(
 
     Requires:
       - requirement must be APPROVED
-      - application map must be COMPLETE
+      - application map must be COMPLETE or contain usable PARTIAL observations
     """
     req_repo = RequirementRepository(db)
     map_repo = ApplicationMapRepository(db)
@@ -118,6 +122,9 @@ async def generate_test_cases(
             "requirement_id": str(body.requirement_id),
             **({"application_map_id": str(body.application_map_id)} if body.application_map_id else {}),
             **({"target_categories": body.target_categories} if body.target_categories else {}),
+            "generation_scope": body.generation_scope,
+            "selected_area_ids": body.selected_area_ids,
+            "selected_module_ids": body.selected_module_ids,
         },
     )
 
