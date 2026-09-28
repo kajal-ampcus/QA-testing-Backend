@@ -26,7 +26,11 @@ class DiscoveryCrawlBudgetPayload(BaseModel):
 class DiscoveryScopePayload(BaseModel):
     """User-controlled crawl scope. Limits remain safety guards only."""
 
-    mode: str = Field(default="complete", pattern="^(inventory|deep|complete)$")
+    mode: str = Field(
+        default="entry_points",
+        pattern="^(entry_points|auth_flow|modules|inventory|deep|complete)$",
+    )
+    selected_auth_flow: str | None = None
     selected_areas: list[str] = Field(default_factory=list)
     selected_modules: list[str] = Field(default_factory=list)
 

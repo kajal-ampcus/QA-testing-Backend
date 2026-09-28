@@ -11,6 +11,7 @@ import base64
 import json
 import os
 import re
+import time
 import uuid
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
@@ -25,6 +26,60 @@ from core.tool_gateway.snapshot import parse_elements
 
 
 _MATH_EXPRESSION = re.compile(r"\b(\d+)\s*([+\-*/x×÷−–])\s*(\d+)\b")
+
+
+class ApplicationReadinessTimeoutError(RuntimeError):
+    """The target application never left a loading or hosting wake-up page."""
+
+
+class SecurityVerificationRequiredError(RuntimeError):
+    """The target stopped at an interactive anti-bot verification page."""
+
+
+_HOSTING_COLD_START_PATTERN = re.compile(
+    r"\b(?:"
+    r"service\s+waking\s+up|"
+    r"allocating\s+compute\s+resources|"
+    r"incoming\s+http\s+request\s+detected|"
+    r"service\s+(?:is\s+)?starting|"
+    r"spinning\s+up|"
+    r"starting\s+(?:the\s+)?service|"
+    r"waking\s+(?:the\s+)?service|"
+    r"application\s+(?:is\s+)?loading|"
+    r"application\s+failed\s+to\s+respond|"
+    r"service\s+unavailable|"
+    r"bad\s+gateway"
+    r")\b",
+    re.I,
+)
+
+_SECURITY_VERIFICATION_PATTERN = re.compile(
+    r"(?:"
+    r"performing\s+security\s+verification|"
+    r"verify\s+(?:that\s+)?you\s+are\s+(?:a\s+)?human|"
+    r"security\s+service\s+to\s+protect\s+against\s+malicious\s+bots|"
+    r"checking\s+(?:if\s+)?(?:the\s+)?site\s+connection\s+is\s+secure|"
+    r"cloudflare[^\n]{0,160}(?:challenge|verification|verify\s+you\s+are\s+human)"
+    r")",
+    re.I,
+)
+
+
+def _is_hosting_cold_start_page(text: str) -> bool:
+    return bool(_HOSTING_COLD_START_PATTERN.search(text))
+
+
+def _is_security_verification_page(text: str) -> bool:
+    """Recognize an anti-bot interstitial before it is mapped as application UI."""
+    return bool(_SECURITY_VERIFICATION_PATTERN.search(text))
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def _snapshot_text(snapshot: object) -> str:
@@ -127,11 +182,31 @@ class ChromeDevToolsClient:
         allowed_url_pattern: str | None = None,
         headless: bool = True,
         credential_ref: str | None = None,
+        page_ready_timeout_seconds: float | None = None,
+        cold_start_reload_interval_seconds: float | None = None,
+        security_verification_timeout_seconds: float | None = None,
+        ready_poll_interval_seconds: float = 0.5,
     ) -> None:
         self._allowed_url_pattern = allowed_url_pattern
         self._headless = headless
         self._credential_ref = credential_ref
         self._authenticated = False
+        self._page_ready_timeout_seconds = (
+            page_ready_timeout_seconds
+            if page_ready_timeout_seconds is not None
+            else _positive_float_env("DISCOVERY_PAGE_READY_TIMEOUT_SECONDS", 180.0)
+        )
+        self._cold_start_reload_interval_seconds = (
+            cold_start_reload_interval_seconds
+            if cold_start_reload_interval_seconds is not None
+            else _positive_float_env("DISCOVERY_COLD_START_RELOAD_INTERVAL_SECONDS", 15.0)
+        )
+        self._security_verification_timeout_seconds = (
+            security_verification_timeout_seconds
+            if security_verification_timeout_seconds is not None
+            else _positive_float_env("DISCOVERY_SECURITY_VERIFICATION_TIMEOUT_SECONDS", 30.0)
+        )
+        self._ready_poll_interval_seconds = max(0.01, ready_poll_interval_seconds)
         self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
         self._page_id: int | None = None
@@ -362,6 +437,99 @@ class ChromeDevToolsClient:
     async def fill(self, element_ref: str, value: str) -> Any:
         return await self._call("fill", self._page_args(uid=element_ref, value=value))
 
+    @staticmethod
+    def _is_stale_interaction_error(error: Exception) -> bool:
+        message = str(error).lower()
+        return (
+            "did not become interactive" in message
+            or "failed to interact with the element" in message
+            or "node is detached" in message
+            or "element is not attached" in message
+        )
+
+    async def _set_control_value(self, element_ref: str, value: str) -> Any:
+        """Set a re-rendering controlled input in one browser-side operation."""
+        value_json = json.dumps(value)
+        function = """(element) => {
+            const nextValue = VALUE;
+            element.focus();
+            const prototype = Object.getPrototypeOf(element);
+            const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+            if (setter) setter.call(element, nextValue);
+            else element.value = nextValue;
+            element.dispatchEvent(new InputEvent("input", {
+                bubbles: true,
+                inputType: "insertText",
+                data: nextValue,
+            }));
+            element.dispatchEvent(new Event("change", { bubbles: true }));
+            return element.value;
+        }""".replace("VALUE", value_json)
+        return await self._call(
+            "evaluate_script",
+            self._page_args(function=function, args=[element_ref], waitForStableDom=False),
+        )
+
+    async def _fill_authentication_field(
+        self,
+        element_ref: str,
+        value: str,
+        names: list[str],
+        roles: set[str],
+        description: str,
+    ) -> None:
+        """Fill a login field, recovering when a reactive page replaces its DOM node."""
+        try:
+            await self.fill(element_ref, value)
+            return
+        except RuntimeError as error:
+            if not self._is_stale_interaction_error(error):
+                raise
+            first_error = error
+
+        # A controlled input can be replaced while chrome-devtools-mcp types.
+        # Reacquire it from a fresh snapshot, then update it atomically while
+        # still dispatching the events expected by React/Vue/Angular forms.
+        await asyncio.sleep(0.2)
+        controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
+        refreshed_ref = _find_uid(controls, names, roles)
+        if not refreshed_ref:
+            raise RuntimeError(
+                f"{description.capitalize()} disappeared while the login form was updating."
+            ) from first_error
+        try:
+            await self._set_control_value(refreshed_ref, value)
+        except RuntimeError as recovery_error:
+            raise RuntimeError(
+                f"Could not fill the {description} after the page replaced its input element: "
+                f"{recovery_error}"
+            ) from recovery_error
+
+    async def _click_authentication_control(
+        self,
+        element_ref: str,
+        names: list[str],
+        roles: set[str],
+        description: str,
+    ) -> None:
+        """Click a login control again with a fresh UID if the form re-rendered."""
+        try:
+            await self.click(element_ref)
+            return
+        except RuntimeError as error:
+            if not self._is_stale_interaction_error(error):
+                raise
+            first_error = error
+
+        await asyncio.sleep(0.2)
+        controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
+        refreshed_ref = _find_uid(controls, names, roles)
+        if not refreshed_ref:
+            raise RuntimeError(
+                f"{description.capitalize()} disappeared while the login form was updating."
+            ) from first_error
+        await self.click(refreshed_ref)
+
     async def handle_dialog(self, action: str = "dismiss") -> Any:
         return await self._call("handle_dialog", {"action": action})
 
@@ -390,26 +558,43 @@ class ChromeDevToolsClient:
 
     # ── CAPTCHA-aware wait ───────────────────────────────────────────────────
     async def wait_until_ready(self) -> None:
-        """
-        Wait for a stable snapshot. Special rule: if the page has a CAPTCHA
-        section but the math question ('What is N op M?') has not appeared yet,
-        keep waiting — the question loads asynchronously and we must not proceed
-        before we can read it.
-        """
+        """Wait for the application, including hosting cold starts, to become usable."""
         previous_signature: tuple[tuple[str, str, str], ...] = ()
         last_text = ""
-        for _ in range(30):
+        started = time.monotonic()
+        last_reload = started
+        saw_hosting_cold_start = False
+        security_verification_started: float | None = None
+
+        while time.monotonic() - started < self._page_ready_timeout_seconds:
             text = _snapshot_text(await self.take_snapshot())
             last_text = text
+            security_verification = _is_security_verification_page(text)
+            now = time.monotonic()
+            if security_verification:
+                security_verification_started = security_verification_started or now
+                if (
+                    now - security_verification_started
+                    >= self._security_verification_timeout_seconds
+                ):
+                    raise SecurityVerificationRequiredError(
+                        "The target is showing an interactive security verification page "
+                        "(for example, Cloudflare Turnstile). Discovery waited for it to "
+                        "clear automatically but did not click or bypass the challenge. "
+                        "Allowlist the discovery worker or disable the challenge for the "
+                        "test/staging hostname, then continue discovery from the checkpoint."
+                    )
+                await asyncio.sleep(self._ready_poll_interval_seconds)
+                continue
+            security_verification_started = None
             elements = parse_elements(text)
             usable_controls = any(
                 element["role"] in {"link", "button", "textbox", "combobox", "checkbox", "radio"}
                 for element in elements
             )
-            # Accessibility snapshots can retain hidden loading labels after the
-            # page is usable. Do not let that stale text block discovery when the
-            # application already exposes actionable controls.
-            loading = (
+            hosting_cold_start = _is_hosting_cold_start_page(text)
+            saw_hosting_cold_start = saw_hosting_cold_start or hosting_cold_start
+            loading = hosting_cold_start or (
                 bool(re.search(r"\b(?:loading|please wait|starting service)\b", text, re.I))
                 and not usable_controls
             )
@@ -446,15 +631,41 @@ class ChromeDevToolsClient:
                 and (not captcha_still_loading or usable_controls)
             ):
                 return
+
+            if (
+                hosting_cold_start
+                and now - last_reload >= self._cold_start_reload_interval_seconds
+            ):
+                root = next(
+                    (element for element in elements if element["role"] == "RootWebArea"),
+                    None,
+                )
+                current_url = root.get("url") if root else None
+                if current_url and urlparse(current_url).scheme in {"http", "https"}:
+                    await self.navigate_page(current_url)
+                    previous_signature = ()
+                    last_reload = time.monotonic()
+                    await asyncio.sleep(self._ready_poll_interval_seconds)
+                    continue
+
             previous_signature = signature
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self._ready_poll_interval_seconds)
+
+        timeout = self._page_ready_timeout_seconds
+        if saw_hosting_cold_start:
+            raise ApplicationReadinessTimeoutError(
+                "Target application remained on a hosting cold-start page for "
+                f"{timeout:g} seconds. The service did not finish waking before discovery's "
+                "readiness deadline. Increase DISCOVERY_PAGE_READY_TIMEOUT_SECONDS or keep "
+                "the target service warm, then retry discovery."
+            )
         available_controls = [
             f'{element["role"]}:{element["name"][:80]}'
             for element in parse_elements(last_text)
             if element["role"] in {"link", "button", "textbox", "combobox", "checkbox", "radio"}
         ][:10]
-        raise RuntimeError(
-            "Application did not become ready (timed out after 15 s); "
+        raise ApplicationReadinessTimeoutError(
+            f"Application did not become ready within {timeout:g} seconds; "
             f"available_controls={available_controls!r}"
         )
 
@@ -546,64 +757,67 @@ class ChromeDevToolsClient:
             # Custom selectors from the stored credential are always first.
             # Fallback lists cover common field names across any website.
             # _find_uid uses 3-pass fuzzy matching so partial names also work.
+            username_names = [
+                secret.get("username_selector", ""),
+                # Common email/username field names across websites
+                "email",
+                "email address",
+                "e-mail",
+                "your email",
+                "username",
+                "user name",
+                "user",
+                "userid",
+                "user id",
+                "login",
+                "account",
+                "phone",
+                "mobile",
+                "mobile number",
+                "id",
+                "identifier",
+            ]
             username_uid = _find_uid(
                 controls,
-                [
-                    secret.get("username_selector", ""),
-                    # Common email/username field names across websites
-                    "email",
-                    "email address",
-                    "e-mail",
-                    "your email",
-                    "username",
-                    "user name",
-                    "user",
-                    "userid",
-                    "user id",
-                    "login",
-                    "account",
-                    "phone",
-                    "mobile",
-                    "mobile number",
-                    "id",
-                    "identifier",
-                ],
+                username_names,
                 {"textbox", "input", "combobox", "searchbox"},
             )
+            password_names = [
+                secret.get("password_selector", ""),
+                "password",
+                "pass",
+                "passphrase",
+                "secret",
+                "pin",
+                "your password",
+                "current password",
+            ]
             password_uid = _find_uid(
                 controls,
-                [
-                    secret.get("password_selector", ""),
-                    "password",
-                    "pass",
-                    "passphrase",
-                    "secret",
-                    "pin",
-                    "your password",
-                    "current password",
-                ],
+                password_names,
                 {"textbox", "input"},
             )
+            submit_names = [
+                secret.get("submit_selector", ""),
+                # Common submit button names across websites
+                "log in",
+                "login",
+                "sign in",
+                "signin",
+                "submit",
+                "continue",
+                "next",
+                "go",
+                "enter",
+                "access",
+                "proceed",
+                "send",
+                "get started",
+                "let me in",
+            ]
             submit_uid = _find_uid(
                 controls,
-                [
-                    secret.get("submit_selector", ""),
-                    # Common submit button names across websites
-                    "log in",
-                    "login",
-                    "sign in",
-                    "signin",
-                    "submit",
-                    "continue",
-                    "next",
-                    "go",
-                    "enter",
-                    "access",
-                    "proceed",
-                    "send",
-                    "get started",
-                    "let me in",
-                ],
+                submit_names,
                 {"button", "link"},
             )
 
@@ -635,21 +849,34 @@ class ChromeDevToolsClient:
                 )
 
             # ── Fill credentials ────────────────────────────────────────────
-            await self.fill(username_uid, secret["username"])
-            await self.fill(password_uid, secret["password"])
+            await self._fill_authentication_field(
+                username_uid,
+                secret["username"],
+                username_names,
+                {"textbox", "input", "combobox", "searchbox"},
+                "username field",
+            )
+            await self._fill_authentication_field(
+                password_uid,
+                secret["password"],
+                password_names,
+                {"textbox", "input"},
+                "password field",
+            )
 
             # ── Solve arithmetic CAPTCHA ────────────────────────────────────
             # BUG FIX 1+2: snapshot is already fresh from above — math question
             # is guaranteed present because wait_until_ready() waited for it.
+            captcha_names = [
+                secret.get("captcha_selector", ""),
+                "your answer",
+                "captcha answer",
+                "answer",
+                "captcha",
+            ]
             captcha_uid = _find_uid(
                 controls,
-                [
-                    secret.get("captcha_selector", ""),
-                    "your answer",
-                    "captcha answer",
-                    "answer",
-                    "captcha",
-                ],
+                captcha_names,
                 {"textbox", "input"},
             )
 
@@ -683,10 +910,21 @@ class ChromeDevToolsClient:
                             "CAPTCHA remained unavailable after 3 automatic refreshes. "
                             f"Page text snippet: {text[:500]}"
                         )
-                await self.fill(captcha_uid, str(answer))
+                await self._fill_authentication_field(
+                    captcha_uid,
+                    str(answer),
+                    captcha_names,
+                    {"textbox", "input"},
+                    "CAPTCHA field",
+                )
 
             # ── Submit ──────────────────────────────────────────────────────
-            await self.click(submit_uid)
+            await self._click_authentication_control(
+                submit_uid,
+                submit_names,
+                {"button", "link"},
+                "login button",
+            )
 
             # ── Wait and check result ───────────────────────────────────────
             # Poll up to 10 seconds for the page to change

@@ -7,6 +7,9 @@ import pytest
 
 from core.agents.application_discovery.crawler import CrawlBudget, Crawler
 from core.agents.application_discovery.parallel_crawler import ParallelCrawler
+from core.tool_gateway.mcp_clients.chrome_devtools_client import (
+    SecurityVerificationRequiredError,
+)
 
 
 class TextBlock:
@@ -65,6 +68,14 @@ class FakeBrowser:
 
     async def take_screenshot(self) -> str:
         return ""
+
+
+class SecurityVerificationBrowser(FakeBrowser):
+    async def wait_until_ready(self) -> None:
+        raise SecurityVerificationRequiredError("Cloudflare verification is still active")
+
+    async def take_screenshot(self) -> str:
+        return "/api/v1/application-maps/evidence/security.png"
 
 
 class RegistrationBrowser(FakeBrowser):
@@ -258,6 +269,39 @@ async def test_parallel_crawler_uses_isolated_pool_and_preserves_flow_edges() ->
 
 
 @pytest.mark.asyncio
+async def test_security_verification_pauses_with_resumable_root_job() -> None:
+    checkpoints: list[dict[str, Any]] = []
+
+    @asynccontextmanager
+    async def browser_context():
+        yield SecurityVerificationBrowser()
+
+    async def save_checkpoint(value: dict[str, Any]) -> None:
+        checkpoints.append(value)
+
+    crawler = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=10, max_depth=2),
+        [],
+        login_url=None,
+        authenticate=False,
+        worker_limit=1,
+        on_checkpoint=save_checkpoint,
+    )
+
+    status = await crawler.crawl("https://sample.test/", lambda state: _noop())
+
+    assert status == "PARTIAL"
+    assert crawler.termination_reason == "SECURITY_VERIFICATION_REQUIRED"
+    assert crawler.coverage["security_verification_required"] is True
+    assert crawler.coverage["states_discovered"] == 0
+    assert crawler.coverage["failed_actions"][0]["screenshot_ref"].endswith(
+        "security.png"
+    )
+    assert checkpoints[-1]["pending_nodes"]
+
+
+@pytest.mark.asyncio
 async def test_automatic_discovery_reports_internal_safety_breaker() -> None:
     @asynccontextmanager
     async def browser_context():
@@ -279,31 +323,7 @@ async def test_automatic_discovery_reports_internal_safety_breaker() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("mode", "areas", "modules", "expected_urls"),
-    [
-        ("inventory", [], [], {"/login", "/dashboard"}),
-        (
-            "deep",
-            ["dashboard"],
-            ["users"],
-            {"/login", "/dashboard", "/dashboard/users", "/dashboard/users/1"},
-        ),
-        (
-            "deep",
-            ["dashboard"],
-            [],
-            {
-                "/login",
-                "/dashboard",
-                "/dashboard/users",
-                "/dashboard/users/1",
-                "/dashboard/reports",
-            },
-        ),
-    ],
-)
-async def test_scoped_dashboard_discovery(mode, areas, modules, expected_urls) -> None:
+async def test_staged_discovery_inventories_entry_points_then_modules_then_selected_scope() -> None:
     browsers: list[DashboardBrowser] = []
 
     @asynccontextmanager
@@ -312,35 +332,132 @@ async def test_scoped_dashboard_discovery(mode, areas, modules, expected_urls) -
         browsers.append(browser)
         yield browser
 
-    states: list[dict[str, Any]] = []
-    crawler = ParallelCrawler(
+    entry_states: list[dict[str, Any]] = []
+    entry = ParallelCrawler(
         browser_context,
         CrawlBudget(max_pages=20, max_depth=5),
         [],
         login_url="https://sample.test/login",
         authenticate=True,
         worker_limit=2,
-        discovery_mode=mode,
-        selected_areas=areas,
-        selected_modules=modules,
+        discovery_mode="entry_points",
     )
 
-    async def record(state: dict[str, Any]) -> None:
-        states.append(state)
+    async def record_entry(state: dict[str, Any]) -> None:
+        entry_states.append(state)
 
-    await crawler.crawl("https://sample.test/", record)
+    await entry.crawl("https://sample.test/", record_entry)
+    assert {state["url_pattern"] for state in entry_states} == {"/login"}
+    assert not any(browser.authenticated for browser in browsers)
+    entry_catalog = entry.coverage["discovery_catalog"]
+    auth_flow = entry_catalog["authentication_flows"][0]
+    assert auth_flow["kind"] == "login"
 
-    assert {state["url_pattern"] for state in states} == expected_urls
-    catalog = crawler.coverage["discovery_catalog"]
-    assert {area["id"] for area in catalog["areas"]} >= {"login", "dashboard"}
-    assert {module["id"] for module in catalog["modules"]} >= {"users", "reports"}
-    graph = crawler.coverage["app_flow_graph"]
-    assert any(edge["action"] == "authenticate(completion=dashboard)" for edge in graph["edges"])
+    checkpoint = {
+        "version": 1,
+        "jobs": [],
+        "completed_nodes": [],
+        "graph": entry.coverage["app_flow_graph"],
+        "modules": [],
+        "authentication_flows": entry_catalog["authentication_flows"],
+        "module_inventory_flows": [],
+    }
+    module_states: list[dict[str, Any]] = []
+    module_inventory = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=20, max_depth=5),
+        [],
+        login_url="https://sample.test/login",
+        authenticate=True,
+        worker_limit=2,
+        discovery_mode="modules",
+        selected_auth_flow=auth_flow["id"],
+        checkpoint=checkpoint,
+    )
+
+    async def record_modules(state: dict[str, Any]) -> None:
+        module_states.append(state)
+
+    await module_inventory.crawl("https://sample.test/", record_modules)
+    assert {state["url_pattern"] for state in module_states} == {"/dashboard"}
+    module_catalog = module_inventory.coverage["discovery_catalog"]
+    assert {module["label"] for module in module_catalog["modules"]} == {"Users", "Reports"}
+    assert module_catalog["module_inventory_flows"] == [auth_flow["id"]]
+
+    deep_checkpoint = {
+        "version": 1,
+        "jobs": [],
+        "completed_nodes": [],
+        "graph": module_inventory.coverage["app_flow_graph"],
+        "modules": module_catalog["modules"],
+        "authentication_flows": module_catalog["authentication_flows"],
+        "module_inventory_flows": module_catalog["module_inventory_flows"],
+    }
+    deep_states: list[dict[str, Any]] = []
+    deep = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=20, max_depth=5),
+        [],
+        login_url="https://sample.test/login",
+        authenticate=True,
+        worker_limit=2,
+        discovery_mode="deep",
+        selected_auth_flow=auth_flow["id"],
+        selected_modules=["users"],
+        checkpoint=deep_checkpoint,
+    )
+
+    async def record_deep(state: dict[str, Any]) -> None:
+        deep_states.append(state)
+
+    await deep.crawl("https://sample.test/", record_deep)
+    assert {state["url_pattern"] for state in deep_states} == {
+        "/dashboard/users",
+        "/dashboard/users/{id}",
+    }
+    combined = deep.coverage["app_flow_graph"]
+    assert len(combined["nodes"]) == len({node["fingerprint"] for node in combined["nodes"]})
+    assert any(
+        edge["action"] == f"authenticate(flow={auth_flow['id']})"
+        for edge in combined["edges"]
+    )
 
 
 @pytest.mark.asyncio
 async def test_resume_crosses_old_page_limit_without_rediscovering_completed_states() -> None:
     checkpoints: list[dict[str, Any]] = []
+    auth_flow_id = "auth-login"
+    initial_checkpoint = {
+        "version": 1,
+        "jobs": [],
+        "completed_nodes": [],
+        "graph": {"nodes": [], "edges": [], "subgraphs": []},
+        "modules": [
+            {
+                "id": "users",
+                "label": "Users",
+                "area_id": "authenticated",
+                "auth_flow_id": auth_flow_id,
+                "entry_action": {
+                    "role": "link",
+                    "name": "Users",
+                    "url": "https://sample.test/dashboard/users",
+                },
+                "state_fingerprints": [],
+            }
+        ],
+        "authentication_flows": [
+            {
+                "id": auth_flow_id,
+                "label": "Login",
+                "kind": "login",
+                "url_pattern": "/login",
+                "state_fingerprint": "login-state",
+                "selectable": True,
+            }
+        ],
+        "module_inventory_flows": [auth_flow_id],
+    }
 
     @asynccontextmanager
     async def browser_context():
@@ -362,7 +479,9 @@ async def test_resume_crosses_old_page_limit_without_rediscovering_completed_sta
         authenticate=True,
         worker_limit=1,
         discovery_mode="deep",
-        selected_areas=["dashboard"],
+        selected_auth_flow=auth_flow_id,
+        selected_modules=["users"],
+        checkpoint=initial_checkpoint,
         on_checkpoint=save_checkpoint,
     )
     assert await first.crawl("https://sample.test/", record_first) == "PARTIAL"
@@ -382,7 +501,8 @@ async def test_resume_crosses_old_page_limit_without_rediscovering_completed_sta
         authenticate=True,
         worker_limit=1,
         discovery_mode="deep",
-        selected_areas=["dashboard"],
+        selected_auth_flow=auth_flow_id,
+        selected_modules=["users"],
         checkpoint=checkpoints[-1],
         on_checkpoint=save_checkpoint,
     )
@@ -459,7 +579,7 @@ async def test_separate_runs_merge_into_one_deduplicated_application_graph() -> 
         login_url="https://sample.test/login",
         authenticate=False,
         worker_limit=1,
-        discovery_mode="complete",
+        discovery_mode="entry_points",
     )
     public_states: list[dict[str, Any]] = []
 
@@ -474,12 +594,15 @@ async def test_separate_runs_merge_into_one_deduplicated_application_graph() -> 
         "completed_nodes": [],
         "graph": first_graph,
         "modules": public.coverage["discovery_catalog"]["modules"],
+        "authentication_flows": public.coverage["discovery_catalog"]["authentication_flows"],
+        "module_inventory_flows": [],
     }
 
     @asynccontextmanager
     async def authenticated_context():
         yield RegistrationBrowser()
 
+    auth_flow = public.coverage["discovery_catalog"]["authentication_flows"][0]
     authenticated = ParallelCrawler(
         authenticated_context,
         CrawlBudget(max_pages=10, max_depth=3),
@@ -487,8 +610,8 @@ async def test_separate_runs_merge_into_one_deduplicated_application_graph() -> 
         login_url="https://sample.test/login",
         authenticate=True,
         worker_limit=1,
-        discovery_mode="deep",
-        selected_areas=["dashboard"],
+        discovery_mode="modules",
+        selected_auth_flow=auth_flow["id"],
         checkpoint=checkpoint,
     )
     newly_persisted: list[dict[str, Any]] = []
@@ -508,7 +631,7 @@ async def test_separate_runs_merge_into_one_deduplicated_application_graph() -> 
     }
     assert {state["url_pattern"] for state in newly_persisted} == {"/dashboard"}
     assert any(
-        edge["action"] == "authenticate(completion=dashboard)"
+        edge["action"] == f"authenticate(flow={auth_flow['id']})"
         for edge in combined["edges"]
     )
 

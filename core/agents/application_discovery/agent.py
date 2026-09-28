@@ -13,6 +13,7 @@ can display a developer-friendly report rather than a blank error state.
 import os
 import uuid
 from typing import Any
+from urllib.parse import urljoin
 
 from core.agents.application_discovery.crawler import CrawlBudget
 from core.agents.application_discovery.parallel_crawler import ParallelCrawler
@@ -52,6 +53,11 @@ def _human_termination(reason: str | None) -> str:
         "CANCELLED_BY_USER": "Discovery was stopped by the user.",
         "SAFETY_LIMIT_REACHED": "Automatic discovery reached an internal safety circuit breaker.",
         "WORKER_FAILURE": "The discovery worker stopped unexpectedly. Continue from the saved checkpoint.",
+        "SECURITY_VERIFICATION_REQUIRED": (
+            "Discovery paused because the target requires interactive security verification. "
+            "Allowlist the discovery worker or disable the challenge for the test/staging "
+            "hostname, then continue from the saved checkpoint."
+        ),
     }.get(reason or "", reason or "Unknown reason.")
 
 
@@ -169,6 +175,12 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                         "subgraphs": list(previous_graph.get("subgraphs", [])),
                     },
                     "modules": list(previous_catalog.get("modules", [])),
+                    "authentication_flows": list(
+                        previous_catalog.get("authentication_flows", [])
+                    ),
+                    "module_inventory_flows": list(
+                        previous_catalog.get("module_inventory_flows", [])
+                    ),
                 }
                 checkpoint_nodes = {
                     node["fingerprint"]: node
@@ -243,11 +255,35 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             "console_errors": [],
             "network_errors": [],
             "failed_actions": [],
+            "security_verification_required": False,
             "termination_detail": None,
         }
 
         try:
             saved_config = (checkpoint or {}).get("configuration", {})
+            discovery_mode = saved_config.get("mode", payload.discovery_scope.mode)
+            selected_auth_flow = saved_config.get(
+                "selected_auth_flow", payload.discovery_scope.selected_auth_flow
+            )
+            available_auth_flows = {
+                flow["id"]: flow
+                for flow in (checkpoint or {}).get("authentication_flows", [])
+            }
+            selected_flow = available_auth_flows.get(selected_auth_flow or "")
+            auth_entry_url = (
+                urljoin(payload.target.url, selected_flow["url_pattern"])
+                if selected_flow
+                else login_url
+            )
+            needs_authenticated_session = discovery_mode in {"modules", "deep"}
+            if needs_authenticated_session and not payload.target.credential_ref:
+                raise ValueError(
+                    "The selected authentication flow requires a saved test account."
+                )
+            if needs_authenticated_session and not selected_flow:
+                raise ValueError(
+                    "Select one of the authentication flows discovered from the application before continuing."
+                )
             crawler = ParallelCrawler(
                     client_factory=lambda: self._tool_gateway.chrome_devtools(
                         self.name, payload.target.url, payload.target.credential_ref
@@ -255,11 +291,14 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                     budget=budget,
                     keywords=keywords,
                     login_url=login_url,
-                    authenticate=bool(payload.target.credential_ref),
-                    worker_limit=payload.crawl_budget.worker_limit,
-                    discovery_mode=saved_config.get(
-                        "mode", payload.discovery_scope.mode
+                    authenticate=(
+                        bool(payload.target.credential_ref)
+                        and discovery_mode in {"modules", "deep", "complete"}
                     ),
+                    worker_limit=payload.crawl_budget.worker_limit,
+                    discovery_mode=discovery_mode,
+                    selected_auth_flow=selected_auth_flow,
+                    auth_entry_url=auth_entry_url,
                     selected_areas=saved_config.get(
                         "selected_areas", payload.discovery_scope.selected_areas
                     ),
@@ -281,6 +320,33 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 None,
             )
             diagnostic["auth_succeeded"] = coverage.get("authenticated_explored", False)
+            security_failure = next(
+                (
+                    failure
+                    for failure in diagnostic["failed_actions"]
+                    if failure.get("error") == "SecurityVerificationRequiredError"
+                ),
+                None,
+            )
+            if security_failure:
+                diagnostic["auth_attempted"] = False
+                diagnostic["security_verification_required"] = True
+                diagnostic["termination_detail"] = security_failure.get(
+                    "detail", _human_termination("SECURITY_VERIFICATION_REQUIRED")
+                )
+            readiness_failure = next(
+                (
+                    failure
+                    for failure in diagnostic["failed_actions"]
+                    if failure.get("error") == "ApplicationReadinessTimeoutError"
+                ),
+                None,
+            )
+            if readiness_failure:
+                diagnostic["termination_detail"] = readiness_failure.get(
+                    "detail",
+                    "The target hosting service did not finish waking before discovery timed out.",
+                )
 
         except Exception as exc:
             status = "PARTIAL"
@@ -346,7 +412,10 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 f"Discovered {state_count} application state(s), status={status}, "
                 f"termination_reason={termination_reason}"
             ),
-            reason="Two-phase crawl: unauthenticated pages first, then authenticated pages",
+            reason=(
+                "Application-agnostic staged discovery: entry points, authenticated modules, "
+                "then selected scope"
+            ),
             evidence=[f"{state_count} states persisted to application_map {app_map.id}"],
             confidence=0.9 if status == "COMPLETE" else (0.6 if status == "PARTIAL" else 0.1),
             source=EvidenceSource.OBSERVED_DOM,
@@ -366,6 +435,8 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 )
             ],
             decisions=[decision],
-            requires_human_approval=False,
+            requires_human_approval=(
+                termination_reason == "SECURITY_VERIFICATION_REQUIRED"
+            ),
             errors=[error_message] if error_message else [],
         )

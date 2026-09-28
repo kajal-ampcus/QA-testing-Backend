@@ -362,6 +362,22 @@ class Crawler:
             {
                 **{k: v for k, v in el.items() if k != "uid"},
                 "element_code": f"EL-{i:03d}",
+                "locator": {
+                    "strategy": "role_name",
+                    "role": el["role"],
+                    "name": el["name"],
+                },
+                "validation": {
+                    key: el[key]
+                    for key in (
+                        "required",
+                        "readonly",
+                        "disabled",
+                        "description",
+                        "options",
+                    )
+                    if key in el
+                },
                 "risk": classify_risk(el["role"], el["name"]).value,
                 "source": EvidenceSource.OBSERVED_DOM.value,
             }

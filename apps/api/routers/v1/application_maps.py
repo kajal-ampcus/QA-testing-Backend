@@ -38,7 +38,11 @@ class DiscoveryTriggerRequest(BaseModel):
     max_duration_seconds: int = Field(default=900, ge=1)
     worker_limit: int = Field(default=3, ge=1, le=5)
     automatic_limits: bool = True
-    discovery_mode: str = Field(default="complete", pattern="^(inventory|deep|complete)$")
+    discovery_mode: str = Field(
+        default="entry_points",
+        pattern="^(entry_points|auth_flow|modules|inventory|deep|complete)$",
+    )
+    selected_auth_flow: str | None = Field(default=None, max_length=200)
     selected_areas: list[str] = Field(default_factory=list)
     selected_modules: list[str] = Field(default_factory=list)
     resume_application_map_id: uuid.UUID | None = None
@@ -168,6 +172,7 @@ async def trigger_discovery(
         },
         "discovery_scope": {
             "mode": body.discovery_mode,
+            "selected_auth_flow": body.selected_auth_flow,
             "selected_areas": body.selected_areas,
             "selected_modules": body.selected_modules,
         },

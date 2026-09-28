@@ -2,23 +2,40 @@ FROM node:22-bookworm-slim AS node
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+ARG CHROME_DEVTOOLS_MCP_VERSION=1.10.1
+ARG PKCE_CHALLENGE_VERSION=6.0.0
 WORKDIR /app
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Install the browser runtime before application source so ordinary code
+# changes reuse this expensive layer. Debian's Chromium package avoids
+# Playwright downloading a second 135 MB Google Chrome archive.
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        ca-certificates \
+        chromium \
+        fonts-liberation \
+        fonts-noto-color-emoji \
+    && chromium --version \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pin the MCP runtime so a new upstream release cannot break reproducible builds.
+RUN npm install --global \
+        "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" \
+        "pkce-challenge@${PKCE_CHALLENGE_VERSION}" \
+    && chrome-devtools-mcp --version \
+    && npm cache clean --force
+
 COPY pyproject.toml README.md ./
 COPY apps/ apps/
 COPY core/ core/
 COPY domain/ domain/
 COPY schemas/ schemas/
 COPY infra/ infra/
-RUN pip install --no-cache-dir .
-# Install browser and MCP at build time; no runtime package downloads.
-RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
-    && npm install --global chrome-devtools-mcp@latest pkce-challenge \
-    && playwright install --with-deps chrome \
-    && npm cache clean --force \
-    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/root/.cache/pip pip install --retries 10 --timeout 120 .
 COPY scripts/docker_entrypoint.py scripts/docker_entrypoint.py
 RUN useradd --create-home --uid 10001 qa
 USER qa

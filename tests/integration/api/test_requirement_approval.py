@@ -205,6 +205,7 @@ def test_discovery_accepts_explicit_target_for_project(
     assert queued[0]["target"]["url"] == "https://staging.example.test/"
     assert queued[0]["discovery_scope"] == {
         "mode": "deep",
+        "selected_auth_flow": None,
         "selected_areas": ["dashboard"],
         "selected_modules": ["users", "reports"],
     }
