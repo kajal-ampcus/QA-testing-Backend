@@ -72,8 +72,10 @@ discovery does not download npm packages per job. Its MCP command/browser path
 are explicit, while local non-Docker usage retains npx. Chrome runs headless as
 an unprivileged container user; its browser sandbox is disabled only in this
 local Docker setup to avoid user-namespace restrictions. The worker has a 1 GiB
-shared-memory allocation and defaults to one concurrent browser job. Its job
-timeout exceeds the default 900-second crawl budget.
+shared-memory allocation and defaults to one queued discovery job at a time.
+Each discovery job uses its own bounded browser pool (three workers by default,
+up to five); set `worker_limit` in the discovery request to tune parallel paths.
+Its job timeout exceeds the default 900-second crawl budget.
 
 MinIO images are sourced from `quay.io/minio` because the old Docker Hub pulls
 failed. Registry reference: [MinIO Docker documentation](https://github.com/minio/minio/blob/master/docs/docker/README.md).

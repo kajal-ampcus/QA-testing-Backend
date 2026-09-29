@@ -11,11 +11,12 @@ import base64
 import json
 import os
 import re
+import tempfile
 import time
 import uuid
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 from urllib.parse import urlparse
 
 from mcp import ClientSession, StdioServerParameters
@@ -176,7 +177,46 @@ def _solve_math_captcha(text: str) -> int | None:
     }.get(op)
 
 
+def _stdio_environment() -> dict[str, str]:
+    """Pass a usable process environment into the MCP stdio subprocess.
+
+    The MCP Python SDK only inherits a short allowlist (PATH, HOME, …). Chrome
+    lookup on Windows needs PROGRAMFILES; Node/npx need PATHEXT/ComSpec; Docker
+    Chrome needs PLAYWRIGHT_BROWSERS_PATH. Without these the server exits and
+    the client surfaces MCPError: Connection closed.
+    """
+    names = {
+        "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
+        "SYSTEMROOT", "WINDIR", "PROGRAMFILES", "PROGRAMFILES(X86)",
+        "COMSPEC", "PATHEXT", "PLAYWRIGHT_BROWSERS_PATH", "NODE_PATH",
+    }
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in names and value and not value.startswith("()")
+    }
+    # The Node binary copied from node:22-bookworm-slim can segfault in the
+    # final Python image after Chrome's system dependencies are installed.
+    # Playwright ships a Node runtime alongside its driver; prefer it for the
+    # MCP CLI's `#!/usr/bin/env node` launcher when it is available.
+    try:
+        import playwright
+
+        driver_dir = Path(playwright.__file__).resolve().parent / "driver"
+        bundled_node = driver_dir / "node"
+        if bundled_node.is_file():
+            existing_path = environment.get("PATH", os.defpath)
+            environment["PATH"] = os.pathsep.join((str(driver_dir), existing_path))
+    except ImportError:
+        pass
+    return environment
+
+
 class ChromeDevToolsClient:
+    # Serialize Chrome launches so parallel discovery workers do not all crash
+    # the same constrained Docker/Windows host at once.
+    _startup_gate = asyncio.Lock()
+
     def __init__(
         self,
         allowed_url_pattern: str | None = None,
@@ -210,6 +250,9 @@ class ChromeDevToolsClient:
         self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
         self._page_id: int | None = None
+        self._omit_url_allowlist = False
+        self._errlog_file: TextIO | None = None
+        self._mcp_log_path: Path | None = None
 
     # def _server_params(self) -> StdioServerParameters:
     #     command = os.environ.get("CHROME_DEVTOOLS_MCP_COMMAND")
@@ -238,56 +281,39 @@ class ChromeDevToolsClient:
 
     def _server_params(self) -> StdioServerParameters:
         """
-        Build StdioServerParameters for chrome-devtools-mcp.
-
-        Priority:
-          1. CHROME_DEVTOOLS_MCP_COMMAND env var  (Docker: chrome-devtools-mcp)
-          2. Globally installed chrome-devtools-mcp binary  (fastest, no download)
-          3. npx without @latest  (uses npm cache; slow on first run)
-
-        Root cause of MCPError: Connection closed in a fresh directory:
-          `npx -y chrome-devtools-mcp@latest` downloads the package every time
-          the npm cache is empty. The stdio stream never opens in time, so
-          the MCP client gets Connection closed before Chrome even starts.
-          Fix: use the global binary (npm install -g chrome-devtools-mcp) or
-          set CHROME_DEVTOOLS_MCP_COMMAND=chrome-devtools-mcp in .env.
+        Build parameters for an installed MCP binary or the npx fallback.
         """
         import shutil
 
         command = os.environ.get("CHROME_DEVTOOLS_MCP_COMMAND")
-        using_npx = False
-
+        args: list[str] = []
         if not command:
             if shutil.which("chrome-devtools-mcp"):
                 # Global binary is on PATH — use it directly, no npm overhead
                 command = "chrome-devtools-mcp"
             else:
-                # Fallback to npx without @latest so the local npm cache is used
                 command = "npx.cmd" if os.name == "nt" else "npx"
-                using_npx = True
-
-        args = ["chrome-devtools-mcp"] if using_npx else []
+                args = ["-y", "chrome-devtools-mcp"]
         if executable_path := os.environ.get("CHROME_EXECUTABLE_PATH"):
             args.extend(["--executablePath", executable_path])
 
-        if os.environ.get("CHROME_NO_SANDBOX", "false").lower() == "true":
+        containerish = os.environ.get("CHROME_NO_SANDBOX", "false").lower() == "true"
+        if containerish:
             args.append("--chromeArg=--no-sandbox")
+            args.append("--chromeArg=--disable-setuid-sandbox")
+            args.append("--chromeArg=--disable-dev-shm-usage")
+            args.append("--chromeArg=--disable-gpu")
 
-        # Allow internal/self-signed HTTPS certificates
-        if os.environ.get(
-            "CHROME_IGNORE_CERTIFICATE_ERRORS", "false"
-        ).lower() == "true":
+        if os.environ.get("CHROME_IGNORE_CERTIFICATE_ERRORS", "false").lower() == "true":
             args.append("--chromeArg=--ignore-certificate-errors")
 
-        if os.environ.get(
-            "CHROME_DEVTOOLS_MCP_ISOLATED", "true"
-        ).lower() == "true":
+        if os.environ.get("CHROME_DEVTOOLS_MCP_ISOLATED", "true").lower() == "true":
             args.append("--isolated")
 
         if self._headless:
-            args.append("--headless=true")
+            args.append("--headless")
 
-        if self._allowed_url_pattern:
+        if self._allowed_url_pattern and not self._omit_url_allowlist:
             parsed = urlparse(self._allowed_url_pattern)
             allowed_pattern = (
                 f"{parsed.scheme}://{parsed.netloc}/*"
@@ -297,21 +323,63 @@ class ChromeDevToolsClient:
             args.extend(["--allowedUrlPattern", allowed_pattern])
         if os.environ.get("CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true").lower() == "true":
             args.append("--redactNetworkHeaders")
-        return StdioServerParameters(command=command, args=args)
-
-        if os.environ.get(
-            "CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true"
-        ).lower() == "true":
-            args.append("--redactNetworkHeaders")
-
         return StdioServerParameters(
-            command=command or ("npx.cmd" if os.name == "nt" else "npx"),
+            command=command,
             args=args,
+            env=_stdio_environment(),
         )
-    async def __aenter__(self) -> "ChromeDevToolsClient":
+
+    def _capture_logs(self) -> str:
+        chunks: list[str] = []
+        if self._errlog_file is not None:
+            try:
+                self._errlog_file.flush()
+                self._errlog_file.seek(0)
+                chunks.append(self._errlog_file.read()[-4000:])
+            except OSError:
+                pass
+        if self._mcp_log_path is not None and self._mcp_log_path.exists():
+            try:
+                chunks.append(self._mcp_log_path.read_text(encoding="utf-8", errors="replace")[-4000:])
+            except OSError:
+                pass
+        return "\n".join(chunk for chunk in chunks if chunk).strip()
+
+    def _startup_error(self, exc: Exception) -> RuntimeError:
+        logs = self._capture_logs()
+        detail = f"{type(exc).__name__}: {exc}"
+        if logs:
+            detail = f"{detail}\nMCP server log:\n{logs}"
+        return RuntimeError(
+            "Chrome DevTools MCP failed to start (connection closed or process exited). "
+            f"{detail}"
+        )
+
+    async def _close_session(self) -> None:
+        if self._exit_stack is not None:
+            try:
+                await self._exit_stack.aclose()
+            except Exception:
+                pass
+        self._session = None
+        self._exit_stack = None
+        self._page_id = None
+        if self._errlog_file is not None:
+            try:
+                self._errlog_file.close()
+            except OSError:
+                pass
+            self._errlog_file = None
+
+    async def _open_session(self) -> None:
+        log_dir = Path(os.environ.get("CHROME_DEVTOOLS_MCP_LOG_DIR", tempfile.gettempdir()))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"chrome-devtools-mcp-{os.getpid()}-{uuid.uuid4().hex[:8]}.stderr.log"
+        self._mcp_log_path = log_path
+        self._errlog_file = open(log_path, "w+", encoding="utf-8")
         self._exit_stack = AsyncExitStack()
         read, write = await self._exit_stack.enter_async_context(
-            stdio_client(self._server_params())
+            stdio_client(self._server_params(), errlog=self._errlog_file)
         )
         self._session = await self._exit_stack.enter_async_context(ClientSession(read, write))
         await self._session.initialize()
@@ -321,16 +389,36 @@ class ChromeDevToolsClient:
         first = re.search(r"(?m)^(\d+): ", page_text)
         match = selected or first
         if match is None:
+            await self.new_page("about:blank")
+            pages = await self.list_pages()
+            page_text = _snapshot_text(pages)
+            match = re.search(r"(?m)^(\d+): .*\[selected\]", page_text) or re.search(
+                r"(?m)^(\d+): ", page_text
+            )
+        if match is None:
             raise RuntimeError("Chrome DevTools MCP returned no usable page ID")
         self._page_id = int(match.group(1))
-        return self
+
+    async def __aenter__(self) -> "ChromeDevToolsClient":
+        async with ChromeDevToolsClient._startup_gate:
+            last_error: Exception | None = None
+            for attempt in range(3):
+                # Second+ attempts drop the Chrome 149+ URL allowlist; it can
+                # detach the initial tab and take the stdio server down.
+                self._omit_url_allowlist = attempt >= 1
+                try:
+                    await self._open_session()
+                    return self
+                except Exception as exc:
+                    last_error = self._startup_error(exc)
+                    await self._close_session()
+                    if attempt < 2:
+                        await asyncio.sleep(1.0 * (attempt + 1))
+            assert last_error is not None
+            raise last_error
 
     async def __aexit__(self, *exc_info: object) -> None:
-        if self._exit_stack is not None:
-            await self._exit_stack.aclose()
-        self._session = None
-        self._exit_stack = None
-        self._page_id = None
+        await self._close_session()
 
     def _page_args(self, **kwargs: Any) -> dict[str, Any]:
         if self._page_id is None:
@@ -344,7 +432,12 @@ class ChromeDevToolsClient:
 
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         session = self._require_session()
-        result = await session.call_tool(tool_name, arguments)
+        try:
+            result = await session.call_tool(tool_name, arguments)
+        except Exception as exc:
+            if "connection closed" in str(exc).lower():
+                raise self._startup_error(exc) from exc
+            raise
         if result.is_error:
             raise RuntimeError(f"chrome-devtools-mcp tool '{tool_name}' failed: {result.content}")
         return result.content
@@ -730,6 +823,10 @@ class ChromeDevToolsClient:
         """
         if self._credential_ref is None:
             return
+        print(
+            f"[DISCOVERY AUTH] Starting authentication "
+            f"credential_ref={self._credential_ref}"
+        )
         current = _parse_controls(_snapshot_text(await self.take_snapshot()))
         if self._authenticated and not any(
             role in {"textbox", "input"} and name.lower() == "password" for _, role, name in current
@@ -752,7 +849,17 @@ class ChromeDevToolsClient:
                     dom_text = await self._read_visible_login_text()
                     text = f"{text}\n{dom_text}"
             controls = _parse_controls(text)
-
+            print(
+                "[DISCOVERY AUTH] Page controls:",
+                [
+                    {
+                        "role": role,
+                        "name": name,
+                        "uid": uid,
+                    }
+                    for uid, role, name in controls
+                ][:30],
+            )
             # ── Locate form fields ──────────────────────────────────────────
             # Custom selectors from the stored credential are always first.
             # Fallback lists cover common field names across any website.
@@ -820,7 +927,14 @@ class ChromeDevToolsClient:
                 submit_names,
                 {"button", "link"},
             )
-
+            print(
+                "[DISCOVERY AUTH] Detected login controls:",
+                {
+                    "username_uid": username_uid,
+                    "password_uid": password_uid,
+                    "submit_uid": submit_uid,
+                },
+            )
             if not username_uid or not password_uid or not submit_uid:
                 missing = []
                 if not username_uid:
@@ -931,7 +1045,10 @@ class ChromeDevToolsClient:
             for _ in range(20):
                 await asyncio.sleep(0.5)
                 after = _snapshot_text(await self.take_snapshot())
-
+                print(
+                    "[DISCOVERY AUTH] Post-login snapshot:",
+                    after[:1000],
+                )
                 # Success — password field is gone, we left the login page
                 if not re.search(r"\b(?:password)\b", after, re.I):
                     self._authenticated = True

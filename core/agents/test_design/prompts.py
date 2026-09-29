@@ -97,10 +97,28 @@ def build_user_prompt(
     states_lines = []
     for state in app_map_states:
         dom_elements = [e for e in state.get("elements", []) if e.get("source") == "OBSERVED_DOM"]
-        el_lines = "\n".join("      " + json.dumps(e, ensure_ascii=False) for e in dom_elements)
+        compact_elements = []
+        for element in dom_elements[:8]:
+            compact = {
+                key: element[key]
+                for key in (
+                    "element_code", "role", "name", "text", "url", "type",
+                    "disabled", "checked", "selected",
+                    "required", "readonly",
+                )
+                if key in element and element[key] is not None
+            }
+            for key in ("name", "text", "url"):
+                if isinstance(compact.get(key), str):
+                    compact[key] = compact[key][:100]
+            compact_elements.append(compact)
+        el_lines = "\n".join(
+            "      " + json.dumps(e, ensure_ascii=False, separators=(",", ":"))
+            for e in compact_elements
+        )
         states_lines.append(
-            f"  {state['state_code']}  url={state['url_pattern']}\n"
-            f"    reached_via: {state.get('reached_via', [])}\n"
+            f"  {state['state_code']}  url={str(state['url_pattern'])[:300]}\n"
+            f"    reached_via: {str(state.get('reached_via', []))[:500]}\n"
             f"    elements:\n{el_lines}"
         )
 

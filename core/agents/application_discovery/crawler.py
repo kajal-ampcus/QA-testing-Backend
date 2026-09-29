@@ -148,6 +148,29 @@ def _is_form_action(name: str) -> bool:
     return name.strip().lower() in _FORM_ACTION_NAMES
 
 
+def _is_transient_widget_control(role: str, name: str) -> bool:
+    """Ignore transient chatbot UI actions that cannot define app navigation."""
+    if role not in {"button", "menuitem"}:
+        return False
+    normalized = " ".join(name.casefold().split())
+    chatbot_control = bool(re.search(r"\b(?:chatbot|chat\s*bot|chat\s*widget|chat)\b", normalized))
+    widget_action = bool(
+        re.search(
+            r"\b(?:open|show|close|hide|toggle|move|position|dock|undock|resize)\b|"
+            r"\b(?:left|right|side|corner)\b",
+            normalized,
+        )
+    )
+    return (chatbot_control and widget_action) or normalized in {
+        "voice input",
+        "voice input for chatbot",
+    }
+
+
+def _normalized_accessible_name(name: str) -> str:
+    return " ".join(name.casefold().split())
+
+
 def _looks_like_login_page(text: str) -> bool:
     """True when snapshot text contains login page markers."""
     return bool(re.search(r"\b(sign\s*in|log\s*in|welcome\s*back|log\s*in\s*to)\b", text, re.I))
@@ -233,44 +256,207 @@ class Crawler:
             )
         return result
 
-    async def _navigate_to_login(self, base_url: str, clear_session: bool = False) -> object:
+    async def _navigate_to_login(
+        self,
+        base_url: str,
+        clear_session: bool = False,
+    ) -> object:
         """
-        Navigate to the login page and verify we actually landed on it.
-        Tries login_url first, then base_url/login, then base_url.
+        Navigate to the login page and verify that we actually landed there.
 
-        clear_session=True  → called ONCE at the very start of Phase 1 to
-                              destroy any cached cookie before first navigation.
-        clear_session=False → called during sub-page replay; do NOT clear cookies
-                              here because clearing mid-replay destroys the
-                              navigation context and causes subsequent navigations
-                              to fail or redirect unexpectedly.
+        Browser/MCP connection failures are treated as fatal browser failures
+        instead of being silently converted into normal crawl failures.
         """
+
+        # ---------------------------------------------------------
+        # STEP 1: Clear cookies only once at the beginning of Phase 1
+        # ---------------------------------------------------------
         if clear_session:
-            with suppress(Exception):
-                await self._client.clear_cookies()
+            print("[crawler] Clearing browser cookies...")
 
-        candidates = []
+            try:
+                await self._client.clear_cookies()
+                print("[crawler] Browser cookies cleared")
+
+            except Exception as exc:
+                detail = str(exc)
+
+                if "connection closed" in detail.lower():
+                    raise RuntimeError(
+                        "BROWSER_CONNECTION_LOST during clear_cookies: "
+                        f"{type(exc).__name__}: {detail}"
+                    ) from exc
+
+                print(
+                    "[crawler] WARNING: clear_cookies failed: "
+                    f"{type(exc).__name__}: {detail[:300]}"
+                )
+
+        # ---------------------------------------------------------
+        # STEP 2: Build login candidates
+        # ---------------------------------------------------------
+        candidates: list[str] = []
+
         if self._login_url:
             candidates.append(self._login_url)
+
+        # IMPORTANT:
+        # Actually try /login.
+        candidates.append(self._resolve_login_url(base_url))
+
+        # Final fallback
         candidates.append(base_url)
 
-        for url in dict.fromkeys(candidates):
-            await self._client.navigate_page(url)
-            await self._client.wait_until_ready()
-            text = _snapshot_text(await self._client.take_snapshot())
-            if _looks_like_login_page(text):
-                print(f"[crawler] landed on login page at {url}")
-                return await self._client.take_snapshot()
-            print(f"[crawler] {url} did not look like login page, trying next")
+        # Remove duplicates while preserving order
+        candidates = list(dict.fromkeys(candidates))
 
-        print("[crawler] WARNING: could not confirm login page — using last snapshot")
-        return await self._client.take_snapshot()
+        print(f"[crawler] Login candidates: {candidates}")
+
+        last_snapshot: object | None = None
+
+        # ---------------------------------------------------------
+        # STEP 3: Try each candidate
+        # ---------------------------------------------------------
+        for url in candidates:
+
+            print(f"[crawler] Navigating to: {url}")
+
+            try:
+                await self._client.navigate_page(url)
+
+                print(
+                    f"[crawler] Navigation completed: {url}"
+                )
+
+                await self._client.wait_until_ready()
+
+                print(
+                    f"[crawler] Page ready: {url}"
+                )
+
+                last_snapshot = await self._client.take_snapshot()
+
+                print(
+                    f"[crawler] Snapshot captured: {url}"
+                )
+
+            except Exception as exc:
+                detail = str(exc)
+
+                # ---------------------------------------------
+                # MCP CONNECTION FAILURE
+                # ---------------------------------------------
+                if "connection closed" in detail.lower():
+
+                    raise RuntimeError(
+                        "BROWSER_CONNECTION_LOST during browser operation: "
+                        f"url={url!r}, "
+                        f"{type(exc).__name__}: {detail}"
+                    ) from exc
+
+                # ---------------------------------------------
+                # Normal navigation failure
+                # ---------------------------------------------
+                print(
+                    f"[crawler] Browser operation failed for {url}: "
+                    f"{type(exc).__name__}: {detail[:300]}"
+                )
+
+                continue
+
+            # -------------------------------------------------
+            # STEP 4: Verify login page
+            # -------------------------------------------------
+            text = _snapshot_text(last_snapshot)
+
+            if _looks_like_login_page(text):
+                print(
+                    f"[crawler] Successfully landed on login page: {url}"
+                )
+                return last_snapshot
+
+            print(
+                f"[crawler] {url} did not look like a login page."
+            )
+
+        # ---------------------------------------------------------
+        # STEP 5: Fallback if we got a snapshot but couldn't
+        # identify it as login page.
+        # ---------------------------------------------------------
+        if last_snapshot is not None:
+
+            print(
+                "[crawler] WARNING: Could not confirm login page. "
+                "Using last captured snapshot."
+            )
+
+            return last_snapshot
+
+        # ---------------------------------------------------------
+        # STEP 6: Nothing worked
+        # ---------------------------------------------------------
+        raise RuntimeError(
+            "LOGIN_PAGE_NOT_FOUND: "
+            "No candidate URL produced a usable browser snapshot."
+        )
 
     async def _go_to_auth_start(self) -> object:
-        """Navigate to login, fill credentials + CAPTCHA, submit, return post-login snapshot."""
-        login_url = self._login_url or urljoin(self._base_url.rstrip("/") + "/", "login")
-        await self._client.navigate_page(login_url)
-        await self._client.wait_until_ready()
+        """Find a page with a password control before attempting authentication."""
+        base = self._base_url.rstrip("/") + "/"
+        candidates = [self._login_url] if self._login_url else []
+        candidates.extend(urljoin(base, path) for path in ("sign-in", "signin", "login"))
+        candidates.append(self._base_url)
+        visited: set[str] = set()
+        login_snapshot = None
+        for url in candidates:
+            if not url or url in visited:
+                continue
+            visited.add(url)
+            await self._client.navigate_page(url)
+            await self._client.wait_until_ready()
+            snapshot = await self._client.take_snapshot()
+            elements = _parse_elements(snapshot)
+            if any(
+                el.get("role") in {"textbox", "input"}
+                and re.search(r"password|passphrase", el.get("name", ""), re.I)
+                for el in elements
+            ):
+                login_snapshot = snapshot
+                break
+
+            # Some applications expose a sign-in destination only as an
+            # observed link on the landing page. Follow that link, never a
+            # submit control, and verify the destination has a password field.
+            if url == self._base_url:
+                auth_links = [
+                    el.get("url") for el in elements
+                    if el.get("role") == "link" and el.get("url")
+                    and re.search(r"sign.?in|log.?in|auth", el.get("url", "") + " " + el.get("name", ""), re.I)
+                ]
+                for destination in auth_links:
+                    destination = urljoin(self._base_url, destination)
+                    if _is_external(destination, self._base_url) or destination in visited:
+                        continue
+                    visited.add(destination)
+                    await self._client.navigate_page(destination)
+                    await self._client.wait_until_ready()
+                    snapshot = await self._client.take_snapshot()
+                    elements = _parse_elements(snapshot)
+                    if any(
+                        el.get("role") in {"textbox", "input"}
+                        and re.search(r"password|passphrase", el.get("name", ""), re.I)
+                        for el in elements
+                    ):
+                        login_snapshot = snapshot
+                        break
+                if login_snapshot is not None:
+                    break
+
+        if login_snapshot is None:
+            raise RuntimeError(
+                "Could not locate a login page with a password field. "
+                "Set the credential's Login page URL to the observed sign-in page."
+            )
         # authenticate() internally calls wait_until_ready() and solves CAPTCHA
         await self._client.authenticate()
         await self._client.wait_until_ready()
@@ -290,6 +476,10 @@ class Crawler:
         """Apply a path from the caller's current browser/session state."""
 
         for step in path:
+            # Old checkpoints may still contain widget steps from before these
+            # controls were excluded from the discovery frontier.
+            if _is_transient_widget_control(step.role, step.name):
+                continue
             if step.role == "link" and step.url:
                 await self._client.navigate_page(step.url)
                 await self._client.wait_until_ready()
@@ -301,7 +491,8 @@ class Crawler:
                     el
                     for el in elements
                     if el["role"] == step.role
-                    and el["name"] == step.name
+                    and _normalized_accessible_name(el["name"])
+                    == _normalized_accessible_name(step.name)
                     and (not step.url or el.get("url") == step.url)
                 ),
                 None,
@@ -444,17 +635,44 @@ class Crawler:
                     snapshot, phase_path, on_state_discovered
                 )
             except Exception as exc:
-                self._failures.append(
-                    {
-                        "phase": "public" if skip_auth else "authenticated",
-                        "error": type(exc).__name__,
-                        "detail": re.sub(
-                            r"(?i)(password|token|secret|api.?key)=[^\s&]+",
-                            r"\1=<redacted>",
-                            str(exc),
-                        )[:300],
-                    }
+                detail = str(exc)
+
+                failure = {
+                    "phase": "public" if skip_auth else "authenticated",
+                    "error": type(exc).__name__,
+                    "detail": re.sub(
+                        r"(?i)(password|token|secret|api.?key)=[^\s&]+",
+                        r"\1=<redacted>",
+                        detail,
+                    )[:500],
+                }
+
+                self._failures.append(failure)
+
+                # ---------------------------------------------------------
+                # MCP/browser connection failure
+                # ---------------------------------------------------------
+                if "BROWSER_CONNECTION_LOST" in detail:
+                    termination = "BROWSER_CONNECTION_LOST"
+
+                    print(
+                        "[crawler] FATAL: Browser/MCP connection was closed."
+                    )
+
+                    print(
+                        f"[crawler] Detail: {detail[:500]}"
+                    )
+
+                    break
+
+                # ---------------------------------------------------------
+                # Normal phase failure
+                # ---------------------------------------------------------
+                print(
+                    f"[crawler] Phase failed: "
+                    f"{failure['error']} - {failure['detail']}"
                 )
+
                 continue
             queue: list[QueueItem] = []
             expanded: set[str] = set()
@@ -489,6 +707,8 @@ class Crawler:
                         "checkbox",
                         "combobox",
                     }:
+                        continue
+                    if _is_transient_widget_control(role, name):
                         continue
                     if el.get("disabled") or el.get("visible") is False:
                         continue
@@ -568,16 +788,41 @@ class Crawler:
                     )
                     enqueue(nodes, item.path)
                 except Exception as exc:
-                    self._failures.append(
-                        {
-                            "action": str(item.path[-1]),
-                            "error": type(exc).__name__,
-                            "detail": re.sub(
-                                r"(?i)(password|token|secret|api.?key)=[^\s&]+",
-                                r"\1=<redacted>",
-                                str(exc),
-                            )[:300],
-                        }
+                    detail = str(exc)
+
+                    failure = {
+                        "action": str(item.path[-1]),
+                        "error": type(exc).__name__,
+                        "detail": re.sub(
+                            r"(?i)(password|token|secret|api.?key)=[^\s&]+",
+                            r"\1=<redacted>",
+                            detail,
+                        )[:500],
+                    }
+
+                    self._failures.append(failure)
+
+                    if "connection closed" in detail.lower():
+                        termination = "BROWSER_CONNECTION_LOST"
+
+                        print(
+                            "[crawler] FATAL: MCP/browser connection closed "
+                            "during action replay."
+                        )
+
+                        print(
+                            f"[crawler] Action: {failure['action']}"
+                        )
+
+                        print(
+                            f"[crawler] Detail: {failure['detail']}"
+                        )
+
+                        break
+
+                    print(
+                        f"[crawler] Action failed: "
+                        f"{failure['error']} - {failure['detail']}"
                     )
             pending += len(queue)
         if termination == "EXPLORATION_EXHAUSTED":

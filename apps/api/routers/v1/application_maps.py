@@ -43,6 +43,7 @@ class DiscoveryTriggerRequest(BaseModel):
         pattern="^(entry_points|auth_flow|modules|inventory|deep|complete)$",
     )
     selected_auth_flow: str | None = Field(default=None, max_length=200)
+    selected_auth_flows: list[str] = Field(default_factory=list, max_length=20)
     selected_areas: list[str] = Field(default_factory=list)
     selected_modules: list[str] = Field(default_factory=list)
     resume_application_map_id: uuid.UUID | None = None
@@ -173,6 +174,7 @@ async def trigger_discovery(
         "discovery_scope": {
             "mode": body.discovery_mode,
             "selected_auth_flow": body.selected_auth_flow,
+            "selected_auth_flows": body.selected_auth_flows,
             "selected_areas": body.selected_areas,
             "selected_modules": body.selected_modules,
         },

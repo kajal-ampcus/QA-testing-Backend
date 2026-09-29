@@ -265,17 +265,38 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             selected_auth_flow = saved_config.get(
                 "selected_auth_flow", payload.discovery_scope.selected_auth_flow
             )
+            selected_auth_flows = saved_config.get(
+                "selected_auth_flows", payload.discovery_scope.selected_auth_flows
+            ) or ([selected_auth_flow] if selected_auth_flow else [])
+            selected_auth_flows = list(dict.fromkeys(selected_auth_flows))
             available_auth_flows = {
                 flow["id"]: flow
                 for flow in (checkpoint or {}).get("authentication_flows", [])
             }
+            selected_flows = [
+                available_auth_flows[flow_id]
+                for flow_id in selected_auth_flows
+                if flow_id in available_auth_flows
+            ]
+            selected_login_flow = next(
+                (flow for flow in selected_flows if flow.get("kind") == "login"),
+                None,
+            )
+            if discovery_mode == "complete" and selected_login_flow:
+                selected_auth_flow = selected_login_flow["id"]
             selected_flow = available_auth_flows.get(selected_auth_flow or "")
             auth_entry_url = (
                 urljoin(payload.target.url, selected_flow["url_pattern"])
                 if selected_flow
                 else login_url
             )
-            needs_authenticated_session = discovery_mode in {"modules", "deep"}
+            auth_entry_urls = [
+                urljoin(payload.target.url, flow["url_pattern"])
+                for flow in selected_flows
+            ]
+            needs_authenticated_session = discovery_mode in {"modules", "deep"} or (
+                discovery_mode == "complete" and bool(selected_auth_flows)
+            )
             if needs_authenticated_session and not payload.target.credential_ref:
                 raise ValueError(
                     "The selected authentication flow requires a saved test account."
@@ -298,7 +319,9 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                     worker_limit=payload.crawl_budget.worker_limit,
                     discovery_mode=discovery_mode,
                     selected_auth_flow=selected_auth_flow,
+                    selected_auth_flows=selected_auth_flows,
                     auth_entry_url=auth_entry_url,
+                    auth_entry_urls=auth_entry_urls,
                     selected_areas=saved_config.get(
                         "selected_areas", payload.discovery_scope.selected_areas
                     ),

@@ -30,6 +30,7 @@ the perfectly valid cases for AC-1 and AC-2.
 """
 
 import asyncio
+import re
 import uuid
 from typing import Any
 
@@ -119,6 +120,64 @@ def _states_for_generation(
     return scoped
 
 
+def _map_context_for_ac(
+    states: list[dict[str, Any]],
+    ac: dict[str, Any],
+    requirement_title: str,
+    requirement_description: str,
+    max_states: int = 8,
+    max_elements_per_state: int = 8,
+) -> list[dict[str, Any]]:
+    """Keep the LLM prompt focused on states and controls relevant to this AC.
+
+    The complete map is retained elsewhere for deterministic validation; only
+    the provider prompt is reduced. This prevents large crawls from exceeding
+    the model's combined input/output context limit on every per-AC request.
+    """
+    terms = {
+        word.lower()
+        for word in re.findall(r"[a-zA-Z0-9]{3,}", " ".join((
+            requirement_title,
+            requirement_description,
+            str(ac.get("text", "")),
+        )))
+    }
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    for index, state in enumerate(states):
+        state_text = " ".join((
+            str(state.get("url_pattern", "")),
+            " ".join(map(str, state.get("reached_via", []))),
+        )).lower()
+        elements = [
+            element for element in state.get("elements", [])
+            if element.get("source") == "OBSERVED_DOM"
+        ]
+        element_scores = [
+            sum(term in " ".join(str(value) for value in element.values()).lower() for term in terms)
+            for element in elements
+        ]
+        state_score = sum(term in state_text for term in terms) + sum(element_scores)
+        # Retain useful actionable controls even when wording differs from the AC.
+        ranked_elements = sorted(
+            zip(element_scores, elements),
+            key=lambda item: (
+                item[0],
+                item[1].get("role") in {"textbox", "searchbox", "button", "link", "checkbox", "radio"},
+            ),
+            reverse=True,
+        )
+        compact_state = {
+            **state,
+            "elements": [element for _, element in ranked_elements[:max_elements_per_state]],
+        }
+        scored.append((state_score, -index, compact_state))
+
+    selected = sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)[:max_states]
+    # Restore the original navigation order after relevance selection.
+    selected_states = [item[2] for item in sorted(selected, key=lambda item: -item[1])]
+    return selected_states
+
+
 class TestDesignAgent(BaseAgent[TestDesignResult]):
     name = "test_design"
 
@@ -154,7 +213,9 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             requirement_title=req_title,
             requirement_description=req_description,
             acceptance_criteria=[ac],
-            app_map_states=map_states,
+            app_map_states=_map_context_for_ac(
+                map_states, ac, req_title, req_description
+            ),
             base_url=base_url,
             required_categories=sorted(required_categories) if required_categories else None,
         )
@@ -165,10 +226,11 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                     user_prompt=user_prompt,
                     tool_schema=TestCaseBatch.model_json_schema(),
                     tool_name="generate_test_cases",
-                    # 4000 tokens per AC call — enough for 2–4 test cases
+                    # 2500 tokens per AC call — enough for focused cases
                     # (POSITIVE + NEGATIVE + optional EDGE_CASE).
-                    # The LLM client doubles this automatically on finish_reason=length.
-                    max_tokens=4000,
+                    # Keep output headroom bounded for providers enforcing a
+                    # combined prompt + completion context limit.
+                    max_tokens=2500,
                 ),
                 timeout=120.0,
             )

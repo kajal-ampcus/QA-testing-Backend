@@ -7,11 +7,15 @@ branching logic.
 """
 
 from abc import ABC, abstractmethod
+from typing import Generic, TypeVar
 
 from schemas.envelope import AgentInputEnvelope
 
 
-class BaseAgent[ResultT](ABC):
+ResultT = TypeVar("ResultT")
+
+
+class BaseAgent(Generic[ResultT], ABC):
     name: str
 
     @abstractmethod

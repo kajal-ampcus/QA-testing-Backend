@@ -30,20 +30,47 @@ def test_non_docker_database_url_is_preserved(monkeypatch):
 
 def test_worker_uses_installed_mcp_and_explicit_browser(monkeypatch):
     monkeypatch.setenv("CHROME_DEVTOOLS_MCP_COMMAND", "chrome-devtools-mcp")
-    monkeypatch.setenv("CHROME_EXECUTABLE_PATH", "/usr/bin/google-chrome")
+    monkeypatch.setenv("CHROME_EXECUTABLE_PATH", "/usr/local/bin/google-chrome")
     monkeypatch.setenv("CHROME_NO_SANDBOX", "true")
     params = ChromeDevToolsClient()._server_params()
     assert params.command == "chrome-devtools-mcp"
     assert "chrome-devtools-mcp@latest" not in params.args
     assert "--executablePath" in params.args
-    assert "/usr/bin/google-chrome" in params.args
+    assert "/usr/local/bin/google-chrome" in params.args
     assert "--chromeArg=--no-sandbox" in params.args
+    assert "--chromeArg=--disable-dev-shm-usage" in params.args
+    assert params.env is not None
+    assert "PATH" in params.env
 
 
 def test_local_mcp_install_is_noninteractive_without_disabling_sandbox(monkeypatch):
     for key in ("CHROME_DEVTOOLS_MCP_COMMAND", "CHROME_EXECUTABLE_PATH", "CHROME_NO_SANDBOX"):
         monkeypatch.delenv(key, raising=False)
     params = ChromeDevToolsClient()._server_params()
-    assert params.command in {"npx", "npx.cmd"}
-    assert params.args[:2] == ["-y", "chrome-devtools-mcp@latest"]
+    if os.name == "nt":
+        assert params.command == "cmd"
+        assert params.args[:4] == ["/c", "npx", "-y", "chrome-devtools-mcp@latest"]
+    else:
+        assert params.command == "npx"
+        assert params.args[:2] == ["-y", "chrome-devtools-mcp@latest"]
     assert "--chromeArg=--no-sandbox" not in params.args
+
+
+def test_windows_npx_goes_through_cmd():
+    command, args = ChromeDevToolsClient._npx_command(["--headless"], windows=True)
+    assert command == "cmd"
+    assert args[:4] == ["/c", "npx", "-y", "chrome-devtools-mcp@latest"]
+
+
+def test_url_allowlist_keeps_blank_and_chrome_pages(monkeypatch):
+    for key in ("CHROME_DEVTOOLS_MCP_COMMAND", "CHROME_EXECUTABLE_PATH", "CHROME_NO_SANDBOX"):
+        monkeypatch.delenv(key, raising=False)
+    params = ChromeDevToolsClient(allowed_url_pattern="https://sample.test/app")._server_params()
+    patterns = [
+        params.args[i + 1]
+        for i, arg in enumerate(params.args)
+        if arg == "--allowedUrlPattern"
+    ]
+    assert "https://sample.test/*" in patterns
+    assert "about:*" in patterns
+    assert "chrome://*" in patterns

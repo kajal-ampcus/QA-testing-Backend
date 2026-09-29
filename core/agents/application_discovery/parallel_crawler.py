@@ -21,6 +21,7 @@ from core.agents.application_discovery.crawler import (
     CrawlBudget,
     Crawler,
     _is_external,
+    _is_transient_widget_control,
     _parse_elements,
     _relevance_score,
 )
@@ -61,7 +62,9 @@ class ParallelCrawler:
         worker_limit: int = 3,
         discovery_mode: str = "complete",
         selected_auth_flow: str | None = None,
+        selected_auth_flows: list[str] | None = None,
         auth_entry_url: str | None = None,
+        auth_entry_urls: list[str] | None = None,
         selected_areas: list[str] | None = None,
         selected_modules: list[str] | None = None,
         checkpoint: dict[str, Any] | None = None,
@@ -75,7 +78,16 @@ class ParallelCrawler:
         self._worker_limit = max(1, min(worker_limit, 5))
         self._discovery_mode = discovery_mode
         self._selected_auth_flow = selected_auth_flow
+        self._selected_auth_flows = list(
+            dict.fromkeys(
+                selected_auth_flows
+                or ([selected_auth_flow] if selected_auth_flow else [])
+            )
+        )
         self._auth_entry_url = auth_entry_url
+        self._auth_entry_urls = list(
+            dict.fromkeys(auth_entry_urls or ([auth_entry_url] if auth_entry_url else []))
+        )
         self._selected_areas = {value.lower() for value in (selected_areas or [])}
         self._selected_modules = {value.lower() for value in (selected_modules or [])}
         self._areas: dict[str, dict[str, Any]] = {}
@@ -191,6 +203,7 @@ class ParallelCrawler:
             "configuration": {
                 "mode": self._discovery_mode,
                 "selected_auth_flow": self._selected_auth_flow,
+                "selected_auth_flows": self._selected_auth_flows,
                 "selected_areas": sorted(self._selected_areas),
                 "selected_modules": sorted(self._selected_modules),
                 "max_pages": self._budget.max_pages,
@@ -484,6 +497,8 @@ class ParallelCrawler:
         current_url = root.get("url") or base_url
         for element in nodes:
             role, name = element.get("role", ""), element.get("name", "")
+            if _is_transient_widget_control(role, name):
+                continue
             if not self._action_in_scope(area_id, element, len(path), module_id):
                 continue
             if role not in {"link", "button", "menuitem", "tab", "radio", "checkbox", "combobox"}:
@@ -665,14 +680,19 @@ class ParallelCrawler:
                                         }
                                     if area_id not in self._area_roots:
                                         self._area_roots[area_id] = fingerprint
-                                selected_flow = self._auth_flows.get(self._selected_auth_flow or "")
-                                if area_id == "authenticated" and selected_flow:
-                                    self._edges.add(
+                                selected_flows = [
+                                    self._auth_flows[flow_id]
+                                    for flow_id in self._selected_auth_flows
+                                    if flow_id in self._auth_flows
+                                ]
+                                if area_id == "authenticated":
+                                    self._edges.update(
                                         (
                                             selected_flow["state_fingerprint"],
                                             fingerprint,
                                             f"authenticate(flow={selected_flow['id']})",
                                         )
+                                        for selected_flow in selected_flows
                                     )
                                 should_expand = (
                                     fingerprint not in self._expanded
@@ -734,7 +754,7 @@ class ParallelCrawler:
                                     r"(?i)(password|token|secret|api.?key)=[^\s&]+",
                                     r"\1=<redacted>",
                                     str(exc),
-                                )[:300],
+                                )[:2000],
                                 "screenshot_ref": screenshot_ref,
                             })
                             await self._set_job_status(job, "failed")
@@ -749,7 +769,7 @@ class ParallelCrawler:
                     "worker": str(worker_number),
                     "action": "start isolated Chrome DevTools MCP worker",
                     "error": type(exc).__name__,
-                    "detail": str(exc)[:300],
+                    "detail": str(exc)[:2000],
                 })
 
         workers = [asyncio.create_task(worker(i + 1)) for i in range(self._worker_limit)]
@@ -781,11 +801,15 @@ class ParallelCrawler:
         if self._discovery_mode in {"entry_points", "inventory"}:
             phases = [(base_url, True)]
         elif self._discovery_mode == "auth_flow":
-            phases = [(self._auth_entry_url or base_url, True)]
+            entry_urls = self._auth_entry_urls or [self._auth_entry_url or base_url]
+            phases = [(url, True) for url in entry_urls]
         elif self._discovery_mode in {"modules", "deep"}:
             phases = [(base_url, False)] if self._authenticate else []
         else:
-            phases = [(base_url, True), (base_url, False)] if self._authenticate else [(base_url, True)]
+            public_entry_urls = [base_url, *self._auth_entry_urls]
+            phases = [(url, True) for url in dict.fromkeys(public_entry_urls)]
+            if self._authenticate:
+                phases.append((base_url, False))
         for phase_url, skip_auth in phases:
             if self._termination != "EXPLORATION_EXHAUSTED":
                 break
@@ -829,6 +853,7 @@ class ParallelCrawler:
                 "modules": list(self._modules.values()),
                 "module_inventory_flows": sorted(self._module_inventory_flows),
                 "selected_auth_flow": self._selected_auth_flow,
+                "selected_auth_flows": self._selected_auth_flows,
                 "selected_areas": sorted(self._selected_areas),
                 "selected_modules": sorted(self._selected_modules),
                 "completion_condition": (
