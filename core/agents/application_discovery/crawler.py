@@ -532,11 +532,18 @@ class Crawler:
                     {"action": "inspect element attributes", "error": type(exc).__name__}
                 )
         # Hash observable content, not transient MCP uids or URL fragments.
-        semantic = [{k: v for k, v in el.items() if k != "uid"} for el in raw_elements]
+        semantic = [
+            {k: v for k, v in el.items() if k in {
+                "role", "name", "url", "input_type", "checked", "selected",
+                "expanded", "disabled", "required", "options",
+            }}
+            for el in raw_elements
+            if el.get("role") not in {"image", "StaticText", "InlineTextBox"}
+        ]
         for el in semantic:
             if el.get("url"):
-                el["url"] = urldefrag(el["url"])[0]
-        fingerprint = compute_fingerprint(state_url, json.dumps(semantic, sort_keys=True))
+                el["url"] = el["url"].split("#:~:text=", 1)[0]
+        fingerprint = compute_fingerprint(state_url, "\n".join(json.dumps(el, sort_keys=True) for el in semantic))
         self._current_fingerprint = fingerprint
         if fingerprint in self._visited_fingerprints:
             print(f"[crawler] Already visited: {state_url} (fingerprint match)")

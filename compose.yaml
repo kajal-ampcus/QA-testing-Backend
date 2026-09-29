@@ -110,7 +110,6 @@ services:
     ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
     volumes:
       - ./logs:/app/logs
-      - ./artifacts:/app/artifacts
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -143,16 +142,14 @@ services:
     environment:
       <<: *backend-env
       CHROME_DEVTOOLS_MCP_COMMAND: chrome-devtools-mcp
+      # Dockerfile.worker installs Debian Chromium, whose executable is
+      # /usr/bin/chromium (not the Google Chrome path used on some hosts).
       CHROME_EXECUTABLE_PATH: /usr/bin/chromium
       CHROME_NO_SANDBOX: "true"
       WORKER_MAX_JOBS: ${WORKER_MAX_JOBS:-1}
       WORKER_JOB_TIMEOUT: ${WORKER_JOB_TIMEOUT:-1200}
-      # ADD THIS
-      CHROME_IGNORE_CERTIFICATE_ERRORS: "true"
-      DISCOVERY_EVIDENCE_DIR: /app/artifacts/discovery
     volumes:
       - ./logs:/app/logs
-      - ./artifacts:/app/artifacts
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -171,7 +168,7 @@ services:
           "apps.worker.arq_worker.WorkerSettings",
         ]
       interval: 30s
-      timeout: 20s
+      timeout: 10s
       retries: 5
       start_period: 45s
     init: true

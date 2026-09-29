@@ -14,7 +14,7 @@ checks against its unique index.
 
 import hashlib
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 _NUMERIC_ID_SEGMENT = re.compile(r"/\d+(?=/|$)")
 _UUID_SEGMENT = re.compile(r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?=/|$)")
@@ -52,6 +52,14 @@ def structural_hash(snapshot_text: str) -> str:
 
 def compute_fingerprint(url: str, snapshot_text: str) -> str:
     url_part = normalize_url_pattern(url)
+    parsed = urlparse(url)
+    # Preserve SPA hash routes and query-driven screens, excluding transport secrets.
+    if parsed.fragment.startswith(("/", "!/")):
+        url_part += "#" + parsed.fragment
+    parameters = [(key, value) for key, value in parse_qsl(parsed.query)
+        if not re.search(r"token|session|nonce|csrf|password|secret|utm_|timestamp", key, re.I)]
+    if parameters:
+        url_part += "?" + urlencode(sorted(parameters))
     structure_part = structural_hash(snapshot_text)
     combined = f"{url_part}::{structure_part}"
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()

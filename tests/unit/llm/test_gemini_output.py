@@ -145,6 +145,30 @@ async def test_blocked_output_is_not_retried(client):
     create.assert_awaited_once()
 
 
+async def test_missing_forced_tool_call_is_retried(client):
+    response = completion("stop")
+    response.choices[0].message.tool_calls = None
+    response.choices[0].message.content = "Here is the requested result."
+    create = AsyncMock(side_effect=[response, completion()])
+    client._client.chat.completions.create = create
+
+    assert (await call(client)).data == {"ok": True}
+    assert create.await_count == 2
+    assert "did not call the required" in create.call_args.kwargs["messages"][-1]["content"]
+
+
+async def test_missing_forced_tool_call_repair_is_bounded(client):
+    response = completion("stop")
+    response.choices[0].message.tool_calls = None
+    response.choices[0].message.content = "Unable to call the function."
+    create = AsyncMock(return_value=response)
+    client._client.chat.completions.create = create
+
+    with pytest.raises(RuntimeError, match="did not return.*function call"):
+        await call(client)
+    assert create.await_count == 3
+
+
 @pytest.mark.parametrize("model", ["grok-4", "llama-3.1-8b-instant"])
 async def test_other_providers_keep_request_options(model):
     client = OpenAICompatibleClient("test", "https://example.test/v1", model)

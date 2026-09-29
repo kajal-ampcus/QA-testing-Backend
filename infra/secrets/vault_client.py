@@ -48,4 +48,9 @@ async def get_login_secret(ref: str) -> dict[str, str]:
         isinstance(secret.get(key), str) and secret[key] for key in ("username", "password")
     ):
         raise RuntimeError(f"Credential reference has invalid login data: {ref}")
-    return {key: value for key, value in secret.items() if isinstance(value, str)}
+    values = {key: value for key, value in secret.items() if isinstance(value, str)}
+    # Role is not a secret; it is required to click Employee/Admin radios on
+    # login forms such as Cafinity before the matching ID field appears.
+    if credential.role:
+        values["account_role"] = credential.role
+    return values

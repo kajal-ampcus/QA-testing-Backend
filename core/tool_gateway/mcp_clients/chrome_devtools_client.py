@@ -11,7 +11,11 @@ import base64
 import json
 import os
 import re
+<<<<<<< Updated upstream
 import tempfile
+=======
+import socket
+>>>>>>> Stashed changes
 import time
 import uuid
 from contextlib import AsyncExitStack, suppress
@@ -26,7 +30,22 @@ from core.tool_gateway.secret_resolver import resolve_login
 from core.tool_gateway.snapshot import parse_elements
 
 
-_MATH_EXPRESSION = re.compile(r"\b(\d+)\s*([+\-*/x×÷−–])\s*(\d+)\b")
+_MATH_EXPRESSION = re.compile(r"(\d{1,2})\s*([+\-*/x×÷−–＋])\s*(\d{1,2})")
+_CAPTCHA_FIELD_PATTERN = re.compile(
+    r"\b(?:your answer|captcha answer|enter the answer|captcha|math question)\b",
+    re.I,
+)
+_CAPTCHA_CHALLENGE_PATTERN = re.compile(
+    r"\b(?:captcha|enter\s+captcha|type\s+the\s+captcha|solve\s+the\s+captcha|"
+    r"refresh\s+captcha|speak\s+captcha|verify\s+you\s+are\s+human|security\s+verification)\b",
+    re.I,
+)
+_INCORRECT_CAPTCHA_PATTERN = re.compile(
+    r"(?:incorrect|invalid|wrong|failed|empty).{0,40}captcha|"
+    r"captcha.{0,40}(?:incorrect|invalid|wrong|failed|empty|required)|"
+    r"please\s+(?:enter|solve|refresh).{0,20}captcha",
+    re.I,
+)
 
 
 class ApplicationReadinessTimeoutError(RuntimeError):
@@ -81,12 +100,45 @@ def _positive_float_env(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0 else default
+def _same_site_allowed_patterns(target_url: str) -> list[str]:
+    """Allow the application origin and HTTPS sibling hosts used by its APIs."""
+    parsed = urlparse(target_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return [target_url]
+    patterns = [f"{parsed.scheme}://{parsed.netloc}/*"]
+    hostname = parsed.hostname or ""
+    labels = hostname.split(".")
+    if (
+        parsed.scheme == "https"
+        and len(labels) >= 3
+        and not hostname.replace(".", "").isdigit()
+    ):
+        # SPAs commonly use sibling hosts such as app.example.com and
+        # app-api.example.com. Restrict the expansion to HTTPS on the same
+        # site instead of opening unrestricted networking.
+        site_suffix = ".".join(labels[-2:])
+        patterns.append(f"https://*.{site_suffix}/*")
+    return patterns
 
 
 def _snapshot_text(snapshot: object) -> str:
     if isinstance(snapshot, list):
         return "\n".join(getattr(block, "text", "") for block in snapshot)
     return str(snapshot)
+
+
+def _evaluate_script_text(snapshot: object) -> str:
+    """Unwrap chrome-devtools-mcp evaluate_script payloads (plain text or fenced)."""
+    text = _snapshot_text(snapshot)
+    match = re.search(r"```(?:json|text|js|javascript)?\s*([\s\S]*?)```", text)
+    if not match:
+        return text
+    payload = match.group(1).strip()
+    with suppress(json.JSONDecodeError):
+        decoded = json.loads(payload)
+        if isinstance(decoded, str):
+            return decoded
+    return payload
 
 
 def _parse_controls(text: str) -> list[tuple[str, str, str]]:
@@ -154,27 +206,54 @@ def _find_uid(
     return reverse
 
 
+def _captcha_expression_score(text: str, match: re.Match[str]) -> int:
+    """Prefer the actual CAPTCHA over unrelated numbers such as 24/7 or dates."""
+    start, end = match.span()
+    window = text[max(0, start - 80) : min(len(text), end + 80)].lower()
+    score = 0
+    if "=" in text[end : end + 12] or "what is" in window:
+        score += 8
+    if "captcha" in window or "your answer" in window or "enter the answer" in window:
+        score += 10
+    return score
+
+
 def _solve_math_captcha(text: str) -> int | None:
     """
-    Find and solve a simple arithmetic CAPTCHA in snapshot text.
-    Handles: 'What is 3 + 3?', 'What is 6 - 2?', 'What is 8 + 1?' etc.
-    Returns the integer answer or None if no math expression found.
+    Find and solve a simple arithmetic CAPTCHA in snapshot/DOM text.
+    Handles: 'What is 3 + 3?', 'What is 6 - 2?', '3 + 16 = ?' etc.
+    Ignores year ranges and other two-digit noise when a better match exists.
     """
-    match = _MATH_EXPRESSION.search(text)
-    if not match:
+    matches = list(_MATH_EXPRESSION.finditer(text))
+    if not matches:
         return None
-    a, op, b = int(match.group(1)), match.group(2), int(match.group(3))
-    return {
-        "+": a + b,
-        "-": a - b,
-        "*": a * b,
-        "x": a * b,
-        "×": a * b,
-        "/": (a // b if b and a % b == 0 else None),
-        "÷": (a // b if b and a % b == 0 else None),
-        "−": a - b,
-        "–": a - b,
-    }.get(op)
+    matches.sort(key=lambda match: (_captcha_expression_score(text, match), match.start()), reverse=True)
+    for match in matches:
+        a, op, b = int(match.group(1)), match.group(2), int(match.group(3))
+        answer = {
+            "+": a + b,
+            "＋": a + b,
+            "-": a - b,
+            "*": a * b,
+            "x": a * b,
+            "×": a * b,
+            "/": (a // b if b and a % b == 0 else None),
+            "÷": (a // b if b and a % b == 0 else None),
+            "−": a - b,
+            "–": a - b,
+        }.get(op)
+        if answer is not None:
+            return answer
+    return None
+
+
+def _captcha_challenge_kind(text: str) -> str:
+    """Return the recognized CAPTCHA class in a generic, site-agnostic way."""
+    if _solve_math_captcha(text) is not None:
+        return "math"
+    if _CAPTCHA_CHALLENGE_PATTERN.search(text):
+        return "generic"
+    return "none"
 
 
 def _stdio_environment() -> dict[str, str]:
@@ -231,6 +310,9 @@ class ChromeDevToolsClient:
         self._headless = headless
         self._credential_ref = credential_ref
         self._authenticated = False
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            self._cdp_port = listener.getsockname()[1]
         self._page_ready_timeout_seconds = (
             page_ready_timeout_seconds
             if page_ready_timeout_seconds is not None
@@ -293,7 +375,14 @@ class ChromeDevToolsClient:
                 command = "chrome-devtools-mcp"
             else:
                 command = "npx.cmd" if os.name == "nt" else "npx"
+<<<<<<< Updated upstream
                 args = ["-y", "chrome-devtools-mcp"]
+=======
+                using_npx = True
+
+        args = ["chrome-devtools-mcp"] if using_npx else []
+        args.append(f"--chromeArg=--remote-debugging-port={self._cdp_port}")
+>>>>>>> Stashed changes
         if executable_path := os.environ.get("CHROME_EXECUTABLE_PATH"):
             args.extend(["--executablePath", executable_path])
 
@@ -313,6 +402,7 @@ class ChromeDevToolsClient:
         if self._headless:
             args.append("--headless")
 
+<<<<<<< Updated upstream
         if self._allowed_url_pattern and not self._omit_url_allowlist:
             parsed = urlparse(self._allowed_url_pattern)
             allowed_pattern = (
@@ -321,6 +411,11 @@ class ChromeDevToolsClient:
                 else self._allowed_url_pattern
             )
             args.extend(["--allowedUrlPattern", allowed_pattern])
+=======
+        if self._allowed_url_pattern:
+            args.append("--allowedUrlPattern")
+            args.extend(_same_site_allowed_patterns(self._allowed_url_pattern))
+>>>>>>> Stashed changes
         if os.environ.get("CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true").lower() == "true":
             args.append("--redactNetworkHeaders")
         return StdioServerParameters(
@@ -450,6 +545,49 @@ class ChromeDevToolsClient:
     # ── Navigation ──────────────────────────────────────────────────────────
     async def navigate_page(self, url: str) -> Any:
         return await self._call("navigate_page", self._page_args(type="url", url=url))
+
+    async def export_authenticated_session(self) -> dict[str, Any]:
+        """Copy browser storage in memory; never write credentials to checkpoints."""
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{self._cdp_port}"
+            )
+            context = browser.contexts[0]
+            # CDP attaches after navigation. Register the current origins with
+            # Playwright before exporting local storage and IndexedDB.
+            for page in context.pages:
+                if page.url.startswith("http"):
+                    await page.reload(wait_until="domcontentloaded")
+            state = await context.storage_state(indexed_db=True)
+            state["session_storage"] = [
+                await page.evaluate("() => ({origin: location.origin, items: Object.entries(sessionStorage)})")
+                for page in context.pages if page.url.startswith("http")
+            ]
+            return state
+
+    async def import_authenticated_session(self, state: dict[str, Any]) -> None:
+        from playwright.async_api import async_playwright
+
+        if self._exit_stack is None:
+            raise RuntimeError("Session import requires an active browser context")
+        # Keep this CDP connection alive: init scripts belong to its session
+        # and disappear on disconnect before the next MCP navigation.
+        playwright = await self._exit_stack.enter_async_context(async_playwright())
+        browser = await playwright.chromium.connect_over_cdp(
+            f"http://127.0.0.1:{self._cdp_port}"
+        )
+        context = browser.contexts[0]
+        await context.set_storage_state(storage_state={
+            "cookies": state.get("cookies", []), "origins": state.get("origins", [])
+        })
+        await context.add_init_script(
+            "for (const entry of " + json.dumps(state.get("session_storage", [])) + ") {"
+            "if (location.origin === entry.origin) for (const [key, value] of entry.items)"
+            "if (sessionStorage.getItem(key) === null) sessionStorage.setItem(key, value); }"
+        )
+        self._authenticated = True
 
     async def new_page(self, url: str | None = None) -> Any:
         return await self._call("new_page", {"url": url} if url else {})
@@ -691,13 +829,8 @@ class ChromeDevToolsClient:
                 bool(re.search(r"\b(?:loading|please wait|starting service)\b", text, re.I))
                 and not usable_controls
             )
-            has_captcha_label = "captcha" in text.lower()
             has_math_question = bool(_MATH_EXPRESSION.search(text))
-            captcha_still_loading = (
-                has_captcha_label
-                and not has_math_question
-                and bool(re.search(r"\b(?:your answer|captcha answer)\b", text, re.I))
-            )
+            captcha_still_loading = bool(_CAPTCHA_FIELD_PATTERN.search(text)) and not has_math_question
             signature = tuple(
                 (
                     element["role"],
@@ -721,7 +854,7 @@ class ChromeDevToolsClient:
                 signature
                 and signature == previous_signature
                 and not loading
-                and (not captcha_still_loading or usable_controls)
+                and not captcha_still_loading
             ):
                 return
 
@@ -764,38 +897,129 @@ class ChromeDevToolsClient:
 
     # ── Authentication ───────────────────────────────────────────────────────
     async def _read_visible_login_text(self) -> str:
-        """Read DOM text plus text embedded in an inline SVG CAPTCHA image."""
+        """Read visible login copy plus math text hidden inside SVG CAPTCHA images."""
         result = await self._call(
             "evaluate_script",
             self._page_args(
-                function="""() => {
-                    const bodyText = document.body?.innerText || "";
-                    const captchaImage = Array.from(document.images).find((image) =>
-                        /captcha/i.test(`${image.alt || ""} ${image.title || ""}`)
-                    );
-                    if (!captchaImage?.src?.startsWith("data:image/svg+xml")) {
-                        return bodyText;
-                    }
-                    try {
-                        const separator = captchaImage.src.indexOf(",");
-                        if (separator < 0) return bodyText;
-                        const encodedSvg = captchaImage.src.slice(separator + 1);
-                        const svg = captchaImage.src.includes(";base64,")
-                            ? atob(encodedSvg)
-                            : decodeURIComponent(encodedSvg);
-                        const captchaText = new DOMParser()
+                function="""async () => {
+                    const chunks = [];
+                    const push = (value) => {
+                        const text = (value || "").toString().trim();
+                        if (text) chunks.push(text);
+                    };
+                    const decodeSvgDataUri = (src) => {
+                        if (!src || !src.startsWith("data:image/svg+xml")) return "";
+                        const separator = src.indexOf(",");
+                        if (separator < 0) return "";
+                        const encoded = src.slice(separator + 1);
+                        const svg = src.includes(";base64,")
+                            ? atob(encoded)
+                            : decodeURIComponent(encoded);
+                        return new DOMParser()
                             .parseFromString(svg, "image/svg+xml")
                             .documentElement.textContent || "";
-                        return `${bodyText}\n${captchaText}`;
-                    } catch (_error) {
-                        return bodyText;
+                    };
+                    push(document.body?.innerText || "");
+                    for (const svg of document.querySelectorAll("svg")) {
+                        push(svg.textContent);
                     }
+                    for (const image of document.images) {
+                        if (!image.getClientRects().length) continue;
+                        const src = image.currentSrc || image.src || "";
+                        const hint = [
+                            image.alt, image.title, image.id, image.className, image.src
+                        ].join(" ");
+                        if (
+                            /captcha|challenge|verify|math/i.test(hint)
+                            || src.startsWith("data:image/svg+xml")
+                            || src.startsWith("blob:")
+                            || /\\.svg(?:[?#]|$)/i.test(src)
+                        ) {
+                            push(image.alt);
+                            try {
+                                if (src.startsWith("data:image/svg+xml")) {
+                                    push(decodeSvgDataUri(src));
+                                } else if (src.startsWith("blob:")) {
+                                    // Read the image already displayed by this form. Never
+                                    // request a new challenge: it would invalidate its token.
+                                    const response = await fetch(src, {
+                                        signal: AbortSignal.timeout(2000)
+                                    });
+                                    if (response.ok && /svg/i.test(
+                                        response.headers.get("content-type") || ""
+                                    )) {
+                                        const svg = await response.text();
+                                        if (image.isConnected &&
+                                            (image.currentSrc || image.src) === src) {
+                                            push(new DOMParser().parseFromString(
+                                                svg, "image/svg+xml"
+                                            ).documentElement.textContent);
+                                        }
+                                    }
+                                }
+                            } catch (_) {
+                                // A revoked blob or malformed image must not discard
+                                // other readable challenges on the page.
+                            }
+                        }
+                    }
+                    for (const node of document.querySelectorAll(
+                        '[id*="captcha" i], [class*="captcha" i], [aria-label*="captcha" i]'
+                    )) {
+                        push(node.innerText || node.textContent);
+                        if (node.tagName === "IMG") push(decodeSvgDataUri(node.src));
+                    }
+                    return chunks.join("\\n");
                 }""",
                 args=[],
                 waitForStableDom=False,
             ),
         )
-        return _snapshot_text(result)
+        return _evaluate_script_text(result)
+
+    async def _login_text_for_captcha(self) -> str:
+        snapshot = _snapshot_text(await self.take_snapshot())
+        with suppress(Exception):
+            snapshot = f"{await self._read_visible_login_text()}\n{snapshot}"
+        return snapshot
+
+    async def _wait_for_math_captcha(self) -> tuple[int | None, str]:
+        """Poll until the arithmetic CAPTCHA is readable from the DOM or snapshot."""
+        text = ""
+        for _ in range(20):
+            text = await self._login_text_for_captcha()
+            answer = _solve_math_captcha(text)
+            if answer is not None:
+                return answer, text
+            await asyncio.sleep(0.5)
+        return None, text
+
+    async def _select_login_role(
+        self, secret: dict[str, str], controls: list[tuple[str, str, str]]
+    ) -> list[tuple[str, str, str]]:
+        """Click Employee/Admin (or similar) before filling the matching ID field."""
+        role_name = (secret.get("account_role") or "").strip()
+        if not role_name or role_name.lower() in {"user", "default", "test account"}:
+            return controls
+        role_names = [
+            role_name,
+            f"{role_name} login",
+            f"login as {role_name}",
+            f"{role_name} portal",
+        ]
+        role_uid = _find_uid(
+            controls, role_names, {"radio", "tab", "button", "option", "menuitem"}
+        )
+        if not role_uid:
+            return controls
+        await self._click_authentication_control(
+            role_uid,
+            role_names,
+            {"radio", "tab", "button", "option", "menuitem"},
+            "login role",
+        )
+        await self.wait_until_ready()
+        return _parse_controls(_snapshot_text(await self.take_snapshot()))
 
     async def authenticate(self) -> None:
         """
@@ -836,6 +1060,7 @@ class ChromeDevToolsClient:
 
         secret = await resolve_login(self._credential_ref)
 
+        last_page_text = ""
         for attempt in range(3):
             # Always re-read the snapshot fresh — CAPTCHA changes on each attempt
             await self.wait_until_ready()
@@ -864,8 +1089,14 @@ class ChromeDevToolsClient:
             # Custom selectors from the stored credential are always first.
             # Fallback lists cover common field names across any website.
             # _find_uid uses 3-pass fuzzy matching so partial names also work.
+            account_role = secret.get("account_role", "")
             username_names = [
                 secret.get("username_selector", ""),
+                f"{account_role} id" if account_role else "",
+                f"{account_role} id number" if account_role else "",
+                "employee id",
+                "employee number",
+                "staff id",
                 # Common email/username field names across websites
                 "email",
                 "email address",
@@ -952,7 +1183,7 @@ class ChromeDevToolsClient:
                 available = [
                     (role, name)
                     for _, role, name in controls
-                    if role in {"textbox", "input", "button", "link", "combobox"}
+                    if role in {"textbox", "input", "button", "link", "combobox", "radio"}
                 ]
                 raise RuntimeError(
                     f"Login form detection failed on attempt {attempt + 1}. "
@@ -978,58 +1209,67 @@ class ChromeDevToolsClient:
                 "password field",
             )
 
-            # ── Solve arithmetic CAPTCHA ────────────────────────────────────
-            # BUG FIX 1+2: snapshot is already fresh from above — math question
-            # is guaranteed present because wait_until_ready() waited for it.
+            # ── Solve the CAPTCHA when it is a supported arithmetic challenge ─
+            # Read the question AFTER filling credentials: some apps regenerate
+            # their challenge when the username/password fields change.
             captcha_names = [
                 secret.get("captcha_selector", ""),
+                "enter the answer",
                 "your answer",
                 "captcha answer",
                 "answer",
                 "captcha",
             ]
+            answer, text = await self._wait_for_math_captcha()
+            controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
             captcha_uid = _find_uid(
                 controls,
                 captcha_names,
-                {"textbox", "input"},
+                {"textbox", "input", "spinbutton"},
             )
 
+            challenge_kind = _captcha_challenge_kind(text)
+            if challenge_kind == "generic":
+                raise RuntimeError(
+                    "A CAPTCHA challenge is visible on the login form, but it is not a "
+                    "supported arithmetic CAPTCHA. The discovery agent can only solve "
+                    "standard math-style challenges; this page requires a generic CAPTCHA "
+                    "workflow, a custom solver, or manual verification before discovery can continue. "
+                    f"Page text snippet: {text[:500]}"
+                )
+
             if captcha_uid:
-                answer = _solve_math_captcha(text)
                 if answer is None:
                     refresh_uid = _find_uid(
                         controls,
                         ["refresh captcha", "reload captcha", "new captcha", "refresh"],
                         {"button", "link"},
                     )
-                    # Cafinity occasionally returns an empty CAPTCHA and asks
-                    # the user to refresh it. Mirror that recovery automatically.
+                    # Some apps occasionally return an empty challenge and ask the
+                    # user to refresh it. Mirror that recovery automatically.
                     if refresh_uid:
                         for _refresh_attempt in range(3):
                             await self.click(refresh_uid)
-                            for _ in range(10):
-                                await asyncio.sleep(0.5)
-                                text = _snapshot_text(await self.take_snapshot())
-                                if not _MATH_EXPRESSION.search(text):
-                                    with suppress(Exception):
-                                        dom_text = await self._read_visible_login_text()
-                                        text = f"{text}\n{dom_text}"
-                                answer = _solve_math_captcha(text)
-                                if answer is not None:
-                                    break
+                            answer, text = await self._wait_for_math_captcha()
                             if answer is not None:
                                 break
                     if answer is None:
                         raise RuntimeError(
-                            "CAPTCHA remained unavailable after 3 automatic refreshes. "
+                            "CAPTCHA remained unavailable after waiting for the challenge "
+                            "and 3 automatic refreshes. "
                             f"Page text snippet: {text[:500]}"
                         )
                 await self._fill_authentication_field(
                     captcha_uid,
                     str(answer),
                     captcha_names,
-                    {"textbox", "input"},
+                    {"textbox", "input", "spinbutton"},
                     "CAPTCHA field",
+                )
+            elif _CAPTCHA_FIELD_PATTERN.search(text) or _solve_math_captcha(text) is not None:
+                raise RuntimeError(
+                    "A CAPTCHA field is visible but no answer input could be detected. "
+                    f"Page text snippet: {text[:500]}"
                 )
 
             # ── Submit ──────────────────────────────────────────────────────
@@ -1045,23 +1285,29 @@ class ChromeDevToolsClient:
             for _ in range(20):
                 await asyncio.sleep(0.5)
                 after = _snapshot_text(await self.take_snapshot())
+<<<<<<< Updated upstream
                 print(
                     "[DISCOVERY AUTH] Post-login snapshot:",
                     after[:1000],
                 )
+=======
+                last_page_text = after
+
+>>>>>>> Stashed changes
                 # Success — password field is gone, we left the login page
                 if not re.search(r"\b(?:password)\b", after, re.I):
                     self._authenticated = True
                     return
 
-                # BUG FIX 3: CAPTCHA was wrong — the question refreshes,
-                # retry the entire fill sequence with the new question
-                if re.search(r"incorrect captcha", after, re.I):
+                # CAPTCHA was wrong — the question refreshes, retry the fill
+                if _INCORRECT_CAPTCHA_PATTERN.search(after):
                     break  # break inner loop → outer loop retries with fresh snapshot
 
                 # Hard failure — wrong credentials (not a CAPTCHA issue)
                 if re.search(
-                    r"\b(?:invalid|incorrect).{0,30}(?:email|password|credential)\b", after, re.I
+                    r"\b(?:invalid|incorrect).{0,30}(?:email|password|credential|employee id)\b",
+                    after,
+                    re.I,
                 ):
                     raise RuntimeError(
                         "Authentication failed: wrong email or password. "
@@ -1069,6 +1315,8 @@ class ChromeDevToolsClient:
                     )
 
         raise RuntimeError(
-            "Authentication failed after 3 attempts — CAPTCHA could not be solved. "
-            "Check that the math question is visible in the accessibility tree."
+            "Authentication failed after 3 attempts — login did not leave the "
+            "sign-in page. If a math CAPTCHA is shown, confirm it is visible "
+            "and that the Employee/Admin role radio is selected. "
+            f"Page text snippet: {last_page_text[:400]}"
         )

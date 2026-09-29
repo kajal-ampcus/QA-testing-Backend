@@ -115,6 +115,11 @@ class ParallelCrawler:
         self._pending_at_limit = 0
         self._termination = "EXPLORATION_EXHAUSTED"
         self._authenticated_workers = 0
+        self._session_state: dict[str, Any] | None = None
+        self._landing_url: str | None = None
+        self._active_workers = 0
+        self._auth_status = "pending" if authenticate else "not_required"
+        self._dashboard_status = "pending"
         self._safety_limit_kind: str | None = None
         self.termination_reason = "EXPLORATION_EXHAUSTED"
         self.coverage: dict[str, Any] = {}
@@ -200,6 +205,7 @@ class ParallelCrawler:
         jobs = list(self._job_states.values())
         return {
             "version": 1,
+            "progress": self._progress(),
             "configuration": {
                 "mode": self._discovery_mode,
                 "selected_auth_flow": self._selected_auth_flow,
@@ -240,6 +246,20 @@ class ParallelCrawler:
             # session in the worker; serialize both transaction types.
             async with self._persist_lock:
                 await self._on_checkpoint(self._checkpoint_payload())
+
+    def _progress(self) -> dict[str, Any]:
+        statuses = [job["status"] for job in self._job_states.values()]
+        return {
+            "authentication": self._auth_status,
+            "dashboard_discovery": self._dashboard_status,
+            "task_queue": len(statuses),
+            "active_workers": self._active_workers,
+            "discovered_states": len(self._nodes),
+            "discovered_transitions": len(self._edges),
+            "pending_tasks": statuses.count("pending"),
+            "failed_tasks": statuses.count("failed"),
+            "skipped_unsafe_actions": len(self._skipped),
+        }
 
     async def _set_job_status(self, job: DiscoveryJob, status: str) -> None:
         self._job_states[self._job_key(job)] = self._serialize_job(job, status)
@@ -354,6 +374,8 @@ class ParallelCrawler:
         flow = self._detect_auth_flow(fingerprint, state, nodes, authenticated)
         if flow:
             self._auth_flows.setdefault(flow["id"], flow)
+            if self._discovery_mode in {"targeted", "full"} and flow["kind"] == "login" and not self._selected_auth_flow:
+                self._selected_auth_flow = flow["id"]
         area_id, label = self._classify_state(state, nodes, authenticated)
         area = self._areas.setdefault(
             area_id,
@@ -376,34 +398,39 @@ class ParallelCrawler:
         if fingerprint not in area["state_fingerprints"]:
             area["state_fingerprints"].append(fingerprint)
         if (
-            area_id == "authenticated"
-            and self._selected_auth_flow
-            and self._selected_auth_flow not in self._module_inventory_flows
+            (area_id == "authenticated" or (not self._authenticate and self._discovery_mode in {"targeted", "full"}))
+            and (self._selected_auth_flow or "default") not in self._module_inventory_flows
         ):
             for node in nodes:
                 if node.get("role") not in {"link", "button", "menuitem", "tab"}:
                     continue
                 name = str(node.get("name", "")).strip()
-                if not name or re.search(r"log.?out|sign.?out", name, re.I):
+                if not name:
+                    continue
+                if not self._safe_navigation(node):
+                    self._skipped.add(f"{state.get('url_pattern', '/')}: {node.get('role')} {name}")
                     continue
                 if classify_risk(str(node.get("role", "")), name) == RiskLevel.DESTRUCTIVE:
                     continue
                 destination = str(node.get("url") or "")
+                root_url = next((item.get("url") for item in nodes if item.get("role") == "RootWebArea"), "") or ""
+                if destination and (urlparse(urljoin(root_url, destination)).scheme not in {"http", "https"} or _is_external(urljoin(root_url, destination), root_url)):
+                    continue
                 action_key = f"{node.get('role', '')}|{name}|{destination}"
-                module_id = self._slug(name)
-                existing = self._modules.get(module_id)
+                candidate_id = self._slug(name)
+                existing = self._modules.get(candidate_id)
                 if existing and (
                     existing.get("action_key") != action_key
                     or existing.get("auth_flow_id") != self._selected_auth_flow
                 ):
                     suffix = hashlib.sha1(action_key.encode("utf-8")).hexdigest()[:8]
-                    module_id = f"{module_id}-{suffix}"
+                    candidate_id = f"{candidate_id}-{suffix}"
                 module = self._modules.setdefault(
-                    module_id,
+                    candidate_id,
                     {
-                        "id": module_id,
+                        "id": candidate_id,
                         "label": name,
-                        "area_id": "authenticated",
+                        "area_id": area_id,
                         "auth_flow_id": self._selected_auth_flow,
                         "action_key": action_key,
                         "entry_action": {
@@ -416,8 +443,7 @@ class ParallelCrawler:
                 )
                 if fingerprint not in module["state_fingerprints"]:
                     module["state_fingerprints"].append(fingerprint)
-            if self._selected_auth_flow:
-                self._module_inventory_flows.add(self._selected_auth_flow)
+            self._module_inventory_flows.add(self._selected_auth_flow or "default")
         if module_id and module_id in self._modules:
             module_fingerprints = self._modules[module_id]["state_fingerprints"]
             if fingerprint not in module_fingerprints:
@@ -443,7 +469,7 @@ class ParallelCrawler:
     def _action_in_scope(
         self, area_id: str, element: dict[str, Any], depth: int, module_id: str | None
     ) -> bool:
-        if self._discovery_mode == "complete":
+        if self._discovery_mode in {"complete", "full"}:
             return True
         if self._discovery_mode in {"entry_points", "inventory"}:
             return not area_id.startswith("authenticated") and depth <= 1
@@ -451,11 +477,39 @@ class ParallelCrawler:
             return not area_id.startswith("authenticated")
         if self._discovery_mode == "modules":
             return False
-        if area_id != "authenticated":
+        if area_id != "authenticated" and not (self._discovery_mode == "targeted" and not self._authenticate):
             return False
+        if self._discovery_mode == "targeted":
+            # Global navigation is often repeated inside a selected branch.
+            # Do not cross into another observed root branch through its menu.
+            candidate = next((key for key, item in self._modules.items()
+                if item.get("entry_action", {}).get("name") == element.get("name")
+                and item.get("entry_action", {}).get("role") == element.get("role")
+                and item.get("entry_action", {}).get("url") == element.get("url")), None)
+            if candidate and candidate not in self._selected_modules:
+                return False
         if module_id in self._selected_modules:
             return True
         return self._selected_module_for_element(element) is not None
+
+    @staticmethod
+    def _safe_navigation(element: dict[str, Any]) -> bool:
+        role = str(element.get("role", ""))
+        name = str(element.get("name", ""))
+        destination = str(element.get("url") or "")
+        if element.get("disabled") or element.get("visible") is False:
+            return False
+        if classify_risk(role, name) != RiskLevel.SAFE:
+            return False
+        if re.search(r"\b(log.?out|sign.?out|delete|remove|purchase|checkout|payment|transfer|withdraw|revoke|erase|terminate|place order|order now|book now|refund|charge|execute)\b", name + " " + destination, re.I):
+            return False
+        if element.get("input_type") == "submit":
+            return False
+        if role == "link" and destination:
+            return True
+        return role in {"button", "menuitem", "tab"} and not re.search(
+            r"\b(submit|send|save|subscribe|confirm|approve|publish|register|create account|log in|sign in|login)\b", name, re.I
+        )
 
     @staticmethod
     def _action_text(step: ClickStep) -> str:
@@ -510,7 +564,7 @@ class ParallelCrawler:
                 destination = urljoin(current_url, destination)
                 if urlparse(destination).scheme not in {"http", "https"} or _is_external(destination, base_url):
                     continue
-                if urldefrag(destination)[0] == urldefrag(current_url)[0] and "#" in destination:
+                if urldefrag(destination)[0] == urldefrag(current_url)[0] and "#" in destination and not urlparse(destination).fragment.startswith(("/", "!/")):
                     continue
             safe_link = role == "link" and bool(destination)
             form_action = bool(re.search(
@@ -519,7 +573,8 @@ class ParallelCrawler:
                 re.I,
             ))
             if (
-                classify_risk(role, name) == RiskLevel.DESTRUCTIVE
+                not self._safe_navigation(element)
+                or re.search(r"\b(log.?out|sign.?out|delete|purchase|checkout|payment|transfer|withdraw)\b", name + " " + str(destination or ""), re.I)
                 or (form_action and not safe_link)
                 or element.get("input_type") == "submit"
             ):
@@ -529,7 +584,7 @@ class ParallelCrawler:
             if role == "combobox" and not values:
                 self._skipped.add(f"{urlparse(current_url).path}: combobox {name} (options unavailable)")
             for value in values:
-                canonical = urldefrag(destination)[0].rstrip("/") if destination else None
+                canonical = destination.rstrip("/") if destination else None
                 key = (parent_fingerprint, role, canonical or name, str(value))
                 async with self._lock:
                     if key in self._queued_actions:
@@ -537,8 +592,11 @@ class ParallelCrawler:
                     self._queued_actions.add(key)
                 step = ClickStep(role, name, destination, value)
                 child_module = module_id
-                if area_id == "authenticated" and child_module is None:
-                    child_module = self._selected_module_for_element(element)
+                if child_module is None:
+                    child_module = next((key for key, item in self._modules.items()
+                        if item.get("entry_action", {}).get("role") == role
+                        and item.get("entry_action", {}).get("name") == name
+                        and item.get("entry_action", {}).get("url") == element.get("url")), None)
                 child_job = DiscoveryJob(
                     priority=-_relevance_score(name, self._keywords),
                     sequence=next(self._sequence),
@@ -596,6 +654,7 @@ class ParallelCrawler:
                         job = await queue.get()
                         fingerprint: str | None = None
                         try:
+                            self._active_workers += 1
                             await self._set_job_status(job, "in_progress")
                             async with self._lock:
                                 over_pages = len(self._seen) >= self._budget.max_pages
@@ -624,6 +683,12 @@ class ParallelCrawler:
                                 snapshot = await crawler._apply_path(
                                     await client.take_snapshot(), job.path
                                 )
+                            elif self._session_state is not None:
+                                if not authenticated_here:
+                                    await client.import_authenticated_session(self._session_state)
+                                await client.navigate_page(self._landing_url or base_url)
+                                await client.wait_until_ready()
+                                snapshot = await crawler._apply_path(await client.take_snapshot(), job.path)
                             elif authenticated_here:
                                 # This worker already owns an authenticated,
                                 # isolated browser context. Reuse its persisted
@@ -657,15 +722,17 @@ class ParallelCrawler:
                                 await self._set_job_status(job, "completed")
                                 continue
                             state = captured[0] if captured else None
-                            area_id = self._catalog_state(
-                                fingerprint,
-                                state or {"url_pattern": base_url},
-                                nodes,
-                                not skip_auth,
-                                job.module_id,
-                            )
                             action = self._action_text(job.path[-1]) if job.path else "ROOT"
                             async with self._lock:
+                                if fingerprint not in self._seen and len(self._seen) >= self._budget.max_pages:
+                                    self._pending_at_limit += 1
+                                    self._termination = "MAX_PAGES_REACHED"
+                                    await self._set_job_status(job, "pending")
+                                    continue
+                                area_id = self._catalog_state(
+                                    fingerprint, state or {"url_pattern": base_url},
+                                    nodes, not skip_auth, job.module_id,
+                                )
                                 if job.parent_fingerprint:
                                     self._edges.add((job.parent_fingerprint, fingerprint, action))
                                 is_new = fingerprint not in self._seen
@@ -759,6 +826,8 @@ class ParallelCrawler:
                             })
                             await self._set_job_status(job, "failed")
                         finally:
+                            self._active_workers -= 1
+                            await self._save_checkpoint()
                             queue.task_done()
             except asyncio.CancelledError:
                 raise
@@ -776,7 +845,7 @@ class ParallelCrawler:
         join_task = asyncio.create_task(queue.join())
         try:
             while not join_task.done():
-                await asyncio.wait([join_task, *workers], return_when=asyncio.FIRST_COMPLETED)
+                await asyncio.wait([join_task, *(task for task in workers if not task.done())], return_when=asyncio.FIRST_COMPLETED)
                 if all(task.done() for task in workers) and not join_task.done():
                     self._termination = "ACTION_FAILURES"
                     while True:
@@ -798,7 +867,21 @@ class ParallelCrawler:
 
     async def crawl(self, base_url: str, on_state_discovered: OnStateDiscovered) -> str:
         self._started = time.monotonic()
-        if self._discovery_mode in {"entry_points", "inventory"}:
+        if self._discovery_mode in {"targeted", "full"}:
+            try:
+                await asyncio.wait_for(self._bootstrap(base_url, on_state_discovered), self._budget.max_duration_seconds)
+            except Exception as exc:
+                self._auth_status = "failed"
+                self._failures.append({"action": "Authentication bootstrap", "error": type(exc).__name__, "detail": str(exc)[:300]})
+                if self._termination == "EXPLORATION_EXHAUSTED":
+                    self._termination = "AUTHENTICATION_FAILED"
+                if isinstance(exc, TimeoutError):
+                    self._termination = "MAX_DURATION_REACHED"
+                await self._save_checkpoint()
+            phases = [(self._landing_url or base_url, not self._authenticate)]
+            if self._discovery_mode == "targeted" and not self._selected_modules:
+                phases = []
+        elif self._discovery_mode in {"entry_points", "inventory"}:
             phases = [(base_url, True)]
         elif self._discovery_mode == "auth_flow":
             entry_urls = self._auth_entry_urls or [self._auth_entry_url or base_url]
@@ -813,7 +896,12 @@ class ParallelCrawler:
         for phase_url, skip_auth in phases:
             if self._termination != "EXPLORATION_EXHAUSTED":
                 break
-            await self._run_phase(phase_url, skip_auth, on_state_discovered)
+            remaining = self._budget.max_duration_seconds - (time.monotonic() - self._started)
+            try:
+                await asyncio.wait_for(self._run_phase(phase_url, skip_auth, on_state_discovered), max(0.001, remaining))
+            except TimeoutError:
+                self._termination = "MAX_DURATION_REACHED"
+                await self._save_checkpoint()
         if self._termination == "EXPLORATION_EXHAUSTED":
             if self._failures:
                 self._termination = "ACTION_FAILURES"
@@ -824,10 +912,11 @@ class ParallelCrawler:
                 )
         self.termination_reason = self._termination
         self.coverage = {
+            "progress": self._progress(),
             "states_discovered": len(self._seen),
             "actions_examined": self._actions_examined,
             "actions_remaining": self._pending_at_limit + self._depth_limited,
-            "queue_exhausted": self._pending_at_limit == 0 and self._depth_limited == 0,
+            "queue_exhausted": not any(job["status"] in {"pending", "failed", "in_progress"} for job in self._job_states.values()),
             "failed_actions": self._failures,
             "skipped_actions": sorted(self._skipped),
             "authenticated_explored": self._authenticated_workers > 0,
@@ -875,3 +964,73 @@ class ParallelCrawler:
             )
             return "PARTIAL" if recoverable else "FAILED"
         return "COMPLETE" if self._termination == "EXPLORATION_EXHAUSTED" else "PARTIAL"
+
+    async def _bootstrap(self, base_url: str, on_state_discovered: OnStateDiscovered) -> None:
+        """Observe entry/login and the actual landing state before scheduling branches."""
+        async with self._client_factory() as client:
+            crawler = Crawler(client, self._budget, self._keywords, login_url=self._login_url, authenticate=self._authenticate)
+            crawler._base_url = base_url
+            parent: str | None = None
+            history: list[str] = []
+
+            async def observe(authenticated: bool, action: str) -> tuple[str | None, list[dict[str, Any]]]:
+                nonlocal parent
+                captured: list[dict[str, Any]] = []
+                async def capture(state: dict[str, Any]) -> None:
+                    captured.append(state)
+                crawler._visited_fingerprints.clear()
+                fingerprint, nodes = await crawler._record_state(await client.take_snapshot(), [], capture)
+                if not fingerprint or not captured:
+                    raise RuntimeError("Entry page has no observable state")
+                state = captured[0]
+                if parent:
+                    history.append(action)
+                state["reached_via"] = list(history)
+                area = self._catalog_state(fingerprint, state, nodes, authenticated)
+                if fingerprint not in self._seen:
+                    if len(self._seen) >= self._budget.max_pages:
+                        self._termination = "MAX_PAGES_REACHED"
+                        raise RuntimeError("Discovery reached the configured page limit during bootstrap")
+                    await on_state_discovered(state)
+                    self._seen.add(fingerprint)
+                    self._nodes[fingerprint] = {"fingerprint": fingerprint, "url_pattern": state["url_pattern"], "area_id": area}
+                if parent and parent != fingerprint:
+                    self._edges.add((parent, fingerprint, action))
+                parent = fingerprint
+                await self._save_checkpoint()
+                return fingerprint, nodes
+
+            await client.navigate_page(base_url)
+            await client.wait_until_ready()
+            _, nodes = await observe(False, "entry")
+            if self._authenticate:
+                self._auth_status = "in_progress"
+                current_flow = self._detect_auth_flow("current", {"url_pattern": base_url}, nodes, False)
+                if not current_flow or current_flow["kind"] not in {"login", "authentication"}:
+                    # Follow an observed authentication link or the account's explicit URL.
+                    login = next((node for node in nodes if node.get("role") in {"link", "button"}
+                        and re.search(r"\b(log\s*in|sign\s*in)\b", node.get("name", ""), re.I)), None)
+                    destination = urljoin(base_url, login["url"]) if login and login.get("url") else self._login_url
+                    if login and not login.get("url") and login.get("uid"):
+                        await client.click(login["uid"])
+                        await client.wait_until_ready()
+                        await observe(False, "open observed authentication")
+                    elif destination and destination != base_url:
+                        await client.navigate_page(destination)
+                        await client.wait_until_ready()
+                        await observe(False, "navigate to observed authentication")
+                await self._save_checkpoint()
+                await client.authenticate()
+                await client.wait_until_ready()
+                self._session_state = await client.export_authenticated_session()
+                await client.wait_until_ready()
+                self._auth_status = "complete"
+                self._authenticated_workers = 1
+            self._dashboard_status = "in_progress"
+            fingerprint, nodes = await observe(self._authenticate, "authenticate")
+            root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
+            self._landing_url = root.get("url") or base_url
+            self._dashboard_status = "complete"
+            if self._selected_modules - self._modules.keys():
+                raise ValueError("Selected paths are no longer in the observed navigation catalog. Discover application paths again.")
+            await self._save_checkpoint()

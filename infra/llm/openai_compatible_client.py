@@ -19,6 +19,11 @@ Fixes applied in this version:
    generation from filling the context window of the repair call.
 
 5. schema validation error marker list extended with Groq-specific strings.
+
+6. A successful HTTP response that omits the forced tool call is retried with
+   an explicit repair prompt. Some OpenAI-compatible providers occasionally
+   return assistant prose with finish_reason=stop despite tool_choice being
+   required; treating that as immediately fatal caused intermittent 502s.
 """
 
 import json
@@ -207,6 +212,33 @@ class OpenAICompatibleClient(LLMClient):
                         ),
                     })
                     continue
+
+                # Some OpenAI-compatible providers occasionally acknowledge a
+                # forced tool request with ordinary assistant text and
+                # finish_reason=stop. This is recoverable, unlike content or
+                # safety filtering, and should not surface as an intermittent
+                # 502 to callers after a single response.
+                message = response.choices[0].message if response.choices else None
+                matching_tool_call = bool(
+                    message
+                    and message.tool_calls
+                    and any(
+                        call.type == "function" and call.function.name == tool_name
+                        for call in message.tool_calls
+                    )
+                )
+                if not matching_tool_call and finish in (None, "stop", "tool_calls"):
+                    if attempt < max_repair_attempts:
+                        messages = [messages[0], messages[1]]
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Your previous response did not call the required {tool_name} "
+                                "function. Do not answer in prose. Call that function exactly "
+                                "once with complete JSON matching its schema."
+                            ),
+                        })
+                        continue
 
                 break  # success
 

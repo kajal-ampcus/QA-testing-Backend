@@ -40,7 +40,7 @@ class DiscoveryTriggerRequest(BaseModel):
     automatic_limits: bool = True
     discovery_mode: str = Field(
         default="entry_points",
-        pattern="^(entry_points|auth_flow|modules|inventory|deep|complete)$",
+        pattern="^(targeted|full|entry_points|auth_flow|modules|inventory|deep|complete)$",
     )
     selected_auth_flow: str | None = Field(default=None, max_length=200)
     selected_auth_flows: list[str] = Field(default_factory=list, max_length=20)
@@ -221,7 +221,13 @@ async def cancel_discovery_job(job_id: str) -> DiscoveryCancelResponse:
     if status == JobStatus.complete:
         return DiscoveryCancelResponse(job_id=job_id, status="already_finished")
 
-    cancelled = await job.abort(timeout=15)
+    try:
+        cancelled = await job.abort(timeout=5)
+    except TimeoutError:
+        # ARQ has recorded the abort request, but a browser/MCP call may not
+        # yield quickly enough for Job.abort() to observe worker completion.
+        # Cancellation is asynchronous; polling will report the terminal state.
+        return DiscoveryCancelResponse(job_id=job_id, status="cancellation_requested")
     if not cancelled:
         return DiscoveryCancelResponse(job_id=job_id, status="already_finished")
     return DiscoveryCancelResponse(job_id=job_id, status="cancelled")

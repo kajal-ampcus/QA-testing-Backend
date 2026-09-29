@@ -61,6 +61,27 @@ def _human_termination(reason: str | None) -> str:
     }.get(reason or "", reason or "Unknown reason.")
 
 
+def _select_auth_flow(
+    checkpoint: dict[str, Any] | None, requested_flow_id: str | None
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Resolve an optional flow choice without blocking credential-based login.
+
+    A fresh/scratch run has no catalog yet, and a single-role application does
+    not need the tester to make a second selection after choosing an account.
+    Multiple discovered flows remain selectable, but absence of a selection
+    falls back to the saved credential's login URL.
+    """
+    available = {
+        flow["id"]: flow
+        for flow in (checkpoint or {}).get("authentication_flows", [])
+        if isinstance(flow, dict) and flow.get("id")
+    }
+    selected_id = requested_flow_id
+    if not selected_id and len(available) == 1:
+        selected_id = next(iter(available))
+    return selected_id, available.get(selected_id or "")
+
+
 class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
     name = "application_discovery"
 
@@ -301,10 +322,6 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 raise ValueError(
                     "The selected authentication flow requires a saved test account."
                 )
-            if needs_authenticated_session and not selected_flow:
-                raise ValueError(
-                    "Select one of the authentication flows discovered from the application before continuing."
-                )
             crawler = ParallelCrawler(
                     client_factory=lambda: self._tool_gateway.chrome_devtools(
                         self.name, payload.target.url, payload.target.credential_ref
@@ -314,7 +331,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                     login_url=login_url,
                     authenticate=(
                         bool(payload.target.credential_ref)
-                        and discovery_mode in {"modules", "deep", "complete"}
+                        and discovery_mode in {"modules", "deep", "complete", "targeted", "full"}
                     ),
                     worker_limit=payload.crawl_budget.worker_limit,
                     discovery_mode=discovery_mode,

@@ -28,7 +28,7 @@ class DiscoveryScopePayload(BaseModel):
 
     mode: str = Field(
         default="entry_points",
-        pattern="^(entry_points|auth_flow|modules|inventory|deep|complete)$",
+        pattern="^(targeted|full|entry_points|auth_flow|modules|inventory|deep|complete)$",
     )
     selected_auth_flow: str | None = None
     selected_auth_flows: list[str] = Field(default_factory=list, max_length=20)
