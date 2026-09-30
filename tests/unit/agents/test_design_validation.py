@@ -49,7 +49,7 @@ def test_rejects_click_only_placeholder():
         STATES,
         {"AC-1"},
     )
-    assert any("click alone" in issue for issue in issues)
+    assert any("click or fill alone" in issue for issue in issues)
 
 
 def test_rejects_unresolvable_data_and_preexisting_success_text():

@@ -360,6 +360,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 None,
             )
             diagnostic["auth_succeeded"] = coverage.get("authenticated_explored", False)
+            diagnostic["auth_attempted"] = bool(getattr(crawler, "_authenticate", False))
             security_failure = next(
                 (
                     failure
@@ -444,6 +445,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             termination_reason,
             getattr(crawler, "coverage", None),
             diagnostic_evidence=save_diagnostic,
+            replace_diagnostic=True,
         )
         await self._map_repo.session.commit()
 

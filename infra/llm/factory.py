@@ -33,15 +33,15 @@ from infra.llm.base import LLMClient
 from infra.llm.openai_compatible_client import OpenAICompatibleClient
 
 
-def get_llm_client() -> LLMClient:
+def get_llm_client(*, model: str | None = None) -> LLMClient:
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
-    model = os.environ.get("LLM_MODEL") or None
+    chosen_model = model or os.environ.get("LLM_MODEL") or None
 
     if provider == "anthropic":
         return AnthropicClient(
             api_key=os.environ.get("ANTHROPIC_API_KEY"),
-            model=model or "claude-sonnet-5",
+            model=chosen_model or "claude-sonnet-5",
         )
 
     if provider in {"google", "gemini"}:
@@ -58,7 +58,7 @@ def get_llm_client() -> LLMClient:
         return OpenAICompatibleClient(
             api_key=api_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            model=model or "gemini-2.5-flash",
+            model=chosen_model or "gemini-2.5-flash",
         )
 
     if provider == "openai_compatible":
@@ -72,7 +72,7 @@ def get_llm_client() -> LLMClient:
         return OpenAICompatibleClient(
             api_key=os.environ.get("LLM_API_KEY"),
             base_url=base_url,
-            model=model or "llama-3.1-8b-instant",
+            model=chosen_model or "openai/gpt-oss-20b",
         )
 
     raise ValueError(

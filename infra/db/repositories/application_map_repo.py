@@ -81,6 +81,8 @@ class ApplicationMapRepository(BaseRepository):
         termination_reason: str | None = None,
         coverage: dict[str, Any] | None = None,
         diagnostic_evidence: dict[str, Any] | None = None,
+        *,
+        replace_diagnostic: bool = False,
     ) -> None:
         app_map = await self.session.get(ApplicationMap, application_map_id)
         if app_map is not None:
@@ -88,7 +90,7 @@ class ApplicationMapRepository(BaseRepository):
             app_map.termination_reason = termination_reason
             if coverage is not None:
                 app_map.coverage = coverage
-            if diagnostic_evidence is not None:
+            if replace_diagnostic or diagnostic_evidence is not None:
                 app_map.diagnostic_evidence = diagnostic_evidence
             await self.session.flush()
 

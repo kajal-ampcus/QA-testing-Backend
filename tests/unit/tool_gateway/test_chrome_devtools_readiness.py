@@ -6,10 +6,15 @@ from core.tool_gateway.mcp_clients.chrome_devtools_client import (
     ApplicationReadinessTimeoutError,
     ChromeDevToolsClient,
     SecurityVerificationRequiredError,
+    _find_submit_uid,
+    _find_uid,
+    _authenticated_session_visible,
+    _login_form_visible,
     _is_hosting_cold_start_page,
     _is_security_verification_page,
     _same_site_allowed_patterns,
     _solve_math_captcha,
+    _svg_captcha_text,
 )
 
 
@@ -23,6 +28,65 @@ def test_math_captcha_prefers_equation_over_unrelated_numbers():
 
 def test_math_captcha_reads_expression_without_spaces():
     assert _solve_math_captcha("Enter the answer\n8+1") == 9
+
+
+def test_math_captcha_joins_split_svg_digits():
+    assert _solve_math_captcha("1 9 - 7") == 12
+
+
+def test_cafinity_tspan_captcha_ignores_svg_geometry():
+    """Cafinity splits 12-2 across tspans and hides empty decoy glyphs."""
+    from urllib.parse import quote
+
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" width="200" height="64" viewBox="0 0 200 64">
+      <rect width="200" height="64" fill="#fff"/>
+      <line x1="20" y1="8" x2="180" y2="56" stroke="#c0c0c0" stroke-width="2"/>
+      <text font-family="monospace" font-weight="bold" font-size="22">
+        <tspan x="22" y="31"></tspan>
+        <tspan x="36" y="31">1</tspan>
+        <tspan x="50" y="31">2</tspan>
+        <tspan x="64" y="31">-</tspan>
+        <tspan x="82" y="31">2</tspan>
+        <tspan x="96" y="31"></tspan>
+      </text>
+    </svg>"""
+    snapshot = 'uid=1_17 image "CAPTCHA" url="data:image/svg+xml;utf8,' + quote(svg) + '"'
+    assert _svg_captcha_text(snapshot) == "1 2 - 2"
+    assert _solve_math_captcha(_svg_captcha_text(snapshot)) == 10
+    # Attribute noise such as y="31" next to "-" must not become 31-82.
+    assert _solve_math_captcha(_svg_captcha_text(snapshot)) != -51
+
+    svg = '<svg xmlns="http://www.w3.org/2000/svg"><text><tspan>1</tspan><tspan>9</tspan><tspan> - </tspan><tspan>7</tspan></text></svg>'
+    uri = "data:image/svg+xml;utf8," + quote(svg)
+    snapshot = f'uid=2_0 image "CAPTCHA" url="{uri}"'
+    assert _solve_math_captcha(_svg_captcha_text(snapshot)) == 12
+
+
+def test_dashboard_with_logout_counts_as_authenticated():
+    dashboard = """
+uid=59_0 RootWebArea "Cafinity" url="https://cafinity.ampcustech.info/dashboard"
+uid=59_11 button "Logout"
+uid=59_14 heading "Good afternoon, Shreya!"
+uid=59_13 StaticText "Welcome back!"
+"""
+    login = """
+uid=1_0 RootWebArea "Cafinity" url="https://cafinity.ampcustech.info/login"
+uid=1_11 textbox "Enter your password"
+uid=1_20 button "LOGIN"
+"""
+    assert _authenticated_session_visible(dashboard)
+    assert not _login_form_visible(dashboard)
+    assert _login_form_visible(login)
+    assert not _authenticated_session_visible(login)
+    controls = [
+        ("1_15", "link", "Forgot Password"),
+        ("1_19", "button", "LOGIN"),
+    ]
+    names = ["log in", "login", "go", "enter"]
+    assert _find_submit_uid(controls, names) == "1_19"
+    without_login = [("1_15", "link", "Forgot Password")]
+    assert _find_submit_uid(without_login, names) is None
+    assert _find_uid(without_login, names, {"button", "link"}) is None
 
 
 def test_generic_captcha_ui_is_detected_without_hardcoded_site_names():
@@ -290,6 +354,29 @@ async def test_readiness_waits_through_render_cold_start():
 
 
 @pytest.mark.asyncio
+async def test_stable_captcha_login_form_is_ready_without_visible_math():
+    """Cafinity keeps the arithmetic challenge inside an image."""
+    snapshot = (
+        'uid=1_0 RootWebArea "Login" url="https://cafinity.ampcustech.info/login"\n'
+        'uid=1_1 button "Employee"\n'
+        'uid=1_2 button "Kitchen"\n'
+        'uid=1_3 button "Admin"\n'
+        'uid=1_4 textbox "Employee ID"\n'
+        'uid=1_5 textbox "Enter your password"\n'
+        'uid=1_6 button "Show password"\n'
+        'uid=1_7 checkbox "Remember me"\n'
+        'uid=1_8 link "Forgot Password"\n'
+        'uid=1_9 button "Refresh CAPTCHA"\n'
+        'uid=1_10 textbox "CAPTCHA answer"'
+    )
+    client = ReadinessClient([snapshot, snapshot], timeout=180)
+
+    await client.wait_until_ready()
+
+    assert client.index == 2
+
+
+@pytest.mark.asyncio
 async def test_readiness_waits_for_math_captcha_even_when_form_is_usable():
     client = ReadinessClient(
         [
@@ -316,7 +403,9 @@ async def test_readiness_waits_for_math_captcha_even_when_form_is_usable():
 
     await client.wait_until_ready()
 
-    assert client.index >= 3
+    # The arithmetic line is static text, so it does not change the interactive
+    # signature. A stable login form is ready on the second snapshot.
+    assert client.index == 2
 
 
 @pytest.mark.asyncio

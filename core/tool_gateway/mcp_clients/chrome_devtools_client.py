@@ -11,17 +11,15 @@ import base64
 import json
 import os
 import re
-<<<<<<< Updated upstream
-import tempfile
-=======
 import socket
->>>>>>> Stashed changes
+import tempfile
 import time
 import uuid
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any, TextIO
-from urllib.parse import urlparse
+from html import unescape
+from urllib.parse import unquote, urlparse
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -100,6 +98,8 @@ def _positive_float_env(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
 def _same_site_allowed_patterns(target_url: str) -> list[str]:
     """Allow the application origin and HTTPS sibling hosts used by its APIs."""
     parsed = urlparse(target_url)
@@ -146,6 +146,71 @@ def _parse_controls(text: str) -> list[tuple[str, str, str]]:
     return [(e["uid"], e["role"], e["name"]) for e in parse_elements(text)]
 
 
+def _login_form_visible(snapshot: object) -> bool:
+    """True only when a password field is still on screen."""
+    return any(
+        role in {"textbox", "input"} and re.search(r"\bpassword\b", name, re.I)
+        for _uid, role, name in _parse_controls(_snapshot_text(snapshot))
+    )
+
+
+def _authenticated_session_visible(snapshot: object) -> bool:
+    """Detect that login left the form, including SPAs that keep the word Password in copy."""
+    controls = _parse_controls(_snapshot_text(snapshot))
+    if any(
+        role == "button" and re.search(r"\b(?:log\s*out|sign\s*out)\b", name, re.I)
+        for _uid, role, name in controls
+    ):
+        return True
+    if any(
+        role in {"heading", "StaticText"}
+        and re.search(r"\b(?:welcome back|good (?:morning|afternoon|evening))\b", name, re.I)
+        for _uid, role, name in controls
+    ):
+        return True
+    return bool(controls) and not _login_form_visible(snapshot)
+
+
+def _term_in_label(term: str, label: str) -> bool:
+    """Match a login term without letting short words hit unrelated labels.
+
+    "go" must not match Forgot Password. Longer terms still match a label
+    that contains them, such as "password" inside "Enter your password".
+    """
+    if len(term) <= 3:
+        return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", label) is not None
+    return term in label
+
+
+_LOGIN_ROLE_BUTTONS = ("employee", "kitchen", "admin", "staff", "manager")
+_SUBMIT_EXCLUDE = re.compile(
+    r"\b(?:forgot|reset|recover|refresh|show password|hide password|remember)\b",
+    re.I,
+)
+
+
+def _find_submit_uid(
+    controls: list[tuple[str, str, str]], names: list[str]
+) -> str | None:
+    """Prefer a real login button. Never use Forgot Password or Refresh CAPTCHA."""
+    wanted = [n.lower() for n in names if n]
+    candidates = [
+        (uid, role, name)
+        for uid, role, name in controls
+        if role in {"button", "link"} and not _SUBMIT_EXCLUDE.search(name)
+    ]
+    buttons = [(uid, role, name) for uid, role, name in candidates if role == "button"]
+    for pool in (buttons, candidates):
+        for uid, _role, name in pool:
+            if name.lower() in wanted:
+                return uid
+        for uid, _role, name in pool:
+            lowered = name.lower()
+            if any(_term_in_label(term, lowered) for term in wanted if len(term) > 3):
+                return uid
+    return None
+
+
 def _find_uid(
     controls: list[tuple[str, str, str]],
     names: list[str],
@@ -186,7 +251,7 @@ def _find_uid(
         (
             uid
             for uid, role, name in controls
-            if role in roles and any(w in name.lower() for w in wanted)
+            if role in roles and any(_term_in_label(w, name.lower()) for w in wanted)
         ),
         None,
     )
@@ -204,6 +269,47 @@ def _find_uid(
         None,
     )
     return reverse
+
+
+_SVG_DATA_URI = re.compile(r"data:image/svg\+xml[^\"'\s>]*", re.I)
+_TSPAN = re.compile(
+    r"<tspan\b([^>]*)>(.*?)</tspan>",
+    re.I | re.S,
+)
+_TSPAN_X = re.compile(r"""\bx\s*=\s*["']?(-?\d+(?:\.\d+)?)""", re.I)
+
+
+def _expression_from_svg_markup(svg: str) -> str:
+    """Read Cafinity-style math CAPTCHAs: one glyph per tspan, ordered by x.
+
+    Empty decoy tspans are ignored. Attribute numbers such as x/y/width must
+    not be treated as operands.
+    """
+    glyphs: list[tuple[float, str]] = []
+    for attrs, inner in _TSPAN.findall(svg):
+        text = re.sub(r"<[^>]+>", "", inner)
+        text = unescape(text).strip()
+        if not text:
+            continue
+        x_match = _TSPAN_X.search(attrs)
+        x = float(x_match.group(1)) if x_match else float(len(glyphs))
+        glyphs.append((x, text))
+    glyphs.sort(key=lambda item: item[0])
+    return " ".join(text for _x, text in glyphs)
+
+
+def _svg_captcha_text(snapshot: str) -> str:
+    """Read arithmetic text embedded in a CAPTCHA image data URI."""
+    pieces: list[str] = []
+    for raw in _SVG_DATA_URI.findall(snapshot):
+        comma = raw.find(",")
+        if comma < 0:
+            continue
+        svg = unescape(unquote(raw[comma + 1 :]))
+        text = _expression_from_svg_markup(svg)
+        if text:
+            pieces.append(text)
+    return "\n".join(pieces)
 
 
 def _captcha_expression_score(text: str, match: re.Match[str]) -> int:
@@ -224,6 +330,8 @@ def _solve_math_captcha(text: str) -> int | None:
     Handles: 'What is 3 + 3?', 'What is 6 - 2?', '3 + 16 = ?' etc.
     Ignores year ranges and other two-digit noise when a better match exists.
     """
+    # SVG CAPTCHAs often split digits across <tspan> nodes: "1 9 - 7" -> "19 - 7".
+    text = re.sub(r"\d(?:\s+\d)+", lambda match: re.sub(r"\s+", "", match.group(0)), text)
     matches = list(_MATH_EXPRESSION.finditer(text))
     if not matches:
         return None
@@ -361,6 +469,15 @@ class ChromeDevToolsClient:
     #         command=command or ("npx.cmd" if os.name == "nt" else "npx"), args=args
     #     )
 
+    @staticmethod
+    def _npx_command(extra_args: list[str], *, windows: bool | None = None) -> tuple[str, list[str]]:
+        """Launch chrome-devtools-mcp through npx without an interactive prompt."""
+        use_windows = os.name == "nt" if windows is None else windows
+        package_args = ["-y", "chrome-devtools-mcp@latest", *extra_args]
+        if use_windows:
+            return "cmd", ["/c", "npx", *package_args]
+        return "npx", package_args
+
     def _server_params(self) -> StdioServerParameters:
         """
         Build parameters for an installed MCP binary or the npx fallback.
@@ -374,15 +491,8 @@ class ChromeDevToolsClient:
                 # Global binary is on PATH — use it directly, no npm overhead
                 command = "chrome-devtools-mcp"
             else:
-                command = "npx.cmd" if os.name == "nt" else "npx"
-<<<<<<< Updated upstream
-                args = ["-y", "chrome-devtools-mcp"]
-=======
-                using_npx = True
-
-        args = ["chrome-devtools-mcp"] if using_npx else []
+                command, args = self._npx_command([])
         args.append(f"--chromeArg=--remote-debugging-port={self._cdp_port}")
->>>>>>> Stashed changes
         if executable_path := os.environ.get("CHROME_EXECUTABLE_PATH"):
             args.extend(["--executablePath", executable_path])
 
@@ -402,20 +512,13 @@ class ChromeDevToolsClient:
         if self._headless:
             args.append("--headless")
 
-<<<<<<< Updated upstream
         if self._allowed_url_pattern and not self._omit_url_allowlist:
-            parsed = urlparse(self._allowed_url_pattern)
-            allowed_pattern = (
-                f"{parsed.scheme}://{parsed.netloc}/*"
-                if parsed.scheme in {"http", "https"} and parsed.netloc
-                else self._allowed_url_pattern
-            )
-            args.extend(["--allowedUrlPattern", allowed_pattern])
-=======
-        if self._allowed_url_pattern:
-            args.append("--allowedUrlPattern")
-            args.extend(_same_site_allowed_patterns(self._allowed_url_pattern))
->>>>>>> Stashed changes
+            for pattern in (
+                *_same_site_allowed_patterns(self._allowed_url_pattern),
+                "about:*",
+                "chrome://*",
+            ):
+                args.extend(["--allowedUrlPattern", pattern])
         if os.environ.get("CHROME_DEVTOOLS_MCP_REDACT_NETWORK_HEADERS", "true").lower() == "true":
             args.append("--redactNetworkHeaders")
         return StdioServerParameters(
@@ -829,8 +932,15 @@ class ChromeDevToolsClient:
                 bool(re.search(r"\b(?:loading|please wait|starting service)\b", text, re.I))
                 and not usable_controls
             )
-            has_math_question = bool(_MATH_EXPRESSION.search(text))
-            captcha_still_loading = bool(_CAPTCHA_FIELD_PATTERN.search(text)) and not has_math_question
+            # An image CAPTCHA is not in the accessibility tree. A stable form
+            # that already shows an answer box is ready; login reads the image
+            # afterwards. Waiting here burned the full readiness timeout on
+            # role switches such as Employee / Kitchen / Admin.
+            captcha_still_loading = (
+                bool(_CAPTCHA_FIELD_PATTERN.search(text))
+                and not bool(_MATH_EXPRESSION.search(text))
+                and not usable_controls
+            )
             signature = tuple(
                 (
                     element["role"],
@@ -907,6 +1017,20 @@ class ChromeDevToolsClient:
                         const text = (value || "").toString().trim();
                         if (text) chunks.push(text);
                     };
+                    const captchaFromSvg = (svg) => {
+                        const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
+                        return [...doc.querySelectorAll("tspan")]
+                            .map((node, index) => ({
+                                x: node.hasAttribute("x")
+                                    ? parseFloat(node.getAttribute("x"))
+                                    : index,
+                                text: (node.textContent || "").trim(),
+                            }))
+                            .filter((item) => item.text)
+                            .sort((a, b) => a.x - b.x)
+                            .map((item) => item.text)
+                            .join(" ");
+                    };
                     const decodeSvgDataUri = (src) => {
                         if (!src || !src.startsWith("data:image/svg+xml")) return "";
                         const separator = src.indexOf(",");
@@ -915,9 +1039,7 @@ class ChromeDevToolsClient:
                         const svg = src.includes(";base64,")
                             ? atob(encoded)
                             : decodeURIComponent(encoded);
-                        return new DOMParser()
-                            .parseFromString(svg, "image/svg+xml")
-                            .documentElement.textContent || "";
+                        return captchaFromSvg(svg);
                     };
                     push(document.body?.innerText || "");
                     for (const svg of document.querySelectorAll("svg")) {
@@ -951,9 +1073,7 @@ class ChromeDevToolsClient:
                                         const svg = await response.text();
                                         if (image.isConnected &&
                                             (image.currentSrc || image.src) === src) {
-                                            push(new DOMParser().parseFromString(
-                                                svg, "image/svg+xml"
-                                            ).documentElement.textContent);
+                                            push(captchaFromSvg(svg));
                                         }
                                     }
                                 }
@@ -979,6 +1099,9 @@ class ChromeDevToolsClient:
 
     async def _login_text_for_captcha(self) -> str:
         snapshot = _snapshot_text(await self.take_snapshot())
+        decoded = _svg_captcha_text(snapshot)
+        if _solve_math_captcha(decoded) is not None:
+            return decoded
         with suppress(Exception):
             snapshot = f"{await self._read_visible_login_text()}\n{snapshot}"
         return snapshot
@@ -994,13 +1117,38 @@ class ChromeDevToolsClient:
             await asyncio.sleep(0.5)
         return None, text
 
+    async def _wait_for_submit_uid(
+        self, names: list[str], timeout_seconds: float = 8.0
+    ) -> tuple[list[tuple[str, str, str]], str | None]:
+        """Wait for LOGIN to reappear after a failed submit or CAPTCHA refresh."""
+        deadline = time.monotonic() + timeout_seconds
+        controls: list[tuple[str, str, str]] = []
+        submit_uid = None
+        while time.monotonic() < deadline:
+            controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
+            submit_uid = _find_submit_uid(controls, names)
+            if submit_uid:
+                return controls, submit_uid
+            await asyncio.sleep(0.4)
+        return controls, submit_uid
+
     async def _select_login_role(
         self, secret: dict[str, str], controls: list[tuple[str, str, str]]
     ) -> list[tuple[str, str, str]]:
         """Click Employee/Admin (or similar) before filling the matching ID field."""
         role_name = (secret.get("account_role") or "").strip()
-        if not role_name or role_name.lower() in {"user", "default", "test account"}:
-            return controls
+        available_roles = [
+            name
+            for _uid, role, name in controls
+            if role in {"radio", "tab", "button"} and name.lower() in _LOGIN_ROLE_BUTTONS
+        ]
+        if role_name.lower() in {"", "user", "default", "test account"}:
+            if any(name.lower() == "employee" for name in available_roles):
+                role_name = "Employee"
+            elif available_roles:
+                role_name = available_roles[0]
+            else:
+                return controls
         role_names = [
             role_name,
             f"{role_name} login",
@@ -1074,6 +1222,7 @@ class ChromeDevToolsClient:
                     dom_text = await self._read_visible_login_text()
                     text = f"{text}\n{dom_text}"
             controls = _parse_controls(text)
+            controls = await self._select_login_role(secret, controls)
             print(
                 "[DISCOVERY AUTH] Page controls:",
                 [
@@ -1153,11 +1302,9 @@ class ChromeDevToolsClient:
                 "get started",
                 "let me in",
             ]
-            submit_uid = _find_uid(
-                controls,
-                submit_names,
-                {"button", "link"},
-            )
+            submit_uid = _find_submit_uid(controls, submit_names)
+            if not submit_uid:
+                controls, submit_uid = await self._wait_for_submit_uid(submit_names)
             print(
                 "[DISCOVERY AUTH] Detected login controls:",
                 {
@@ -1167,6 +1314,11 @@ class ChromeDevToolsClient:
                 },
             )
             if not username_uid or not password_uid or not submit_uid:
+                snapshot = _snapshot_text(await self.take_snapshot())
+                if _authenticated_session_visible(snapshot):
+                    print("[DISCOVERY AUTH] Already on an authenticated page; skipping login form.")
+                    self._authenticated = True
+                    return
                 missing = []
                 if not username_uid:
                     missing.append(
@@ -1185,6 +1337,24 @@ class ChromeDevToolsClient:
                     for _, role, name in controls
                     if role in {"textbox", "input", "button", "link", "combobox", "radio"}
                 ]
+                if attempt < 2:
+                    print(
+                        "[DISCOVERY AUTH] Login controls missing, reloading form:",
+                        missing,
+                    )
+                    root = next(
+                        (name for uid, role, name in controls if role == "RootWebArea"),
+                        "",
+                    )
+                    login_url = secret.get("login_url")
+                    if not login_url:
+                        snapshot = _snapshot_text(await self.take_snapshot())
+                        match = re.search(r'url="(https?://[^"]+)"', snapshot)
+                        login_url = match.group(1) if match else None
+                    if login_url:
+                        await self.navigate_page(login_url)
+                    await self.wait_until_ready()
+                    continue
                 raise RuntimeError(
                     f"Login form detection failed on attempt {attempt + 1}. "
                     f"Could not find: {', '.join(missing)}. "
@@ -1229,7 +1399,10 @@ class ChromeDevToolsClient:
             )
 
             challenge_kind = _captcha_challenge_kind(text)
-            if challenge_kind == "generic":
+            has_captcha_image = bool(re.search(r'\bimage\b[^"]*"CAPTCHA"', text, re.I)) or bool(
+                _SVG_DATA_URI.search(text)
+            )
+            if challenge_kind == "generic" and not has_captcha_image:
                 raise RuntimeError(
                     "A CAPTCHA challenge is visible on the login form, but it is not a "
                     "supported arithmetic CAPTCHA. The discovery agent can only solve "
@@ -1273,38 +1446,37 @@ class ChromeDevToolsClient:
                 )
 
             # ── Submit ──────────────────────────────────────────────────────
+            controls, submit_uid = await self._wait_for_submit_uid(submit_names)
+            if not submit_uid:
+                continue
             await self._click_authentication_control(
                 submit_uid,
                 submit_names,
-                {"button", "link"},
+                {"button"},
                 "login button",
             )
 
             # ── Wait and check result ───────────────────────────────────────
-            # Poll up to 10 seconds for the page to change
-            for _ in range(20):
+            # Poll until the SPA leaves the login form. Cafinity can take
+            # longer than 10s after a correct CAPTCHA before Logout appears.
+            for _ in range(60):
                 await asyncio.sleep(0.5)
                 after = _snapshot_text(await self.take_snapshot())
-<<<<<<< Updated upstream
+                last_page_text = after
                 print(
                     "[DISCOVERY AUTH] Post-login snapshot:",
                     after[:1000],
                 )
-=======
-                last_page_text = after
-
->>>>>>> Stashed changes
-                # Success — password field is gone, we left the login page
-                if not re.search(r"\b(?:password)\b", after, re.I):
+                if _authenticated_session_visible(after):
                     self._authenticated = True
+                    print("[DISCOVERY AUTH] Login succeeded; authenticated session is visible.")
                     return
 
-                # CAPTCHA was wrong — the question refreshes, retry the fill
                 if _INCORRECT_CAPTCHA_PATTERN.search(after):
-                    break  # break inner loop → outer loop retries with fresh snapshot
+                    await self._wait_for_submit_uid(submit_names)
+                    break
 
-                # Hard failure — wrong credentials (not a CAPTCHA issue)
-                if re.search(
+                if _login_form_visible(after) and re.search(
                     r"\b(?:invalid|incorrect).{0,30}(?:email|password|credential|employee id)\b",
                     after,
                     re.I,

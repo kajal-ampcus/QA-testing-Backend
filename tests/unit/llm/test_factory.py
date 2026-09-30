@@ -73,6 +73,20 @@ def test_existing_compatible_providers(monkeypatch, base_url, model):
         client.assert_called_once_with(api_key="existing-key", base_url=base_url, model=model)
 
 
+def test_model_kwarg_overrides_env_model(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("LLM_MODEL", "openai/gpt-oss-20b")
+    monkeypatch.setenv("LLM_API_KEY", "existing-key")
+    with patch.object(factory, "OpenAICompatibleClient") as client:
+        factory.get_llm_client(model="llama-3.1-8b-instant")
+        client.assert_called_once_with(
+            api_key="existing-key",
+            base_url="https://api.groq.com/openai/v1",
+            model="llama-3.1-8b-instant",
+        )
+
+
 def test_anthropic_default(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
     with patch.object(factory, "AnthropicClient") as client:

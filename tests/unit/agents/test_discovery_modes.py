@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from core.agents.application_discovery.crawler import CrawlBudget
-from core.agents.application_discovery.parallel_crawler import ParallelCrawler
+from core.agents.application_discovery.parallel_crawler import ParallelCrawler, _is_login_form_chrome
 from tests.unit.agents.test_discovery_crawler import DashboardBrowser, FakeBrowser, TextBlock
 
 
@@ -67,6 +67,21 @@ async def test_targeted_inventory_then_selected_observed_branch():
 @pytest.mark.parametrize("name,url", [("Log out", "/logout"), ("Continue", "/checkout"), ("Delete", "/record"), ("Pay", "/payment")])
 def test_unsafe_links_are_rejected(name, url):
     assert not ParallelCrawler._safe_navigation({"role": "link", "name": name, "url": url})
+
+
+def test_login_role_buttons_are_not_crawl_actions():
+    login_form = [
+        {"role": "textbox", "name": "Enter your password"},
+        {"role": "button", "name": "Kitchen"},
+        {"role": "link", "name": "Forgot Password", "url": "/forgot-password"},
+    ]
+    assert _is_login_form_chrome(login_form, "button", None)
+    assert not _is_login_form_chrome(login_form, "link", "/forgot-password")
+    assert not _is_login_form_chrome(
+        [{"role": "button", "name": "Kitchen", "url": "/kitchen"}],
+        "button",
+        "/kitchen",
+    )
 
 
 @pytest.mark.asyncio

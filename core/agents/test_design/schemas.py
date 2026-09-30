@@ -70,7 +70,7 @@ class TestCaseSpec(BaseModel):
     preconditions: list[str] = Field(
         description="What must be true before this test runs, e.g. 'User is on /login page'"
     )
-    steps: list[TestStep] = Field(min_length=1)
+    steps: list[TestStep] = Field(min_length=1, max_length=8)
     expected_result: str = Field(
         description="What the tester should observe after all steps complete"
     )
@@ -105,7 +105,10 @@ class TestCaseBatch(BaseModel):
 
     test_cases: list[TestCaseSpec] = Field(
         min_length=1,
-        description="All test cases generated for the given requirement and application map.",
+        max_length=4,
+        description=(
+            "Compact batch: at most 2 ACs × one category (POSITIVE or NEGATIVE)."
+        ),
     )
 
     model_config = {"extra": "forbid"}

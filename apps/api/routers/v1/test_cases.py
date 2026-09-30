@@ -32,6 +32,24 @@ class GenerateTestCasesRequest(BaseModel):
     selected_module_ids: list[str] = Field(default_factory=list)
 
 
+class CreateTestCaseRequest(BaseModel):
+    """Manual draft — typically an EDGE_CASE the generator did not cover."""
+
+    requirement_id: uuid.UUID
+    application_map_id: uuid.UUID | None = None
+    title: str = Field(min_length=3, max_length=200)
+    objective: str = Field(min_length=3, max_length=800)
+    expected_result: str = Field(min_length=3, max_length=2000)
+    category: Literal["POSITIVE", "NEGATIVE", "EDGE_CASE"] = "EDGE_CASE"
+    traceability: list[str] = Field(min_length=1, max_length=20)
+    preconditions: list[str] = Field(default_factory=list)
+    step_notes: list[str] = Field(
+        default_factory=list,
+        description="Optional tester notes; each line becomes a step after navigate.",
+    )
+    start_state_code: str | None = None
+
+
 class TestStepOut(BaseModel):
     step_number: int
     action: str
@@ -72,6 +90,71 @@ class GenerateTestCasesResponse(BaseModel):
     partial_pairing_acs: list[str] = []
     needs_review_test_cases: list[str] = []
     token_usage: dict | None = None
+
+
+def _to_out(tc, version) -> TestCaseOut:
+    return TestCaseOut(
+        id=tc.id,
+        tc_code=tc.tc_code,
+        project_id=tc.project_id,
+        requirement_id=tc.requirement_id,
+        requirement_version=tc.requirement_version,
+        application_map_id=tc.application_map_id,
+        status=tc.status,
+        current_version=tc.current_version,
+        current=TestCaseVersionOut(
+            version=version.version,
+            title=version.title,
+            objective=version.objective,
+            category=version.category,
+            preconditions=version.preconditions,
+            steps=version.steps,
+            expected_result=version.expected_result,
+            test_data=version.test_data,
+            traceability=version.traceability,
+            confidence=version.confidence,
+        ),
+    )
+
+
+def _manual_steps(
+    *,
+    state_code: str,
+    expected_result: str,
+    step_notes: list[str],
+) -> list[dict]:
+    notes = [note.strip() for note in step_notes if note.strip()]
+    steps: list[dict] = [
+        {
+            "step_number": 1,
+            "action": "navigate",
+            "target": {"state_code": state_code},
+            "value": None,
+            "expected": None,
+        }
+    ]
+    if not notes:
+        steps.append(
+            {
+                "step_number": 2,
+                "action": "assert",
+                "target": {"state_code": state_code},
+                "value": None,
+                "expected": expected_result,
+            }
+        )
+        return steps
+    for index, note in enumerate(notes, start=2):
+        steps.append(
+            {
+                "step_number": index,
+                "action": "assert",
+                "target": {"state_code": state_code},
+                "value": None,
+                "expected": note,
+            }
+        )
+    return steps
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -154,31 +237,7 @@ async def generate_test_cases(
 
     # Build response from persisted test cases
     pairs = await tc_repo.list_for_requirement(body.requirement_id)
-    test_case_outs = [
-        TestCaseOut(
-            id=tc.id,
-            tc_code=tc.tc_code,
-            project_id=tc.project_id,
-            requirement_id=tc.requirement_id,
-            requirement_version=tc.requirement_version,
-            application_map_id=tc.application_map_id,
-            status=tc.status,
-            current_version=tc.current_version,
-            current=TestCaseVersionOut(
-                version=v.version,
-                title=v.title,
-                objective=v.objective,
-                category=v.category,
-                preconditions=v.preconditions,
-                steps=v.steps,
-                expected_result=v.expected_result,
-                test_data=v.test_data,
-                traceability=v.traceability,
-                confidence=v.confidence,
-            ),
-        )
-        for tc, v in pairs
-    ]
+    test_case_outs = [_to_out(tc, v) for tc, v in pairs]
 
     return GenerateTestCasesResponse(
         generated=len(result.test_cases),
@@ -198,31 +257,88 @@ async def list_test_cases(
     """List all test cases for a project with their current version."""
     tc_repo = TestCaseRepository(db)
     pairs = await tc_repo.list_for_project(project_id)
-    return [
-        TestCaseOut(
-            id=tc.id,
-            tc_code=tc.tc_code,
-            project_id=tc.project_id,
-            requirement_id=tc.requirement_id,
-            requirement_version=tc.requirement_version,
-            application_map_id=tc.application_map_id,
-            status=tc.status,
-            current_version=tc.current_version,
-            current=TestCaseVersionOut(
-                version=v.version,
-                title=v.title,
-                objective=v.objective,
-                category=v.category,
-                preconditions=v.preconditions,
-                steps=v.steps,
-                expected_result=v.expected_result,
-                test_data=v.test_data,
-                traceability=v.traceability,
-                confidence=v.confidence,
-            ),
+    return [_to_out(tc, v) for tc, v in pairs]
+
+
+@router.post("/projects/{project_id}", response_model=TestCaseOut)
+async def create_test_case(
+    project_id: uuid.UUID,
+    body: CreateTestCaseRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> TestCaseOut:
+    """Save a tester-authored draft, including edge cases the generator missed."""
+    if await db.get(Project, project_id) is None:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    req_repo = RequirementRepository(db)
+    map_repo = ApplicationMapRepository(db)
+    tc_repo = TestCaseRepository(db)
+
+    pair = await req_repo.get_with_current_version(body.requirement_id)
+    if pair is None:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    requirement, version = pair
+    if requirement.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+
+    ac_ids = {str(item.get("id")) for item in (version.acceptance_criteria or []) if item.get("id")}
+    unknown = [ac_id for ac_id in body.traceability if ac_id not in ac_ids]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown acceptance criteria: {', '.join(unknown)}",
         )
-        for tc, v in pairs
-    ]
+
+    app_map = (
+        await map_repo.get_with_states(body.application_map_id)
+        if body.application_map_id
+        else await map_repo.get_latest_for_project(project_id)
+    )
+    if app_map is None or app_map.project_id != project_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Discover the application first so this case can be grounded to a map.",
+        )
+    state_codes = [state.state_code for state in app_map.states]
+    if not state_codes:
+        raise HTTPException(
+            status_code=422,
+            detail="The application map has no observed states yet.",
+        )
+    start_state = body.start_state_code or state_codes[0]
+    if start_state not in set(state_codes):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown start state: {start_state}",
+        )
+
+    preconditions = [item.strip() for item in body.preconditions if item.strip()]
+    tc_code = await tc_repo.next_tc_code(project_id)
+    test_case, current = await tc_repo.create(
+        project_id=project_id,
+        tc_code=tc_code,
+        requirement_id=requirement.id,
+        requirement_version=requirement.current_version,
+        application_map_id=app_map.id,
+        version_data={
+            "title": body.title.strip(),
+            "objective": body.objective.strip(),
+            "preconditions": preconditions,
+            "steps": _manual_steps(
+                state_code=start_state,
+                expected_result=body.expected_result.strip(),
+                step_notes=body.step_notes,
+            ),
+            "expected_result": body.expected_result.strip(),
+            "test_data": {"source": "manual"},
+            "traceability": body.traceability,
+            "category": body.category,
+            "confidence": 1.0,
+        },
+    )
+    out = _to_out(test_case, current)
+    await db.commit()
+    return out
 
 
 @router.get("/{test_case_id}", response_model=TestCaseOut)
@@ -235,26 +351,4 @@ async def get_test_case(
     pair = await tc_repo.get_with_current_version(test_case_id)
     if pair is None:
         raise HTTPException(status_code=404, detail="Test case not found")
-    tc, v = pair
-    return TestCaseOut(
-        id=tc.id,
-        tc_code=tc.tc_code,
-        project_id=tc.project_id,
-        requirement_id=tc.requirement_id,
-        requirement_version=tc.requirement_version,
-        application_map_id=tc.application_map_id,
-        status=tc.status,
-        current_version=tc.current_version,
-        current=TestCaseVersionOut(
-            version=v.version,
-            title=v.title,
-            objective=v.objective,
-            category=v.category,
-            preconditions=v.preconditions,
-            steps=v.steps,
-            expected_result=v.expected_result,
-            test_data=v.test_data,
-            traceability=v.traceability,
-            confidence=v.confidence,
-        ),
-    )
+    return _to_out(*pair)

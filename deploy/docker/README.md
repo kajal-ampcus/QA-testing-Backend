@@ -77,8 +77,12 @@ Each discovery job uses its own bounded browser pool (three workers by default,
 up to five); set `worker_limit` in the discovery request to tune parallel paths.
 Its job timeout exceeds the default 900-second crawl budget.
 
-MinIO images are sourced from `quay.io/minio` because the old Docker Hub pulls
-failed. Registry reference: [MinIO Docker documentation](https://github.com/minio/minio/blob/master/docs/docker/README.md).
+Object storage is [RustFS](https://github.com/rustfs/rustfs) (`rustfs/rustfs`).
+Community MinIO images no longer allow anonymous pulls, and MinIO AIStor
+denies S3 operations unless a license is installed. RustFS keeps the same
+local endpoint (`http://minio:9000`), console port 9001, and root credentials.
+Bucket creation still uses the AIStor `mc` client (`quay.io/minio/aistor/mc`),
+which remains anonymously pullable.
 Browser installation follows [Playwright's browser documentation](https://playwright.dev/python/docs/browsers),
 and MCP flags follow its [configuration guide](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/configuration.md).
 This is a development stack; pin verified digests and review image maintenance

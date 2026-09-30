@@ -22,6 +22,30 @@ def _status_code(exc: Exception) -> int | None:
     return getattr(exc, "status_code", None)
 
 
+def _retry_delay_seconds(
+    exc: Exception, attempt: int, base_delay_seconds: float
+) -> float:
+    """Prefer Retry-After on 429; otherwise exponential backoff, capped."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    raw = None
+    if headers is not None:
+        getter = getattr(headers, "get", None)
+        if callable(getter):
+            raw = getter("retry-after") or getter("Retry-After")
+        elif isinstance(headers, dict):
+            raw = headers.get("retry-after") or headers.get("Retry-After")
+    if raw not in (None, ""):
+        try:
+            return min(max(float(raw), base_delay_seconds), 60.0)
+        except (TypeError, ValueError):
+            pass
+    delay = base_delay_seconds * (2**attempt)
+    if _status_code(exc) == 429:
+        delay = max(delay, 5.0)
+    return min(delay, 30.0)
+
+
 async def with_retry[T](
     call: Callable[[], Awaitable[T]],
     max_retries: int = 3,
@@ -37,7 +61,7 @@ async def with_retry[T](
             if status not in RETRYABLE_STATUS_CODES or attempt == max_retries:
                 raise
             last_exc = exc
-            delay = base_delay_seconds * (2**attempt)
+            delay = _retry_delay_seconds(exc, attempt, base_delay_seconds)
             logger.warning(
                 "LLM call failed with status %s (attempt %d/%d) — retrying in %.1fs",
                 status,

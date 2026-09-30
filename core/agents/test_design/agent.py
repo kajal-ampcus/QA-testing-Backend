@@ -3,17 +3,11 @@ Agent 3 — Test Design Agent (architecture doc Section 6, 12).
 
 Per-AC batching strategy
 ─────────────────────────
-One LLM call per acceptance criterion. This is the fix for the token
-truncation failure: sending all ACs + full app map in a single call
-produces a response that is too large for small/free-tier models
-(gpt-oss-120b, llama variants) — the JSON is cut mid-object at the token
-limit and fails to parse. Per-AC calls are:
+Each LLM job is skipped by default. Cases are generated in one in-process
+batch from the observed application map (fast_generate.py). Groq gpt-oss-20b
+timed out at 60s and 120s for multi-AC JSON, which saved nothing.
 
-  • Bounded: each call generates 2–4 test cases (POSITIVE + NEGATIVE +
-    optional EDGE_CASE), never the full batch at once.
-  • Independent: a single AC failing does not cancel the others.
-  • Auditable: token usage and model are accumulated across all calls
-    and reported in the final envelope so cost is visible.
+Set TEST_DESIGN_USE_LLM=true to fill ACs the map-grounded batch could not cover.
 
 Validation
 ───────────
@@ -30,11 +24,13 @@ the perfectly valid cases for AC-1 and AC-2.
 """
 
 import asyncio
+import os
 import re
 import uuid
 from typing import Any
 
 from core.agents.base import BaseAgent
+from core.agents.test_design.fast_generate import generate_cases_from_map
 from core.agents.test_design.prompts import SYSTEM_PROMPT, build_user_prompt
 from core.agents.test_design.schemas import TestCaseBatch, TestCaseSpec, TestDesignResult
 from core.agents.test_design.validation import validate_case
@@ -120,13 +116,27 @@ def _states_for_generation(
     return scoped
 
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float, minimum: float = 1.0) -> float:
+    try:
+        return max(minimum, float(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
 def _map_context_for_ac(
     states: list[dict[str, Any]],
     ac: dict[str, Any],
     requirement_title: str,
     requirement_description: str,
-    max_states: int = 8,
-    max_elements_per_state: int = 8,
+    max_states: int = 6,
+    max_elements_per_state: int = 6,
 ) -> list[dict[str, Any]]:
     """Keep the LLM prompt focused on states and controls relevant to this AC.
 
@@ -178,6 +188,76 @@ def _map_context_for_ac(
     return selected_states
 
 
+def _chunked(items: list[Any], size: int) -> list[list[Any]]:
+    size = max(1, size)
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _map_context_for_acs(
+    states: list[dict[str, Any]],
+    acs: list[dict[str, Any]],
+    requirement_title: str,
+    requirement_description: str,
+) -> list[dict[str, Any]]:
+    combined = {
+        "id": ",".join(str(ac.get("id", "")) for ac in acs),
+        "text": " ".join(str(ac.get("text", "")) for ac in acs),
+    }
+    return _map_context_for_ac(
+        states,
+        combined,
+        requirement_title,
+        requirement_description,
+        max_states=8,
+        max_elements_per_state=6,
+    )
+
+
+def _is_missing_model_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return (
+        "model_not_found" in text
+        or "does not exist" in text
+        or "do not have access to it" in text
+    )
+
+
+def _generation_jobs(
+    pending_acs: list[dict[str, Any]],
+    requested_categories: dict[str, set[str]],
+    batch_size: int,
+) -> list[tuple[list[dict[str, Any]], dict[str, list[str]]]]:
+    """One LLM job = a few ACs and a single category, so gpt-oss can finish."""
+    jobs: list[tuple[list[dict[str, Any]], dict[str, list[str]]]] = []
+    if requested_categories:
+        categories = ("POSITIVE", "NEGATIVE", "EDGE_CASE")
+        for category in categories:
+            scoped = [
+                ac
+                for ac in pending_acs
+                if category in requested_categories.get(ac["id"], set())
+            ]
+            for chunk in _chunked(scoped, batch_size):
+                jobs.append((chunk, {ac["id"]: [category] for ac in chunk}))
+        return jobs
+    for category in ("POSITIVE", "NEGATIVE"):
+        for chunk in _chunked(pending_acs, batch_size):
+            jobs.append((chunk, {ac["id"]: [category] for ac in chunk}))
+    return jobs
+
+
+def _accept_generated_case(
+    tc: TestCaseSpec,
+    requested_categories: dict[str, set[str]],
+) -> bool:
+    if not requested_categories:
+        return True
+    required: set[str] = set()
+    for ac_id in tc.traceability:
+        required |= requested_categories.get(ac_id, set())
+    return not required or tc.category in required
+
+
 class TestDesignAgent(BaseAgent[TestDesignResult]):
     name = "test_design"
 
@@ -191,34 +271,33 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         self._requirement_repo = requirement_repo
         self._map_repo = map_repo
         self._test_case_repo = test_case_repo
-        self._llm = llm_client or get_llm_client()
+        design_model = (os.environ.get("TEST_DESIGN_LLM_MODEL") or "").strip() or None
+        self._llm = llm_client or get_llm_client(model=design_model)
 
-    async def _generate_for_ac(
+    async def _generate_for_batch(
         self,
-        ac: dict[str, Any],
+        acs: list[dict[str, Any]],
         req_title: str,
         req_description: str,
         map_states: list[dict[str, Any]],
         base_url: str,
-        required_categories: set[str] | None = None,
+        targeted_by_ac: dict[str, list[str]] | None = None,
+        allow_model_fallback: bool = True,
     ) -> tuple[list[TestCaseSpec], int, int, str, str | None]:
-        """
-        Call the LLM for a single AC and return:
-          (test_cases, input_tokens, output_tokens, model, error_message)
-
-        Returns an empty list + error string on failure so the caller can
-        continue processing other ACs instead of crashing the whole run.
-        """
+        """Generate compact POSITIVE/NEGATIVE cases for a small AC chunk."""
+        ac_ids = [str(ac.get("id", "?")) for ac in acs]
+        label = ", ".join(ac_ids)
         user_prompt = build_user_prompt(
             requirement_title=req_title,
             requirement_description=req_description,
-            acceptance_criteria=[ac],
-            app_map_states=_map_context_for_ac(
-                map_states, ac, req_title, req_description
+            acceptance_criteria=acs,
+            app_map_states=_map_context_for_acs(
+                map_states, acs, req_title, req_description
             ),
             base_url=base_url,
-            required_categories=sorted(required_categories) if required_categories else None,
+            targeted_by_ac=targeted_by_ac,
         )
+        timeout_seconds = _env_float("TEST_DESIGN_LLM_TIMEOUT_SECONDS", 45.0)
         try:
             llm_result = await asyncio.wait_for(
                 self._llm.call_structured(
@@ -226,24 +305,37 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                     user_prompt=user_prompt,
                     tool_schema=TestCaseBatch.model_json_schema(),
                     tool_name="generate_test_cases",
-                    # 2500 tokens per AC call — enough for focused cases
-                    # (POSITIVE + NEGATIVE + optional EDGE_CASE).
-                    # Keep output headroom bounded for providers enforcing a
-                    # combined prompt + completion context limit.
-                    max_tokens=2500,
+                    max_tokens=_env_int("TEST_DESIGN_MAX_TOKENS", 1800),
                 ),
-                timeout=120.0,
+                timeout=timeout_seconds,
             )
         except TimeoutError:
             return (
                 [], 0, 0, "",
-                f"LLM call timed out after 120 s for AC '{ac.get('id', '?')}'. "
-                "Check that the LLM provider is reachable.",
+                f"LLM call timed out after {timeout_seconds:g} s for ACs {label}.",
             )
         except Exception as exc:  # noqa: BLE001
+            fallback = (os.environ.get("LLM_MODEL") or "").strip()
+            current = getattr(self._llm, "model", "") or ""
+            if (
+                allow_model_fallback
+                and _is_missing_model_error(exc)
+                and fallback
+                and fallback != current
+            ):
+                self._llm = get_llm_client(model=fallback)
+                return await self._generate_for_batch(
+                    acs,
+                    req_title,
+                    req_description,
+                    map_states,
+                    base_url,
+                    targeted_by_ac=targeted_by_ac,
+                    allow_model_fallback=False,
+                )
             return (
                 [], 0, 0, "",
-                f"LLM call failed for AC '{ac.get('id', '?')}': {exc}",
+                f"LLM call failed for ACs {label}: {exc}",
             )
 
         try:
@@ -251,7 +343,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         except Exception as exc:  # noqa: BLE001
             return (
                 [], llm_result.input_tokens, llm_result.output_tokens, llm_result.model,
-                f"Schema validation failed for AC '{ac.get('id', '?')}': {exc}",
+                f"Schema validation failed for ACs {label}: {exc}",
             )
 
         return (
@@ -261,6 +353,41 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             llm_result.model,
             None,
         )
+
+    async def _persist_specs(
+        self,
+        *,
+        project_id: uuid.UUID,
+        requirement_id: uuid.UUID,
+        requirement_version: int,
+        application_map_id: uuid.UUID,
+        specs: list[TestCaseSpec],
+    ) -> list[AgentArtifactRef]:
+        """Write a finished AC batch so the UI can show cases before the run ends."""
+        artifacts: list[AgentArtifactRef] = []
+        for tc_spec in specs:
+            tc_code = await self._test_case_repo.next_tc_code(project_id)
+            tc, _ = await self._test_case_repo.create(
+                project_id=project_id,
+                tc_code=tc_code,
+                requirement_id=requirement_id,
+                requirement_version=requirement_version,
+                application_map_id=application_map_id,
+                version_data={
+                    "title": tc_spec.title,
+                    "objective": tc_spec.objective,
+                    "preconditions": tc_spec.preconditions,
+                    "steps": [s.model_dump(mode="json") for s in tc_spec.steps],
+                    "expected_result": tc_spec.expected_result,
+                    "test_data": tc_spec.test_data,
+                    "traceability": tc_spec.traceability,
+                    "category": tc_spec.category,
+                    "confidence": tc_spec.confidence,
+                },
+            )
+            artifacts.append(AgentArtifactRef(type="test_case", id=str(tc.id), version=1))
+        await self._test_case_repo.session.commit()
+        return artifacts
 
     async def run(self, request: AgentInputEnvelope) -> TestDesignResult:
         requirement_id = uuid.UUID(request.payload["requirement_id"])
@@ -361,30 +488,128 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             ac_id: set(categories)
             for ac_id, categories in request.payload.get("target_categories", {}).items()
         }
+        pending_acs = [
+            ac
+            for ac in req_version.acceptance_criteria
+            if not requested_categories or ac["id"] in requested_categories
+        ]
+        if not pending_acs:
+            raise ValueError(
+                "No acceptance criteria match the selected generation scope."
+            )
         all_test_cases: list[TestCaseSpec] = []
+        valid_cases: list[TestCaseSpec] = []
+        artifacts: list[AgentArtifactRef] = []
         llm_errors: list[str] = []
+        validation_errors: list[str] = []
         total_input_tokens = total_output_tokens = 0
         model_name = ""
+        ac_ids = {ac["id"] for ac in req_version.acceptance_criteria}
 
-        for ac in req_version.acceptance_criteria:
-            if requested_categories and ac["id"] not in requested_categories:
+        heuristic_cases = generate_cases_from_map(
+            pending_acs,
+            map_states,
+            req_version.title,
+            requested_categories or None,
+        )
+        batch_valid: list[TestCaseSpec] = []
+        for tc in heuristic_cases:
+            if not _accept_generated_case(tc, requested_categories):
                 continue
-            tcs, inp, out, model, err = await self._generate_for_ac(
-                ac=ac,
-                req_title=req_version.title,
-                req_description=req_version.description,
-                map_states=map_states,
-                base_url=app_map.base_url,
-                required_categories=requested_categories.get(ac["id"]),
+            all_test_cases.append(tc)
+            tc = _renumber_steps(tc)
+            issues = validate_case(tc, map_states, ac_ids)
+            if issues:
+                validation_errors.append(f"'{tc.title}': {' | '.join(issues)}")
+            else:
+                batch_valid.append(tc)
+        if batch_valid:
+            valid_cases.extend(batch_valid)
+            artifacts.extend(
+                await self._persist_specs(
+                    project_id=request.project_id,
+                    requirement_id=requirement_id,
+                    requirement_version=requirement.current_version,
+                    application_map_id=app_map.id,
+                    specs=batch_valid,
+                )
             )
-            if err:
-                llm_errors.append(err)
-            required = requested_categories.get(ac["id"])
-            all_test_cases.extend(tc for tc in tcs if not required or tc.category in required)
-            total_input_tokens += inp
-            total_output_tokens += out
-            if model:
-                model_name = model
+        model_name = "map-grounded-batch"
+
+        use_llm = (os.environ.get("TEST_DESIGN_USE_LLM") or "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        uncovered_after = _check_ac_coverage(pending_acs, valid_cases)
+        if use_llm and uncovered_after:
+            leftover = [ac for ac in pending_acs if ac["id"] in set(uncovered_after)]
+            jobs = _generation_jobs(
+                leftover,
+                requested_categories,
+                _env_int("TEST_DESIGN_AC_BATCH_SIZE", 1),
+            )
+            slot = asyncio.Semaphore(_env_int("LLM_MAX_CONCURRENT_REQUESTS", 2))
+
+            async def _run_job(
+                acs: list[dict[str, Any]],
+                targeted: dict[str, list[str]],
+            ) -> tuple[list[TestCaseSpec], int, int, str, str | None]:
+                async with slot:
+                    return await self._generate_for_batch(
+                        acs=acs,
+                        req_title=req_version.title,
+                        req_description=req_version.description,
+                        map_states=map_states,
+                        base_url=app_map.base_url,
+                        targeted_by_ac=targeted or None,
+                    )
+
+            task_map = {
+                asyncio.create_task(_run_job(chunk, targeted)): (chunk, targeted)
+                for chunk, targeted in jobs
+            }
+            outstanding = set(task_map)
+            try:
+                while outstanding:
+                    finished, outstanding = await asyncio.wait(
+                        outstanding, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    llm_valid: list[TestCaseSpec] = []
+                    for task in finished:
+                        tcs, inp, out, model, err = task.result()
+                        if err:
+                            llm_errors.append(err)
+                        accepted = [
+                            tc for tc in tcs
+                            if _accept_generated_case(tc, requested_categories)
+                        ]
+                        all_test_cases.extend(accepted)
+                        total_input_tokens += inp
+                        total_output_tokens += out
+                        if model:
+                            model_name = model
+                        for tc in accepted:
+                            tc = _renumber_steps(tc)
+                            issues = validate_case(tc, map_states, ac_ids)
+                            if issues:
+                                validation_errors.append(
+                                    f"'{tc.title}': {' | '.join(issues)}"
+                                )
+                            else:
+                                llm_valid.append(tc)
+                    if llm_valid:
+                        valid_cases.extend(llm_valid)
+                        artifacts.extend(
+                            await self._persist_specs(
+                                project_id=request.project_id,
+                                requirement_id=requirement_id,
+                                requirement_version=requirement.current_version,
+                                application_map_id=app_map.id,
+                                specs=llm_valid,
+                            )
+                        )
+            finally:
+                for task in outstanding:
+                    task.cancel()
 
         # If EVERY AC failed, raise — there is nothing to persist
         if not all_test_cases and llm_errors:
@@ -392,22 +617,6 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 f"All {len(req_version.acceptance_criteria)} AC generation calls failed.\n"
                 + "\n".join(f"  • {e}" for e in llm_errors)
             )
-
-        # ── Renumber + validate ───────────────────────────────────────────
-        ac_ids = {ac["id"] for ac in req_version.acceptance_criteria}
-        valid_cases: list[TestCaseSpec] = []
-        validation_errors: list[str] = []
-
-        for tc in all_test_cases:
-            # Renumber steps before validation so gaps don't fail the check
-            tc = _renumber_steps(tc)
-            issues = validate_case(tc, map_states, ac_ids)
-            if issues:
-                validation_errors.append(
-                    f"'{tc.title}': {' | '.join(issues)}"
-                )
-            else:
-                valid_cases.append(tc)
 
         # If validation wiped everything, raise
         if not valid_cases:
@@ -440,28 +649,6 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         needs_review = _low_confidence(coverage_cases)
 
         # ── Persist valid test cases ──────────────────────────────────────
-        artifacts: list[AgentArtifactRef] = []
-        for tc_spec in valid_cases:
-            tc_code = await self._test_case_repo.next_tc_code(request.project_id)
-            tc, _ = await self._test_case_repo.create(
-                project_id=request.project_id,
-                tc_code=tc_code,
-                requirement_id=requirement_id,
-                requirement_version=requirement.current_version,
-                application_map_id=app_map.id,
-                version_data={
-                    "title": tc_spec.title,
-                    "objective": tc_spec.objective,
-                    "preconditions": tc_spec.preconditions,
-                    "steps": [s.model_dump(mode="json") for s in tc_spec.steps],
-                    "expected_result": tc_spec.expected_result,
-                    "test_data": tc_spec.test_data,
-                    "traceability": tc_spec.traceability,
-                    "category": tc_spec.category,
-                    "confidence": tc_spec.confidence,
-                },
-            )
-            artifacts.append(AgentArtifactRef(type="test_case", id=str(tc.id), version=1))
         await self._map_repo.mark_generated_fingerprints(
             app_map.id,
             requirement_id,
@@ -483,9 +670,8 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                     f"(confidence={avg_confidence:.2f}, band={band})"
                 ),
                 reason=(
-                    f"Per-AC LLM calls ({len(req_version.acceptance_criteria)} ACs, "
-                    f"{len(req_version.acceptance_criteria)} calls) mapped to "
-                    f"{len(app_map.states)} observed application states"
+                    f"Map-grounded batch generation for {len(pending_acs)} ACs "
+                    f"against {len(app_map.states)} observed application states"
                 ),
                 evidence=[
                     f"Requirement: {requirement.req_code} @ v{requirement.current_version}",

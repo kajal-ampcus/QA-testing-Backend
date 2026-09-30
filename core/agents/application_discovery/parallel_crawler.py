@@ -38,6 +38,23 @@ OnStateDiscovered = Callable[[dict[str, Any]], Awaitable[None]]
 OnCheckpoint = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+def _is_login_form_chrome(nodes: list[dict[str, Any]], role: str, destination: str | None) -> bool:
+    """Skip controls that only change the current login form.
+
+    Role buttons such as Employee, Kitchen, and Admin, plus show-password
+    and refresh-CAPTCHA, have no destination. Exploring them never leaves
+    the login page and used to block each click for the full readiness timeout.
+    Links such as Forgot Password still navigate and stay eligible.
+    """
+    if destination or role not in {"button", "radio", "checkbox"}:
+        return False
+    return any(
+        node.get("role") in {"textbox", "input"}
+        and re.search(r"\bpassword\b", str(node.get("name", "")), re.I)
+        for node in nodes
+    )
+
+
 @dataclass(order=True)
 class DiscoveryJob:
     priority: float
@@ -552,6 +569,9 @@ class ParallelCrawler:
         for element in nodes:
             role, name = element.get("role", ""), element.get("name", "")
             if _is_transient_widget_control(role, name):
+                continue
+            if _is_login_form_chrome(nodes, role, element.get("url")):
+                self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
                 continue
             if not self._action_in_scope(area_id, element, len(path), module_id):
                 continue
