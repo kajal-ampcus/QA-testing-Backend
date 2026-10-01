@@ -8,14 +8,16 @@ import uuid
 
 from pydantic import BaseModel, Field
 
+MAX_REQUIREMENT_TEXT = 20000
+
 
 class RequirementCreateRequest(BaseModel):
-    raw_text: str = Field(min_length=1)
-    external_ref: str | None = None
+    raw_text: str = Field(min_length=1, max_length=MAX_REQUIREMENT_TEXT)
+    external_ref: str | None = Field(default=None, max_length=200)
 
 
 class RequirementRevisionRequest(BaseModel):
-    raw_text: str = Field(min_length=1)
+    raw_text: str = Field(min_length=1, max_length=MAX_REQUIREMENT_TEXT)
 
 
 class AmbiguityResolution(BaseModel):
@@ -35,6 +37,7 @@ class AcceptanceCriterionEdit(BaseModel):
 
 
 class AcceptanceCriteriaEditRequest(BaseModel):
+    expected_version: int = Field(ge=1)
     items: list[AcceptanceCriterionEdit] = Field(min_length=1)
 
 
@@ -56,6 +59,7 @@ class RequirementResponse(BaseModel):
     project_id: uuid.UUID
     version: int
     status: str
+    external_ref: str | None = None
     title: str
     description: str
     acceptance_criteria: list[AcceptanceCriterionOut]

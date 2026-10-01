@@ -124,7 +124,12 @@ class TestDesignResult(BaseModel):
         default_factory=list,
         description="ACs that have at least one test case but are missing a POSITIVE or NEGATIVE counterpart (RULE 2).",
     )
+    pairing_gaps: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description='Structured form of partial_pairing_acs: [{"ac_id": "AC-1", "missing": ["NEGATIVE"]}].',
+    )
     needs_review_test_cases: list[str] = Field(
         default_factory=list,
         description="Test case titles below the confidence threshold, usually referencing UI not yet in the application map.",
     )
+    duplicates_skipped: int = 0

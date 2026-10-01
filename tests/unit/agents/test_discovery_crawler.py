@@ -99,7 +99,8 @@ class RegistrationBrowser(FakeBrowser):
                 'uid=1_0 RootWebArea "Login" url="https://sample.test/login"\n'
                 'uid=1_1 textbox "Username"\n'
                 'uid=1_2 button "Log in"\n'
-                'uid=1_3 link "Register" url="https://sample.test/register"'
+                'uid=1_3 link "Register" url="https://sample.test/register"\n'
+                'uid=1_4 textbox "Password"'
             )
         elif self.page == "register":
             text = (
@@ -128,7 +129,8 @@ class DashboardBrowser(FakeBrowser):
         snapshots = {
             "root": (
                 'uid=1_0 RootWebArea "Login" url="https://sample.test/login"\n'
-                'uid=1_1 textbox "Username"\nuid=1_2 button "Log in"'
+                'uid=1_1 textbox "Username"\nuid=1_2 button "Log in"\n'
+                'uid=1_3 textbox "Password"'
             ),
             "dashboard": (
                 'uid=2_0 RootWebArea "Dashboard" url="https://sample.test/dashboard"\n'
@@ -638,3 +640,257 @@ async def test_separate_runs_merge_into_one_deduplicated_application_graph() -> 
 
 async def _noop() -> None:
     return None
+
+
+class HiddenHeaderCartBrowser(FakeBrowser):
+    """Header cart is only an href in the DOM, not a named snapshot control."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.page = "dashboard"
+
+    async def inspect_elements(self, snapshot: object) -> list[dict[str, Any]]:
+        from core.tool_gateway.snapshot import merge_dom_hrefs, parse_elements
+
+        nodes = parse_elements(snapshot)
+        if self.page == "dashboard":
+            return merge_dom_hrefs(nodes, [{"name": "", "url": "https://shop.test/cart"}])
+        return nodes
+
+    async def navigate_page(self, url: str) -> None:
+        if "/cart" in url:
+            self.page = "cart"
+        elif "/menu" in url:
+            self.page = "menu"
+        else:
+            self.page = "dashboard"
+
+    async def take_snapshot(self) -> list[TextBlock]:
+        pages = {
+            "dashboard": (
+                'uid=1_0 RootWebArea "Dashboard" url="https://shop.test/dashboard"\n'
+                'uid=1_1 link "Menu" url="https://shop.test/menu"'
+            ),
+            "menu": (
+                'uid=2_0 RootWebArea "Menu" url="https://shop.test/menu"\n'
+                'uid=2_1 heading "Menu"'
+            ),
+            "cart": (
+                'uid=3_0 RootWebArea "Cart" url="https://shop.test/cart"\n'
+                'uid=3_1 heading "Cart"'
+            ),
+        }
+        return [TextBlock(pages[self.page])]
+
+
+@pytest.mark.asyncio
+async def test_unlabeled_header_cart_href_is_crawled_without_add_to_cart() -> None:
+    browser = HiddenHeaderCartBrowser()
+    states: list[dict[str, Any]] = []
+
+    async def record(state: dict[str, Any]) -> None:
+        states.append(state)
+
+    crawler = Crawler(browser, CrawlBudget(max_pages=10, max_depth=3), [])
+    status = await crawler.crawl("https://shop.test/dashboard", record)
+    urls = {state["url_pattern"] for state in states}
+    assert status == "COMPLETE"
+    assert "/cart" in urls
+    assert "/menu" in urls
+    assert crawler._reveal_probed is False
+
+
+class CollectionShopBrowser(FakeBrowser):
+    """Catalog whose collection screen only appears after one add-to-cart click."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.added = False
+        self.page = "catalog"
+
+    async def navigate_page(self, url: str) -> None:
+        self.page = "cart" if "/cart" in url else "catalog"
+
+    async def click(self, element_ref: str) -> None:
+        self.clicked.append(element_ref)
+        if element_ref in {"1_2", "1_3"}:
+            self.added = True
+        if element_ref == "1_5":
+            self.page = "cart"
+
+    async def take_snapshot(self) -> list[TextBlock]:
+        if self.page == "cart":
+            text = (
+                'uid=2_0 RootWebArea "Cart" url="https://shop.test/cart"\n'
+                'uid=2_1 heading "Cart"\n'
+                'uid=2_2 button "Checkout"\n'
+                'uid=2_3 button "Clear cart"'
+            )
+            return [TextBlock(text)]
+        cart_entry = (
+            'uid=1_5 button "" description="Cart"\n' if self.added else ""
+        )
+        text = (
+            'uid=1_0 RootWebArea "Products" url="https://shop.test/products"\n'
+            'uid=1_1 heading "Products"\n'
+            'uid=1_2 button "Add to Cart"\n'
+            'uid=1_3 button "Add to Cart"\n'
+            'uid=1_4 button "Checkout"\n'
+            f"{cart_entry}"
+        )
+        return [TextBlock(text)]
+
+
+class AdminCrmBrowser(FakeBrowser):
+    async def navigate_page(self, url: str) -> None:
+        if url.endswith("/invoices"):
+            self.page = "invoices"
+        elif url.endswith("/users"):
+            self.page = "users"
+        else:
+            self.page = "root"
+
+    async def click(self, element_ref: str) -> None:
+        self.clicked.append(element_ref)
+
+    async def take_snapshot(self) -> list[TextBlock]:
+        pages = {
+            "root": (
+                'uid=1_0 RootWebArea "Home" url="https://crm.test/home"\n'
+                'uid=1_1 link "Invoices" url="https://crm.test/invoices"\n'
+                'uid=1_2 link "Users" url="https://crm.test/users"'
+            ),
+            "invoices": (
+                'uid=2_0 RootWebArea "Invoices" url="https://crm.test/invoices"\n'
+                'uid=2_1 heading "Invoices"'
+            ),
+            "users": (
+                'uid=3_0 RootWebArea "Users" url="https://crm.test/users"\n'
+                'uid=3_1 heading "Users"'
+            ),
+        }
+        return [TextBlock(pages[self.page])]
+
+
+@pytest.mark.asyncio
+async def test_one_add_to_cart_probe_reveals_collection_page() -> None:
+    browser = CollectionShopBrowser()
+    states: list[dict[str, Any]] = []
+
+    async def record(state: dict[str, Any]) -> None:
+        states.append(state)
+
+    crawler = Crawler(browser, CrawlBudget(max_pages=10, max_depth=3), [])
+    status = await crawler.crawl("https://shop.test/products", record)
+
+    urls = {state["url_pattern"] for state in states}
+    assert status == "COMPLETE"
+    assert "/products" in urls
+    assert "/cart" in urls
+    assert "1_5" in browser.clicked
+    assert "2_2" not in browser.clicked
+    assert "2_3" not in browser.clicked
+    assert crawler._reveal_probed is True
+    assert crawler._collection_follow_queued is True
+    assert any("Add to Cart" in action for action in crawler.coverage["skipped_actions"])
+
+
+@pytest.mark.asyncio
+async def test_admin_app_without_collection_controls_does_not_probe() -> None:
+    browser = AdminCrmBrowser()
+    states: list[dict[str, Any]] = []
+
+    async def record(state: dict[str, Any]) -> None:
+        states.append(state)
+
+    crawler = Crawler(browser, CrawlBudget(max_pages=10, max_depth=3), [])
+    status = await crawler.crawl("https://crm.test/home", record)
+
+    urls = {state["url_pattern"] for state in states}
+    assert status == "COMPLETE"
+    assert urls == {"/home", "/invoices", "/users"}
+    assert crawler._reveal_probed is False
+    assert crawler._collection_follow_queued is False
+    assert all("Add to" not in action for action in crawler.coverage["skipped_actions"])
+
+
+@pytest.mark.asyncio
+async def test_parallel_crawler_one_reveal_and_crm_unchanged() -> None:
+    @asynccontextmanager
+    async def shop():
+        yield CollectionShopBrowser()
+
+    shop_crawler = ParallelCrawler(
+        shop,
+        CrawlBudget(max_pages=10, max_depth=3),
+        [],
+        login_url=None,
+        authenticate=False,
+        worker_limit=1,
+    )
+    assert await shop_crawler.crawl("https://shop.test/products", lambda state: _noop()) == "COMPLETE"
+    urls = {node["url_pattern"] for node in shop_crawler.coverage["app_flow_graph"]["nodes"]}
+    assert "/cart" in urls
+    assert shop_crawler._reveal_probed is True
+    assert shop_crawler._checkpoint_payload()["reveal_probed"] is True
+
+    @asynccontextmanager
+    async def crm():
+        yield AdminCrmBrowser()
+
+    crm_crawler = ParallelCrawler(
+        crm,
+        CrawlBudget(max_pages=10, max_depth=3),
+        [],
+        login_url=None,
+        authenticate=False,
+        worker_limit=1,
+    )
+    assert await crm_crawler.crawl("https://crm.test/home", lambda state: _noop()) == "COMPLETE"
+    crm_urls = {node["url_pattern"] for node in crm_crawler.coverage["app_flow_graph"]["nodes"]}
+    assert crm_urls == {"/home", "/invoices", "/users"}
+    assert crm_crawler._reveal_probed is False
+
+
+@pytest.mark.asyncio
+async def test_complete_discovery_records_login_to_landing_without_selected_auth_flows() -> None:
+    @asynccontextmanager
+    async def browser_context():
+        yield DashboardBrowser()
+
+    states: list[dict[str, Any]] = []
+
+    async def record(state: dict[str, Any]) -> None:
+        states.append(state)
+
+    crawler = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=20, max_depth=5),
+        [],
+        login_url="https://sample.test/login",
+        authenticate=True,
+        worker_limit=1,
+        discovery_mode="complete",
+        selected_auth_flows=[],
+    )
+    status = await crawler.crawl("https://sample.test/login", record)
+
+    graph = crawler.coverage["app_flow_graph"]
+    by_url = {node["url_pattern"]: node["fingerprint"] for node in graph["nodes"]}
+    assert status == "COMPLETE"
+    assert "/login" in by_url
+    assert "/dashboard" in by_url
+    assert any(
+        edge["parent_fingerprint"] == by_url["/login"]
+        and edge["child_fingerprint"] == by_url["/dashboard"]
+        and str(edge["action"]).startswith("authenticate(")
+        for edge in graph["edges"]
+    )
+    assert "/login" in by_url
+    assert "/dashboard" in by_url
+    assert any(
+        edge["parent_fingerprint"] == by_url["/login"]
+        and edge["child_fingerprint"] == by_url["/dashboard"]
+        and str(edge["action"]).startswith("authenticate(")
+        for edge in graph["edges"]
+    )

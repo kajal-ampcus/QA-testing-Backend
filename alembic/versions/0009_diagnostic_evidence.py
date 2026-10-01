@@ -8,9 +8,10 @@ This lets developers see exactly what went wrong without re-running.
 Revision: 0008
 """
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "0009"
 down_revision = "0008"

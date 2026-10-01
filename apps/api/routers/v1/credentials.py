@@ -1,10 +1,12 @@
 ﻿"""Project-scoped accounts. Passwords remain encrypted and are never returned."""
 import uuid
 from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, AnyHttpUrl, field_validator, model_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from apps.api.dependencies import get_db_session
 from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.project import Project
@@ -107,6 +109,16 @@ async def revise_credential(project_id:uuid.UUID,credential_ref:str,body:Credent
     await session.commit()
     await session.refresh(row)
     return response(row,project)
+
+@router.delete('/{credential_ref}',status_code=204)
+async def delete_credential(project_id:uuid.UUID,credential_ref:str,session:AsyncSession=Depends(get_db_session)) -> None:
+    """Deactivate an account. The encrypted row is kept for audit but can no longer be resolved."""
+    project=await project_for(session,project_id)
+    row=await account_for(session,project_id,credential_ref)
+    row.active=False
+    if project.credential_ref==row.credential_ref:
+        project.credential_ref=None
+    await session.commit()
 
 @router.post('/{credential_ref}/default',response_model=CredentialCreateResponse)
 async def set_default_credential(project_id:uuid.UUID,credential_ref:str,session:AsyncSession=Depends(get_db_session)):

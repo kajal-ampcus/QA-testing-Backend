@@ -11,29 +11,39 @@ import itertools
 import re
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass, field
-from typing import Any, AsyncContextManager
+from typing import Any
 from urllib.parse import urldefrag, urljoin, urlparse
 
 from core.agents.application_discovery.crawler import (
     ClickStep,
     CrawlBudget,
     Crawler,
+    _is_chrome_navigation_control,
     _is_external,
     _is_transient_widget_control,
-    _parse_elements,
     _relevance_score,
 )
-from core.policy_safety.destructive_action_lexicon import classify_risk
-from core.tool_gateway.gateway import BrowserInspection
-from core.tool_gateway.mcp_clients.chrome_devtools_client import (
-    SecurityVerificationRequiredError,
+from core.agents.application_discovery.fingerprint import (
+    auth_flow_label,
+    functional_page_key,
+    gated_probe_kind,
+    is_chrome_label,
+    is_collection_mutation_action,
+    is_gated_reveal_action,
+    is_in_page_content_control,
+    observed_page_label,
+    repeated_in_page_control,
 )
+from core.policy_safety.destructive_action_lexicon import classify_risk
+from core.tool_gateway.gateway import BrowserInspection, SecurityVerificationRequiredError
 from domain.enums import RiskLevel
 
+_CHECKPOINT_INTERVAL_SECONDS = 2.0
 
-ClientFactory = Callable[[], AsyncContextManager[BrowserInspection]]
+
+ClientFactory = Callable[[], AbstractAsyncContextManager[BrowserInspection]]
 OnStateDiscovered = Callable[[dict[str, Any]], Awaitable[None]]
 OnCheckpoint = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -116,6 +126,8 @@ class ParallelCrawler:
         self._on_checkpoint = on_checkpoint
         self._job_states: dict[str, dict[str, Any]] = {}
         self._seen: set[str] = set()
+        self._page_keys: dict[str, str] = {}
+        self._live_view: dict[str, Any] | None = None
         self._expanded: set[str] = set()
         self._expanding: set[str] = set()
         self._queued_actions: set[tuple[str, str, str, str]] = set()
@@ -125,6 +137,7 @@ class ParallelCrawler:
         self._edges: set[tuple[str, str, str]] = set()
         self._lock = asyncio.Lock()
         self._persist_lock = asyncio.Lock()
+        self._last_checkpoint_at = float("-inf")
         self._sequence = itertools.count()
         self._started = 0.0
         self._actions_examined = 0
@@ -140,6 +153,8 @@ class ParallelCrawler:
         self._safety_limit_kind: str | None = None
         self.termination_reason = "EXPLORATION_EXHAUSTED"
         self.coverage: dict[str, Any] = {}
+        self._reveal_probed = False
+        self._collection_follow_queued = False
         self._restore_checkpoint()
 
     @staticmethod
@@ -190,6 +205,12 @@ class ParallelCrawler:
             node["fingerprint"]: node for node in graph.get("nodes", [])
         }
         self._seen = set(self._nodes)
+        self._page_keys = {
+            node["functional_key"]: node["fingerprint"]
+            for node in self._nodes.values()
+            if node.get("functional_key")
+        }
+        self._live_view = self._checkpoint.get("live_view")
         self._edges = {
             (edge["parent_fingerprint"], edge["child_fingerprint"], edge["action"])
             for edge in graph.get("edges", [])
@@ -217,12 +238,15 @@ class ParallelCrawler:
         self._job_states = {
             job["key"]: job for job in self._checkpoint.get("jobs", [])
         }
+        self._reveal_probed = bool(self._checkpoint.get("reveal_probed"))
+        self._collection_follow_queued = bool(self._checkpoint.get("collection_follow_queued"))
 
     def _checkpoint_payload(self) -> dict[str, Any]:
         jobs = list(self._job_states.values())
         return {
             "version": 1,
             "progress": self._progress(),
+            "live_view": self._live_view,
             "configuration": {
                 "mode": self._discovery_mode,
                 "selected_auth_flow": self._selected_auth_flow,
@@ -255,14 +279,22 @@ class ParallelCrawler:
             "modules": list(self._modules.values()),
             "authentication_flows": list(self._auth_flows.values()),
             "module_inventory_flows": sorted(self._module_inventory_flows),
+            "reveal_probed": self._reveal_probed,
+            "collection_follow_queued": self._collection_follow_queued,
         }
 
-    async def _save_checkpoint(self) -> None:
-        if self._on_checkpoint:
-            # State inserts and checkpoint updates share one SQLAlchemy
-            # session in the worker; serialize both transaction types.
-            async with self._persist_lock:
-                await self._on_checkpoint(self._checkpoint_payload())
+    async def _save_checkpoint(self, *, force: bool = False) -> None:
+        """Persist progress. Every job status change calls this, so writes
+        are throttled; phase boundaries and terminations pass force=True."""
+        if not self._on_checkpoint:
+            return
+        if not force and time.monotonic() - self._last_checkpoint_at < _CHECKPOINT_INTERVAL_SECONDS:
+            return
+        # State inserts and checkpoint updates share one SQLAlchemy
+        # session in the worker; serialize both transaction types.
+        async with self._persist_lock:
+            self._last_checkpoint_at = time.monotonic()
+            await self._on_checkpoint(self._checkpoint_payload())
 
     def _progress(self) -> dict[str, Any]:
         statuses = [job["status"] for job in self._job_states.values()]
@@ -288,23 +320,7 @@ class ParallelCrawler:
 
     @staticmethod
     def _observed_label(state: dict[str, Any], nodes: list[dict[str, Any]]) -> str:
-        heading = next(
-            (
-                str(node.get("name", "")).strip()
-                for node in nodes
-                if node.get("role") in {"heading", "dialog"}
-                and str(node.get("name", "")).strip()
-            ),
-            "",
-        )
-        if heading:
-            return heading
-        root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
-        title = str(root.get("name", "")).strip()
-        if title:
-            return title
-        path = urlparse(state.get("url_pattern", "")).path.strip("/")
-        return path.rsplit("/", 1)[-1].replace("-", " ").replace("_", " ").title() or "Public entry"
+        return observed_page_label(nodes, str(state.get("url_pattern") or ""), "Public entry")
 
     def _detect_auth_flow(
         self, fingerprint: str, state: dict[str, Any], nodes: list[dict[str, Any]], authenticated: bool
@@ -363,7 +379,7 @@ class ParallelCrawler:
             kind = "authentication"
         return {
             "id": f"auth-{fingerprint[:12]}",
-            "label": self._observed_label(state, nodes),
+            "label": auth_flow_label(kind),
             "kind": kind,
             "url_pattern": url_pattern,
             "state_fingerprint": fingerprint,
@@ -380,6 +396,21 @@ class ParallelCrawler:
             return f"authentication-{flow['kind']}", flow["label"]
         return "public", self._observed_label(state, nodes)
 
+    def _authenticate_source_flows(self) -> list[dict[str, Any]]:
+        selected_ids = list(
+            dict.fromkeys(
+                [
+                    *self._selected_auth_flows,
+                    *([self._selected_auth_flow] if self._selected_auth_flow else []),
+                ]
+            )
+        )
+        selected = [self._auth_flows[flow_id] for flow_id in selected_ids if flow_id in self._auth_flows]
+        if selected:
+            return selected
+        login_flows = [flow for flow in self._auth_flows.values() if flow.get("kind") == "login"]
+        return login_flows or list(self._auth_flows.values())
+
     def _catalog_state(
         self,
         fingerprint: str,
@@ -391,7 +422,11 @@ class ParallelCrawler:
         flow = self._detect_auth_flow(fingerprint, state, nodes, authenticated)
         if flow:
             self._auth_flows.setdefault(flow["id"], flow)
-            if self._discovery_mode in {"targeted", "full"} and flow["kind"] == "login" and not self._selected_auth_flow:
+            if (
+                self._discovery_mode in {"targeted", "full", "complete"}
+                and flow["kind"] == "login"
+                and not self._selected_auth_flow
+            ):
                 self._selected_auth_flow = flow["id"]
         area_id, label = self._classify_state(state, nodes, authenticated)
         area = self._areas.setdefault(
@@ -422,7 +457,7 @@ class ParallelCrawler:
                 if node.get("role") not in {"link", "button", "menuitem", "tab"}:
                     continue
                 name = str(node.get("name", "")).strip()
-                if not name:
+                if not name or is_chrome_label(name):
                     continue
                 if not self._safe_navigation(node):
                     self._skipped.add(f"{state.get('url_pattern', '/')}: {node.get('role')} {name}")
@@ -524,6 +559,13 @@ class ParallelCrawler:
             return False
         if role == "link" and destination:
             return True
+        # Choosing a radio or an observed combobox option reveals dependent
+        # UI without submitting anything; checkboxes are excluded because
+        # they usually toggle a persisted setting.
+        if role == "radio":
+            return True
+        if role == "combobox":
+            return bool(element.get("options"))
         return role in {"button", "menuitem", "tab"} and not re.search(
             r"\b(submit|send|save|subscribe|confirm|approve|publish|register|create account|log in|sign in|login)\b", name, re.I
         )
@@ -549,6 +591,7 @@ class ParallelCrawler:
         base_url: str,
         area_id: str,
         module_id: str | None,
+        allow_collection_follow: bool = False,
     ) -> bool:
         if len(path) >= self._budget.max_depth:
             self._depth_limited += 1
@@ -570,12 +613,15 @@ class ParallelCrawler:
             role, name = element.get("role", ""), element.get("name", "")
             if _is_transient_widget_control(role, name):
                 continue
+            if _is_chrome_navigation_control(role, name, element.get("url")):
+                self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
+                continue
             if _is_login_form_chrome(nodes, role, element.get("url")):
                 self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
                 continue
             if not self._action_in_scope(area_id, element, len(path), module_id):
                 continue
-            if role not in {"link", "button", "menuitem", "tab", "radio", "checkbox", "combobox"}:
+            if role not in {"link", "button", "menuitem", "tab", "radio", "combobox"}:
                 continue
             if element.get("disabled") or element.get("visible") is False:
                 continue
@@ -586,31 +632,74 @@ class ParallelCrawler:
                     continue
                 if urldefrag(destination)[0] == urldefrag(current_url)[0] and "#" in destination and not urlparse(destination).fragment.startswith(("/", "!/")):
                     continue
+            probe_kind = gated_probe_kind(
+                name, element.get("description"), destination or element.get("url"), current_url
+            )
             safe_link = role == "link" and bool(destination)
             form_action = bool(re.search(
                 r"\b(submit|send|subscribe|save|sign out|log out|logout|sign in|log in|login|register|create account)\b",
                 name,
                 re.I,
             ))
-            if (
+            blocked_mutation = bool(
+                re.search(
+                    r"\b(log.?out|sign.?out|delete|purchase|checkout|payment|transfer|withdraw)\b",
+                    " ".join(filter(None, [name, str(destination or ""), str(element.get("description") or "")])),
+                    re.I,
+                )
+            )
+            icon_collection = probe_kind == "collection" and not str(name or "").strip()
+            if icon_collection and (
+                classify_risk(role, name or "cart") == RiskLevel.DESTRUCTIVE
+                or is_collection_mutation_action(name)
+                or blocked_mutation
+                or element.get("input_type") == "submit"
+            ):
+                self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
+                continue
+            if not icon_collection and (
                 not self._safe_navigation(element)
-                or re.search(r"\b(log.?out|sign.?out|delete|purchase|checkout|payment|transfer|withdraw)\b", name + " " + str(destination or ""), re.I)
+                or is_collection_mutation_action(name)
+                or blocked_mutation
                 or (form_action and not safe_link)
                 or element.get("input_type") == "submit"
             ):
                 self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
                 continue
+            in_page = is_in_page_content_control(role, name, element.get("url"), current_url)
+            repeated = not destination and repeated_in_page_control(name, nodes)
+            if probe_kind not in {"reveal", "collection"} and (in_page or repeated):
+                self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
+                continue
             values = element.get("options", []) if role == "combobox" else [None]
-            if role == "combobox" and not values:
-                self._skipped.add(f"{urlparse(current_url).path}: combobox {name} (options unavailable)")
             for value in values:
                 canonical = destination.rstrip("/") if destination else None
-                key = (parent_fingerprint, role, canonical or name, str(value))
+                identity = canonical or name or str(element.get("description") or "")
+                key = (parent_fingerprint, role, identity, str(value))
                 async with self._lock:
                     if key in self._queued_actions:
                         continue
+                    if probe_kind == "reveal":
+                        if self._reveal_probed:
+                            continue
+                        self._reveal_probed = True
+                    elif probe_kind == "collection":
+                        if (
+                            not allow_collection_follow
+                            or not self._reveal_probed
+                            or self._collection_follow_queued
+                        ):
+                            continue
+                        self._collection_follow_queued = True
+                    elif in_page or repeated:
+                        continue
                     self._queued_actions.add(key)
-                step = ClickStep(role, name, destination, value)
+                step = ClickStep(
+                    role,
+                    name or str(element.get("description") or ""),
+                    destination,
+                    value,
+                )
                 child_module = module_id
                 if child_module is None:
                     child_module = next((key for key, item in self._modules.items()
@@ -726,8 +815,10 @@ class ParallelCrawler:
                                     self._authenticated_workers += 1
                             captured: list[dict[str, Any]] = []
 
-                            async def capture(state: dict[str, Any]) -> None:
-                                captured.append(state)
+                            async def capture(
+                                state: dict[str, Any], sink: list[dict[str, Any]] = captured
+                            ) -> None:
+                                sink.append(state)
 
                             recorded_path = job.path if skip_auth else [
                                 ClickStep(role="authentication", name="Log in"), *job.path
@@ -738,12 +829,31 @@ class ParallelCrawler:
                             # still observed and merged into app_flow_graph.
                             crawler._visited_fingerprints.clear()
                             fingerprint, nodes = await crawler._record_state(snapshot, recorded_path, capture)
+                            root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
+                            live_url = str(root.get("url") or (captured[0]["url_pattern"] if captured else base_url))
+                            page_key = functional_page_key(live_url, nodes) if nodes else ""
+                            action = self._action_text(job.path[-1]) if job.path else "ROOT"
+                            screenshot_ref = captured[0].get("evidence_ref") if captured else None
+                            if not screenshot_ref:
+                                with suppress(Exception):
+                                    screenshot_ref = str(await client.take_screenshot())
                             if not fingerprint:
+                                async with self._lock:
+                                    canonical = self._page_keys.get(page_key)
+                                    self._live_view = {
+                                        "url": live_url,
+                                        "label": observed_page_label(nodes, live_url),
+                                        "screenshot_ref": screenshot_ref,
+                                        "fingerprint": canonical,
+                                        "action": action,
+                                    }
                                 await self._set_job_status(job, "completed")
                                 continue
                             state = captured[0] if captured else None
-                            action = self._action_text(job.path[-1]) if job.path else "ROOT"
                             async with self._lock:
+                                canonical = self._page_keys.get(page_key)
+                                if canonical:
+                                    fingerprint = canonical
                                 if fingerprint not in self._seen and len(self._seen) >= self._budget.max_pages:
                                     self._pending_at_limit += 1
                                     self._termination = "MAX_PAGES_REACHED"
@@ -755,24 +865,24 @@ class ParallelCrawler:
                                 )
                                 if job.parent_fingerprint:
                                     self._edges.add((job.parent_fingerprint, fingerprint, action))
-                                is_new = fingerprint not in self._seen
+                                is_new = fingerprint not in self._seen and canonical is None
                                 if is_new and len(self._seen) < self._budget.max_pages:
                                     self._seen.add(fingerprint)
+                                    if page_key:
+                                        self._page_keys[page_key] = fingerprint
                                     if state:
                                         self._nodes[fingerprint] = {
                                             "fingerprint": fingerprint,
                                             "url_pattern": state["url_pattern"],
+                                            "functional_key": page_key,
+                                            "label": observed_page_label(nodes, live_url),
                                             "area_id": area_id,
                                             "module_id": job.module_id,
                                         }
                                     if area_id not in self._area_roots:
                                         self._area_roots[area_id] = fingerprint
-                                selected_flows = [
-                                    self._auth_flows[flow_id]
-                                    for flow_id in self._selected_auth_flows
-                                    if flow_id in self._auth_flows
-                                ]
-                                if area_id == "authenticated":
+                                selected_flows = self._authenticate_source_flows()
+                                if area_id == "authenticated" and not job.path:
                                     self._edges.update(
                                         (
                                             selected_flow["state_fingerprint"],
@@ -780,13 +890,24 @@ class ParallelCrawler:
                                             f"authenticate(flow={selected_flow['id']})",
                                         )
                                         for selected_flow in selected_flows
+                                        if selected_flow.get("state_fingerprint")
+                                        and selected_flow["state_fingerprint"] != fingerprint
                                     )
-                                should_expand = (
-                                    fingerprint not in self._expanded
-                                    and fingerprint not in self._expanding
+                                reveal_replay = bool(
+                                    job.path and is_gated_reveal_action(job.path[-1].name)
+                                )
+                                should_expand = fingerprint not in self._expanding and (
+                                    fingerprint not in self._expanded or reveal_replay
                                 )
                                 if should_expand:
                                     self._expanding.add(fingerprint)
+                                self._live_view = {
+                                    "url": live_url,
+                                    "label": observed_page_label(nodes, live_url),
+                                    "screenshot_ref": screenshot_ref or (state or {}).get("evidence_ref"),
+                                    "fingerprint": fingerprint,
+                                    "action": action,
+                                }
                             if is_new and state:
                                 # Existing repository/session is intentionally serialized.
                                 async with self._persist_lock:
@@ -801,6 +922,7 @@ class ParallelCrawler:
                                     base_url,
                                     area_id,
                                     job.module_id,
+                                    allow_collection_follow=reveal_replay,
                                 )
                                 async with self._lock:
                                     self._expanding.discard(fingerprint)
@@ -897,7 +1019,7 @@ class ParallelCrawler:
                     self._termination = "AUTHENTICATION_FAILED"
                 if isinstance(exc, TimeoutError):
                     self._termination = "MAX_DURATION_REACHED"
-                await self._save_checkpoint()
+                await self._save_checkpoint(force=True)
             phases = [(self._landing_url or base_url, not self._authenticate)]
             if self._discovery_mode == "targeted" and not self._selected_modules:
                 phases = []
@@ -921,15 +1043,16 @@ class ParallelCrawler:
                 await asyncio.wait_for(self._run_phase(phase_url, skip_auth, on_state_discovered), max(0.001, remaining))
             except TimeoutError:
                 self._termination = "MAX_DURATION_REACHED"
-                await self._save_checkpoint()
+            await self._save_checkpoint(force=True)
         if self._termination == "EXPLORATION_EXHAUSTED":
-            if self._failures:
+            if self._failures and not self._nodes:
                 self._termination = "ACTION_FAILURES"
             elif self._depth_limited:
                 self._termination = (
                     "SAFETY_LIMIT_REACHED"
                     if self._budget.automatic_limits else "MAX_DEPTH_REACHED"
                 )
+        await self._save_checkpoint(force=True)
         self.termination_reason = self._termination
         self.coverage = {
             "progress": self._progress(),
@@ -943,6 +1066,7 @@ class ParallelCrawler:
             "worker_limit": self._worker_limit,
             "automatic_limits": self._budget.automatic_limits,
             "safety_limit_kind": self._safety_limit_kind,
+            "live_view": self._live_view,
             "security_verification_required": (
                 self._termination == "SECURITY_VERIFICATION_REQUIRED"
             ),
@@ -1007,13 +1131,31 @@ class ParallelCrawler:
                     history.append(action)
                 state["reached_via"] = list(history)
                 area = self._catalog_state(fingerprint, state, nodes, authenticated)
+                root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
+                live_url = str(root.get("url") or state["url_pattern"])
+                page_key = functional_page_key(live_url, nodes)
+                if page_key:
+                    self._page_keys.setdefault(page_key, fingerprint)
+                self._live_view = {
+                    "url": live_url,
+                    "label": observed_page_label(nodes, live_url),
+                    "screenshot_ref": state.get("evidence_ref"),
+                    "fingerprint": fingerprint,
+                    "action": action,
+                }
                 if fingerprint not in self._seen:
                     if len(self._seen) >= self._budget.max_pages:
                         self._termination = "MAX_PAGES_REACHED"
                         raise RuntimeError("Discovery reached the configured page limit during bootstrap")
                     await on_state_discovered(state)
                     self._seen.add(fingerprint)
-                    self._nodes[fingerprint] = {"fingerprint": fingerprint, "url_pattern": state["url_pattern"], "area_id": area}
+                    self._nodes[fingerprint] = {
+                        "fingerprint": fingerprint,
+                        "url_pattern": state["url_pattern"],
+                        "functional_key": page_key,
+                        "label": observed_page_label(nodes, live_url),
+                        "area_id": area,
+                    }
                 if parent and parent != fingerprint:
                     self._edges.add((parent, fingerprint, action))
                 parent = fingerprint
@@ -1053,4 +1195,4 @@ class ParallelCrawler:
             self._dashboard_status = "complete"
             if self._selected_modules - self._modules.keys():
                 raise ValueError("Selected paths are no longer in the observed navigation catalog. Discover application paths again.")
-            await self._save_checkpoint()
+            await self._save_checkpoint(force=True)

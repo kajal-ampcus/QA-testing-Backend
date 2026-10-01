@@ -19,13 +19,23 @@ from domain.enums import RiskLevel
 
 _DESTRUCTIVE_TERMS = [
     "delete", "remove", "cancel subscription", "unsubscribe", "deactivate",
-    "close account", "terminate", "destroy",
-    "pay", "submit payment", "checkout", "purchase", "buy now",
-    "withdraw", "transfer funds", "send money",
+    "close account", "terminate", "destroy", "erase", "purge", "wipe", "discard",
+    "trash", "revoke", "suspend", "ban", "block user", "void", "refund",
+    "cancel order", "place order", "order now", "book now",
+    "pay", "pay now", "submit payment", "checkout", "purchase", "buy now", "charge",
+    "withdraw", "transfer", "transfer funds", "send money",
+    "reject", "decline", "approve", "publish", "execute",
     "permanently", "irreversible",
 ]
 
-_REVIEW_TERMS = ["edit", "update", "change", "modify", "archive", "disable", "reset"]
+_REVIEW_TERMS = [
+    "edit", "update", "change", "modify", "archive", "disable", "reset", "clear",
+    "save", "submit", "send", "confirm", "restore", "import", "upload",
+]
+
+# Controls a user acts on. With no accessible name (icon-only trash/close
+# buttons) the action cannot be classified, so it is never auto-clicked.
+_ACTIONABLE_ROLES = {"button", "menuitem", "menuitemcheckbox", "menuitemradio", "switch"}
 
 _DESTRUCTIVE_PATTERN = re.compile(
     r"\b(" + "|".join(re.escape(term) for term in _DESTRUCTIVE_TERMS) + r")\b", re.IGNORECASE
@@ -36,9 +46,8 @@ _REVIEW_PATTERN = re.compile(
 
 
 def classify_risk(role: str, name: str) -> RiskLevel:
-    """`role` isn't used in the matching yet — kept in the signature so a
-    future refinement (e.g. weighting a match more heavily on role="button"
-    than role="heading") doesn't require changing every call site."""
+    if not name.strip() and role in _ACTIONABLE_ROLES:
+        return RiskLevel.REVIEW
     if _DESTRUCTIVE_PATTERN.search(name):
         return RiskLevel.DESTRUCTIVE
     if _REVIEW_PATTERN.search(name):

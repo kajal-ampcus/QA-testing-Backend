@@ -208,6 +208,7 @@ class OpenAICompatibleClient(LLMClient):
                         "content": (
                             f"The provider rejected the previous function call. "
                             f"Call only {tool_name} once with a complete root object. "
+                            "Nested objects must be JSON values, not JSON-encoded strings. "
                             "Use strict JSON — no comments, no trailing commas."
                         ),
                     })
@@ -227,18 +228,21 @@ class OpenAICompatibleClient(LLMClient):
                         for call in message.tool_calls
                     )
                 )
-                if not matching_tool_call and finish in (None, "stop", "tool_calls"):
-                    if attempt < max_repair_attempts:
-                        messages = [messages[0], messages[1]]
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Your previous response did not call the required {tool_name} "
-                                "function. Do not answer in prose. Call that function exactly "
-                                "once with complete JSON matching its schema."
-                            ),
-                        })
-                        continue
+                if (
+                    not matching_tool_call
+                    and finish in (None, "stop", "tool_calls")
+                    and attempt < max_repair_attempts
+                ):
+                    messages = [messages[0], messages[1]]
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Your previous response did not call the required {tool_name} "
+                            "function. Do not answer in prose. Call that function exactly "
+                            "once with complete JSON matching its schema."
+                        ),
+                    })
+                    continue
 
                 break  # success
 

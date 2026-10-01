@@ -1,7 +1,10 @@
-"""
-Payload/artifact schemas — test_cases/application_map_version/requirements in;
-verdicts (verdict, confidence, checks{element_exists_in_map, ...}) out. See
-companion doc Part 2 #4.
+"""Verdict contract for Test Case Validation — checks stay separate from confidence."""
 
-Phase 0 stub.
-"""
+from pydantic import BaseModel, Field
+
+
+class ValidationVerdict(BaseModel):
+    passed: bool
+    issues: list[str] = Field(default_factory=list)
+    checks: dict[str, bool] = Field(default_factory=dict)
+    confidence: float = Field(ge=0.0, le=1.0)

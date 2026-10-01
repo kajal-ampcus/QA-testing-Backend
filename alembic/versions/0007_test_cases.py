@@ -4,9 +4,10 @@ Add test_cases and test_case_versions tables (Agent 3 — Test Design).
 Revision: 0007
 """
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "0007"
 down_revision = "0006"

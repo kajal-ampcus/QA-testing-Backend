@@ -3,7 +3,10 @@ from contextlib import asynccontextmanager
 import pytest
 
 from core.agents.application_discovery.crawler import CrawlBudget
-from core.agents.application_discovery.parallel_crawler import ParallelCrawler, _is_login_form_chrome
+from core.agents.application_discovery.parallel_crawler import (
+    ParallelCrawler,
+    _is_login_form_chrome,
+)
 from tests.unit.agents.test_discovery_crawler import DashboardBrowser, FakeBrowser, TextBlock
 
 
@@ -126,3 +129,36 @@ def test_signature_distinguishes_hash_routes_and_ignores_transport_tokens():
     from core.agents.application_discovery.fingerprint import compute_fingerprint
     assert compute_fingerprint("https://sample.test/#/one", "page") != compute_fingerprint("https://sample.test/#/two", "page")
     assert compute_fingerprint("https://sample.test/?token=one", "page") == compute_fingerprint("https://sample.test/?token=two", "page")
+
+
+def test_menu_toggle_is_not_a_functional_action():
+    from core.agents.application_discovery.crawler import _is_chrome_navigation_control
+    from core.agents.application_discovery.fingerprint import auth_flow_label
+
+    assert _is_chrome_navigation_control("button", "Menu", None)
+    assert not _is_chrome_navigation_control("link", "Menu", "/menu")
+    assert auth_flow_label("login") == "Login"
+    assert auth_flow_label("recovery") == "Forgot password"
+
+
+@pytest.mark.asyncio
+async def test_live_view_tracks_the_screen_workers_are_on():
+    @asynccontextmanager
+    async def public():
+        yield FakeBrowser()
+
+    crawler = ParallelCrawler(
+        public,
+        CrawlBudget(max_pages=20),
+        [],
+        login_url=None,
+        authenticate=False,
+        discovery_mode="targeted",
+        worker_limit=2,
+    )
+    assert await crawler.crawl("https://sample.test/", record) == "COMPLETE"
+    assert crawler._live_view
+    assert crawler._live_view["label"]
+    assert crawler.coverage["live_view"]["url"]
+    labels = {node.get("label") for node in crawler.coverage["app_flow_graph"]["nodes"]}
+    assert "Details" in labels or crawler._live_view["label"] in {"Sample", "Details", "Public entry", "Page"}

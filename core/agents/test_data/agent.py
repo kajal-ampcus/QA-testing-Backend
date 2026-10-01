@@ -1,16 +1,61 @@
 """
-Agent 10 — Test Data Agent (architecture doc Section 6, 20). Cross-cutting
-SERVICE, not a pipeline stage — called by Test Design and Test Execution, not
-invoked by the orchestrator directly. Generates valid/invalid/boundary/
-dependent/cleanup data against discovered field constraints. Every request
-carries a run_scope_id so created records are traceable to the exact run
-that created them, enabling precise cleanup (companion doc Part 2 #10) —
-never a "delete everything from today" heuristic.
+Agent 10 — Test Data Agent. A callable service, not a pipeline stage.
 
-Credentials/secrets are never generated or handled here — that's
-core/tool_gateway/secret_resolver.py exclusively.
-
-Phase 0 stub.
+Generates valid / invalid / boundary values from observed field names and
+roles. Credentials are never produced here.
 """
 
-# TODO (Phase 1): class TestDataAgent(BaseAgent): ...
+import re
+from typing import Any, Literal
+
+from core.agents.base import BaseAgent
+from core.agents.test_data.schemas import FieldDatum
+from schemas.envelope import AgentInputEnvelope
+
+Category = Literal["POSITIVE", "NEGATIVE", "EDGE_CASE"]
+
+
+def value_for_element(element: dict[str, Any], category: Category) -> FieldDatum:
+    name = str(element.get("name") or element.get("element_code") or "field")
+    key = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "field"
+    role_name = f"{name} {element.get('type') or ''} {element.get('role') or ''}".lower()
+    required = bool((element.get("validation") or {}).get("required"))
+    if category == "EDGE_CASE":
+        if "email" in role_name:
+            value = "  first.last+tag@sub.example.test  "
+        elif "phone" in role_name or "mobile" in role_name:
+            value = "+1 (999) 999-9999"
+        else:
+            value = "  <b>O'Brien & Co</b> " + ("x" * (64 if required else 256))
+    elif category == "POSITIVE":
+        if "email" in role_name:
+            value = "person@example.test"
+        elif "pass" in role_name:
+            value = "ValidPass1!"
+        elif "phone" in role_name or "mobile" in role_name:
+            value = "9999999999"
+        else:
+            value = "valid-input"
+    elif "email" in role_name:
+        value = "not-an-email"
+    elif "pass" in role_name:
+        value = "wrong"
+    elif "phone" in role_name or "mobile" in role_name:
+        value = "abc"
+    else:
+        value = ""
+    return FieldDatum(key=key, name=name, value=value, category=category)
+
+
+class TestDataAgent(BaseAgent[list[FieldDatum]]):
+    name = "test_data"
+
+    def for_elements(
+        self, elements: list[dict[str, Any]], category: Category
+    ) -> list[FieldDatum]:
+        return [value_for_element(element, category) for element in elements]
+
+    async def run(self, request: AgentInputEnvelope) -> list[FieldDatum]:
+        category = request.payload.get("category", "POSITIVE")
+        elements = list(request.payload.get("elements") or [])
+        return self.for_elements(elements, category)

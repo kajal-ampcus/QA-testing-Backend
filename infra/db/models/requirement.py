@@ -32,6 +32,7 @@ class Requirement(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
     current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=RequirementStatus.PENDING_APPROVAL)
+    external_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)  # e.g. a Jira key
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     versions: Mapped[list["RequirementVersion"]] = relationship(back_populates="requirement")

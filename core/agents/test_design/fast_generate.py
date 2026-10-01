@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from core.agents.test_data.agent import value_for_element
 from core.agents.test_design.schemas import StepTarget, TestCaseSpec, TestStep
 
 _FILLABLE = {"textbox", "searchbox", "spinbutton", "combobox"}
@@ -18,12 +19,15 @@ _SUBMIT = re.compile(r"\b(submit|send|save|log.?in|sign.?in|continue|next)\b", r
 
 
 def _observed(state: dict[str, Any]) -> list[dict[str, Any]]:
+    # Destructive controls (delete, pay, ...) never go into generated drafts;
+    # a tester must add those cases deliberately.
     return [
         element
         for element in state.get("elements", [])
         if element.get("element_code")
         and not element.get("disabled")
         and element.get("visible") is not False
+        and element.get("risk") != "DESTRUCTIVE"
     ]
 
 
@@ -76,19 +80,25 @@ def _primary_click(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
     return (submits or clicks or [None])[0]
 
 
-def _fill_value(element: dict[str, Any], *, valid: bool) -> tuple[str, str, str]:
-    name = str(element.get("name") or element.get("element_code") or "field")
-    key = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "field"
-    role_name = f"{name} {element.get('type') or ''} {element.get('role') or ''}".lower()
-    if "email" in role_name:
-        value = "person@example.test" if valid else "not-an-email"
-    elif "pass" in role_name:
-        value = "ValidPass1!" if valid else "wrong"
-    elif "phone" in role_name or "mobile" in role_name:
-        value = "9999999999" if valid else "abc"
-    else:
-        value = "valid-input" if valid else ""
-    return key, name, value
+def _result_state(
+    states: list[dict[str, Any]], start: dict[str, Any], click: dict[str, Any] | None
+) -> tuple[dict[str, Any], float]:
+    """The state the click is observed to lead to, with a confidence.
+
+    Only a state whose last recorded step used this control counts as its
+    result; otherwise the case asserts on the start state instead of guessing."""
+    name = str((click or {}).get("name") or "").strip().lower()
+    if len(name) >= 2:
+        for state in states:
+            path = state.get("reached_via") or []
+            if state["state_code"] != start["state_code"] and path and name in str(path[-1]).lower():
+                return state, 0.8
+    return start, 0.5
+
+
+def _fill_value(element: dict[str, Any], *, category: str) -> tuple[str, str, str]:
+    datum = value_for_element(element, category)  # type: ignore[arg-type]
+    return datum.key, datum.name, datum.value
 
 
 def _build_case(
@@ -96,19 +106,22 @@ def _build_case(
     ac: dict[str, Any],
     category: str,
     start: dict[str, Any],
-    result: dict[str, Any],
+    states: list[dict[str, Any]],
     title: str,
 ) -> TestCaseSpec | None:
     elements = _observed(start)
     fills = [element for element in elements if _usable(element, _FILLABLE)][:3]
     click = _primary_click(elements)
+    if category == "EDGE_CASE" and not fills:
+        return None  # nothing to vary; a copy of the NEGATIVE case adds no value
+    result, confidence = _result_state(states, start, click)
     valid = category == "POSITIVE"
     steps: list[TestStep] = [
         TestStep(step_number=1, action="navigate", target=_target(start)),
     ]
     test_data: dict[str, str] = {}
     for element in fills:
-        key, _name, value = _fill_value(element, valid=valid)
+        key, _name, value = _fill_value(element, category=category)
         test_data[key] = value
         steps.append(
             TestStep(
@@ -118,7 +131,7 @@ def _build_case(
                 value=f"{{{key}}}",
             )
         )
-    if click and (fills or category == "POSITIVE"):
+    if click and (fills or valid):
         steps.append(
             TestStep(
                 step_number=len(steps) + 1,
@@ -127,9 +140,15 @@ def _build_case(
             )
         )
 
-    if category == "POSITIVE" and result["state_code"] != start["state_code"]:
+    if valid and result["state_code"] != start["state_code"]:
         assert_state = result
         expected = f"The current URL includes {_url_path(result)}"
+    elif category == "EDGE_CASE":
+        assert_state = start
+        expected = (
+            f"The input is handled without an error page and the URL still includes "
+            f"{_url_path(start)} or the observed result state"
+        )
     else:
         assert_state = start
         expected = f"The current URL includes {_url_path(start)}"
@@ -144,7 +163,7 @@ def _build_case(
     if len(steps) < 2:
         return None
     label = str(ac.get("text") or ac.get("id") or "scenario")
-    kind = "succeeds" if valid else "is rejected"
+    kind = {"POSITIVE": "succeeds", "NEGATIVE": "is rejected"}.get(category, "handles boundary input")
     return TestCaseSpec(
         title=f"{label[:80]} {kind}",
         objective=f"Verify observed UI for {ac.get('id')} ({category.lower()}).",
@@ -154,7 +173,7 @@ def _build_case(
         expected_result=expected,
         test_data=test_data,
         traceability=[str(ac["id"])],
-        confidence=0.7,
+        confidence=confidence if valid else 0.6,
     )
 
 
@@ -169,24 +188,19 @@ def generate_cases_from_map(
         return []
     cases: list[TestCaseSpec] = []
     for ac in acceptance_criteria:
-        ranked = _rank_states(states, ac, requirement_title)
-        start = ranked[0]
-        result = next((state for state in ranked[1:] if state["state_code"] != start["state_code"]), start)
+        start = _rank_states(states, ac, requirement_title)[0]
         wanted = requested_categories.get(ac["id"]) if requested_categories else None
-        categories = list(wanted) if wanted else ["POSITIVE", "NEGATIVE"]
+        categories = sorted(wanted) if wanted else ["POSITIVE", "NEGATIVE"]
         for category in categories:
             if category not in {"POSITIVE", "NEGATIVE", "EDGE_CASE"}:
                 continue
             spec = _build_case(
                 ac=ac,
-                category="NEGATIVE" if category == "EDGE_CASE" else category,
+                category=category,
                 start=start,
-                result=result,
+                states=states,
                 title=requirement_title,
             )
             if spec is not None:
-                if category == "EDGE_CASE":
-                    spec.category = "EDGE_CASE"
-                    spec.title = f"{str(ac.get('text') or ac['id'])[:80]} edge case"
                 cases.append(spec)
     return cases

@@ -2,11 +2,18 @@
 
 Only Discovery and Failure Analysis may obtain Chrome DevTools MCP. Scripted
 test execution uses Playwright through a separate path in a later milestone.
+Agents import browser types and errors from here, never from mcp_clients.
 """
 
+import uuid
 from typing import Any, Protocol
 
-from core.tool_gateway.mcp_clients.chrome_devtools_client import ChromeDevToolsClient
+from core.tool_gateway.mcp_clients.chrome_devtools_client import (
+    ChromeDevToolsClient,
+    SecurityVerificationRequiredError,
+)
+
+__all__ = ["BrowserInspection", "SecurityVerificationRequiredError", "ToolGateway"]
 
 
 class BrowserInspection(Protocol):
@@ -39,8 +46,16 @@ class ToolGateway:
     _CHROME_AGENTS = frozenset({"application_discovery", "failure_analysis"})
 
     def chrome_devtools(
-        self, agent_name: str, allowed_url_pattern: str, credential_ref: str | None = None
+        self,
+        agent_name: str,
+        allowed_url_pattern: str,
+        credential_ref: str | None = None,
+        project_id: uuid.UUID | None = None,
     ) -> ChromeDevToolsClient:
         if agent_name not in self._CHROME_AGENTS:
             raise PermissionError(f"Agent {agent_name!r} has no Chrome DevTools access")
-        return ChromeDevToolsClient(allowed_url_pattern=allowed_url_pattern, credential_ref=credential_ref)
+        return ChromeDevToolsClient(
+            allowed_url_pattern=allowed_url_pattern,
+            credential_ref=credential_ref,
+            project_id=project_id,
+        )

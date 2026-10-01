@@ -56,4 +56,15 @@ def configure_logging(
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
+    # Library modules log through logging.getLogger(__name__); route them to
+    # the same service output instead of Python's handler-less root logger.
+    for package in ("core", "infra"):
+        package_logger = logging.getLogger(package)
+        package_logger.setLevel(level)
+        package_logger.propagate = False
+        for handler in list(package_logger.handlers):
+            package_logger.removeHandler(handler)
+        package_logger.addHandler(stream_handler)
+        package_logger.addHandler(file_handler)
+
     return logger

@@ -2,6 +2,7 @@
 
 import json
 import os
+import uuid
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -30,16 +31,21 @@ def encrypt_login_secret(secret: dict[str, str]) -> str:
     return _cipher().encrypt(json.dumps(secret).encode()).decode()
 
 
-async def get_login_secret(ref: str) -> dict[str, str]:
-    """Resolve and decrypt one credential only inside the browser gateway."""
+async def get_login_secret(ref: str, project_id: uuid.UUID | None = None) -> dict[str, str]:
+    """Resolve and decrypt one active credential only inside the browser gateway.
+
+    When project_id is given, a reference owned by another project does not resolve.
+    """
+    query = select(DiscoveryCredential).where(
+        DiscoveryCredential.credential_ref == ref,
+        DiscoveryCredential.active.is_(True),
+    )
+    if project_id is not None:
+        query = query.where(DiscoveryCredential.project_id == project_id)
     async with AsyncSessionLocal() as session:
-        credential = (
-            await session.execute(
-                select(DiscoveryCredential).where(DiscoveryCredential.credential_ref == ref)
-            )
-        ).scalar_one_or_none()
+        credential = (await session.execute(query)).scalar_one_or_none()
     if credential is None:
-        raise RuntimeError(f"Credential reference is not configured: {ref}")
+        raise RuntimeError(f"Credential reference is not configured for this project: {ref}")
     try:
         secret = json.loads(_cipher().decrypt(credential.encrypted_secret.encode()).decode())
     except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError) as exc:

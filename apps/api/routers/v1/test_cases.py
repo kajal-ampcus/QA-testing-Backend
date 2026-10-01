@@ -1,22 +1,29 @@
 """
 Test case endpoints — Test Design Agent (Agent 3) output.
-Includes generation trigger, list, get, and approval gate.
+Includes generation trigger, manual drafts, edits, deletion, and submission
+to the approval gate (decided through /approvals like requirements).
 """
 
 import uuid
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
+from core.agents.test_case_validation.agent import TestCaseValidationAgent
 from core.agents.test_design.agent import TestDesignAgent
+from core.agents.test_design.schemas import TestCaseSpec, TestStep
+from domain.enums import ApprovalStatus, RequirementStatus, TestCaseStatus
+from infra.db.models.agent_run import AgentRun
+from infra.db.models.approval import Approval
 from infra.db.models.project import Project
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.requirement_repo import RequirementRepository
 from infra.db.repositories.test_case_repo import TestCaseRepository
-from schemas.envelope import AgentInputEnvelope
+from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunStatus
 
 router = APIRouter(prefix="/test-cases", tags=["test-cases"])
 
@@ -48,6 +55,24 @@ class CreateTestCaseRequest(BaseModel):
         description="Optional tester notes; each line becomes a step after navigate.",
     )
     start_state_code: str | None = None
+
+
+class TestCaseRevisionRequest(BaseModel):
+    """A tester edit. Recorded as a new version; the case returns to DRAFT."""
+
+    expected_version: int = Field(ge=1)
+    title: str = Field(min_length=3, max_length=200)
+    objective: str = Field(min_length=3, max_length=800)
+    expected_result: str = Field(min_length=3, max_length=2000)
+    category: Literal["POSITIVE", "NEGATIVE", "EDGE_CASE"]
+    traceability: list[str] = Field(min_length=1, max_length=20)
+    preconditions: list[str] = Field(default_factory=list)
+    steps: list[TestStep] = Field(min_length=1, max_length=20)
+    test_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class SubmitTestCaseRequest(BaseModel):
+    expected_version: int = Field(ge=1)
 
 
 class TestStepOut(BaseModel):
@@ -88,7 +113,9 @@ class GenerateTestCasesResponse(BaseModel):
     test_cases: list[TestCaseOut]
     uncovered_acs: list[str]
     partial_pairing_acs: list[str] = []
+    pairing_gaps: list[dict[str, Any]] = []
     needs_review_test_cases: list[str] = []
+    duplicates_skipped: int = 0
     token_usage: dict | None = None
 
 
@@ -188,7 +215,8 @@ async def generate_test_cases(
     # a wrong/stale project_id sails all the way through requirement lookup
     # and the (paid) LLM call, then only fails as an opaque Postgres FK
     # violation when the generated test cases are inserted.
-    if await db.get(Project, project_id) is None:
+    project = await db.get(Project, project_id)
+    if project is None:
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
 
     agent = TestDesignAgent(
@@ -208,44 +236,76 @@ async def generate_test_cases(
             "generation_scope": body.generation_scope,
             "selected_area_ids": body.selected_area_ids,
             "selected_module_ids": body.selected_module_ids,
+            **({"credential_ref": project.credential_ref} if project.credential_ref else {}),
         },
     )
 
     try:
         result = await agent.run(envelope_input)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        # LLM call failed after retries/schema-repair (infra/llm/*) — a real
-        # upstream failure, not a client input problem, so 502 not 422/500.
-        raise HTTPException(status_code=502, detail=f"Test case generation failed: {exc}") from exc
     except Exception as exc:
-        # Catch SDK-level errors that aren't wrapped as RuntimeError:
-        # e.g. openai.NotFoundError (unknown model), openai.AuthenticationError
-        # (bad API key), anthropic.AuthenticationError, etc. These are all
-        # provider-config problems, not server bugs — surface as 502 with a
-        # meaningful message instead of letting FastAPI emit an opaque 500.
-        exc_type = type(exc).__name__
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"LLM provider error ({exc_type}): {exc}. "
-                "Check LLM_PROVIDER, LLM_MODEL, LLM_BASE_URL, and LLM_API_KEY in qa-platform/.env."
+        if isinstance(exc, ValueError):
+            # Input/state problems (requirement not approved, no map, ...).
+            error = HTTPException(status_code=422, detail=str(exc))
+        elif isinstance(exc, RuntimeError):
+            # LLM call failed after retries/schema-repair (infra/llm/*) — a real
+            # upstream failure, not a client input problem, so 502 not 422/500.
+            error = HTTPException(status_code=502, detail=f"Test case generation failed: {exc}")
+        else:
+            # SDK-level errors that aren't wrapped as RuntimeError, e.g. an
+            # unknown model or a bad API key: provider-config problems.
+            error = HTTPException(
+                status_code=502,
+                detail=(
+                    f"LLM provider error ({type(exc).__name__}): {exc}. "
+                    "Check LLM_PROVIDER, LLM_MODEL, LLM_BASE_URL, and LLM_API_KEY in .env."
+                ),
+            )
+        await db.rollback()
+        _record_run(
+            db,
+            envelope_input,
+            AgentOutputEnvelope(
+                agent_run_id=envelope_input.agent_run_id,
+                status=AgentRunStatus.FAILED,
+                errors=[str(error.detail)[:2000]],
             ),
-        ) from exc
+        )
+        await db.commit()
+        raise error from exc
 
+    _record_run(db, envelope_input, result.envelope)
+    await db.commit()
 
-    # Build response from persisted test cases
+    # Only the cases this run created; earlier drafts are available from the list endpoint.
+    created_ids = {uuid.UUID(ref.id) for ref in result.envelope.artifacts if ref.type == "test_case"}
     pairs = await tc_repo.list_for_requirement(body.requirement_id)
-    test_case_outs = [_to_out(tc, v) for tc, v in pairs]
+    test_case_outs = [_to_out(tc, v) for tc, v in pairs if tc.id in created_ids]
 
     return GenerateTestCasesResponse(
-        generated=len(result.test_cases),
+        generated=len(test_case_outs),
         test_cases=test_case_outs,
         uncovered_acs=result.uncovered_acs,
         partial_pairing_acs=result.partial_pairing_acs,
+        pairing_gaps=result.pairing_gaps,
         needs_review_test_cases=result.needs_review_test_cases,
+        duplicates_skipped=result.duplicates_skipped,
         token_usage=result.envelope.token_usage,
+    )
+
+
+def _record_run(
+    db: AsyncSession, request: AgentInputEnvelope, output: AgentOutputEnvelope
+) -> None:
+    db.add(
+        AgentRun(
+            id=request.agent_run_id,
+            project_id=request.project_id,
+            agent_name=TestDesignAgent.name,
+            status=output.status,
+            input_envelope=request.model_dump(mode="json"),
+            output_envelope=output.model_dump(mode="json"),
+            finished_at=datetime.now(UTC),
+        )
     )
 
 
@@ -267,7 +327,8 @@ async def create_test_case(
     db: AsyncSession = Depends(get_db_session),
 ) -> TestCaseOut:
     """Save a tester-authored draft, including edge cases the generator missed."""
-    if await db.get(Project, project_id) is None:
+    project = await db.get(Project, project_id)
+    if project is None:
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
 
     req_repo = RequirementRepository(db)
@@ -280,6 +341,8 @@ async def create_test_case(
     requirement, version = pair
     if requirement.project_id != project_id:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    if requirement.status == RequirementStatus.REJECTED:
+        raise HTTPException(status_code=409, detail="Requirement was rejected; revise it first")
 
     ac_ids = {str(item.get("id")) for item in (version.acceptance_criteria or []) if item.get("id")}
     unknown = [ac_id for ac_id in body.traceability if ac_id not in ac_ids]
@@ -335,10 +398,131 @@ async def create_test_case(
             "category": body.category,
             "confidence": 1.0,
         },
+        credential_ref=project.credential_ref,
     )
     out = _to_out(test_case, current)
     await db.commit()
     return out
+
+
+async def _load_for_change(
+    tc_repo: TestCaseRepository, test_case_id: uuid.UUID, expected_version: int
+):
+    pair = await tc_repo.get_with_current_version(test_case_id, for_update=True)
+    if pair is None:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    if pair[0].current_version != expected_version:
+        raise HTTPException(status_code=409, detail="Test case version changed; reload it first")
+    return pair
+
+
+@router.post("/{test_case_id}/revisions", response_model=TestCaseOut, status_code=201)
+async def revise_test_case(
+    test_case_id: uuid.UUID,
+    body: TestCaseRevisionRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> TestCaseOut:
+    """Edit a draft. The edit is checked against the application map and the
+    requirement's current acceptance criteria, and re-bases an OUTDATED case
+    onto the current requirement version."""
+    tc_repo = TestCaseRepository(db)
+    test_case, _ = await _load_for_change(tc_repo, test_case_id, body.expected_version)
+    if test_case.status == TestCaseStatus.APPROVED:
+        raise HTTPException(
+            status_code=409, detail="Approved test cases are immutable; create a new draft instead"
+        )
+    requirement_pair = await RequirementRepository(db).get_with_current_version(
+        test_case.requirement_id
+    )
+    app_map = await ApplicationMapRepository(db).get_with_states(test_case.application_map_id)
+    if requirement_pair is None or app_map is None:
+        raise HTTPException(status_code=409, detail="Requirement or application map no longer exists")
+    requirement, requirement_version = requirement_pair
+    ac_ids = {str(ac["id"]) for ac in requirement_version.acceptance_criteria if ac.get("id")}
+    steps = [
+        step.model_copy(update={"step_number": index})
+        for index, step in enumerate(body.steps, start=1)
+    ]
+    version_data: dict[str, Any] = {
+        "title": body.title.strip(),
+        "objective": body.objective.strip(),
+        "preconditions": [item.strip() for item in body.preconditions if item.strip()],
+        "steps": [step.model_dump(mode="json") for step in steps],
+        "expected_result": body.expected_result.strip(),
+        "test_data": body.test_data,
+        "traceability": body.traceability,
+        "category": body.category,
+        "confidence": 1.0,
+    }
+    try:
+        spec = TestCaseSpec.model_validate(version_data)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+    map_states = [
+        {"state_code": s.state_code, "url_pattern": s.url_pattern, "elements": s.elements}
+        for s in app_map.states
+    ]
+    issues = TestCaseValidationAgent().issues_for(spec, map_states, ac_ids)
+    if issues:
+        raise HTTPException(status_code=422, detail=issues)
+    version = await tc_repo.append_version(test_case, version_data)
+    test_case.requirement_version = requirement.current_version
+    await db.commit()
+    return _to_out(test_case, version)
+
+
+@router.post("/{test_case_id}/submit", response_model=TestCaseOut)
+async def submit_test_case(
+    test_case_id: uuid.UUID,
+    body: SubmitTestCaseRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> TestCaseOut:
+    """Send the current version to the approval gate (decided via /approvals)."""
+    tc_repo = TestCaseRepository(db)
+    test_case, version = await _load_for_change(tc_repo, test_case_id, body.expected_version)
+    if test_case.status not in {TestCaseStatus.DRAFT, TestCaseStatus.REJECTED}:
+        raise HTTPException(
+            status_code=409, detail=f"Only DRAFT or REJECTED cases can be submitted (is {test_case.status})"
+        )
+    requirement_pair = await RequirementRepository(db).get_with_current_version(
+        test_case.requirement_id
+    )
+    if requirement_pair is None or requirement_pair[0].status != RequirementStatus.APPROVED:
+        raise HTTPException(status_code=409, detail="Approve the requirement before this test case")
+    if test_case.requirement_version != requirement_pair[0].current_version:
+        raise HTTPException(
+            status_code=409,
+            detail="The requirement changed after this case was written; edit or regenerate it first",
+        )
+    await tc_repo.supersede_pending_approvals(test_case.id, "Superseded by a new submission")
+    db.add(
+        Approval(
+            project_id=test_case.project_id,
+            target_type="test_case",
+            target_id=test_case.id,
+            target_version=test_case.current_version,
+            status=ApprovalStatus.PENDING,
+        )
+    )
+    test_case.status = TestCaseStatus.PENDING_APPROVAL
+    await db.commit()
+    return _to_out(test_case, version)
+
+
+@router.delete("/{test_case_id}", status_code=204)
+async def delete_test_case(
+    test_case_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db_session),
+) -> Response:
+    tc_repo = TestCaseRepository(db)
+    pair = await tc_repo.get_with_current_version(test_case_id, for_update=True)
+    if pair is None:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    if pair[0].status == TestCaseStatus.APPROVED:
+        raise HTTPException(status_code=409, detail="Approved test cases cannot be deleted")
+    await tc_repo.delete(pair[0])
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/{test_case_id}", response_model=TestCaseOut)

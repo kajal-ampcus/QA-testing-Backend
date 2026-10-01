@@ -4,6 +4,7 @@ import json
 import re
 from contextlib import suppress
 from typing import Any
+from urllib.parse import urldefrag
 
 _NODE = re.compile(
     r'uid=(\S+)\s+(\S+)\s+"(.*?)"(?=\s*(?:$|[A-Za-z][\w-]*='
@@ -39,3 +40,28 @@ def parse_elements(snapshot: object) -> list[dict[str, Any]]:
                 node[flag] = True
         nodes.append(node)
     return nodes
+
+
+def merge_dom_hrefs(nodes: list[dict[str, Any]], extras: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add same-origin <a href> targets that the accessibility snapshot omitted."""
+    existing = {
+        urldefrag(str(node.get("url") or ""))[0].rstrip("/")
+        for node in nodes
+        if node.get("url")
+    }
+    merged = list(nodes)
+    for extra in extras:
+        url = str(extra.get("url") or "")
+        if not url:
+            continue
+        key = urldefrag(url)[0].rstrip("/")
+        if not key or key in existing:
+            continue
+        existing.add(key)
+        name = str(extra.get("name") or "").strip()
+        merged.append({
+            "role": "link",
+            "name": name,
+            "url": url,
+        })
+    return merged

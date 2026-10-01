@@ -20,10 +20,10 @@ from core.agents.application_discovery.parallel_crawler import ParallelCrawler
 from core.agents.application_discovery.schemas import DiscoveryPayload
 from core.agents.base import BaseAgent
 from core.tool_gateway.gateway import ToolGateway
+from core.tool_gateway.secret_resolver import resolve_login_url
 from domain.enums import EvidenceSource, RequirementStatus
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.requirement_repo import RequirementRepository
-from infra.secrets.vault_client import get_login_secret
 from schemas.envelope import (
     AgentArtifactRef,
     AgentDecision,
@@ -61,6 +61,20 @@ def _human_termination(reason: str | None) -> str:
     }.get(reason or "", reason or "Unknown reason.")
 
 
+_WORKER_TIMEOUT_MARGIN_SECONDS = 60
+
+
+def _duration_within_worker_timeout(requested_seconds: int) -> int:
+    """The worker cancels a job at WORKER_JOB_TIMEOUT. Stopping the crawl first
+    lets it finish normally with MAX_DURATION_REACHED and a saved checkpoint."""
+    try:
+        worker_timeout = int(os.environ.get("WORKER_JOB_TIMEOUT", "1200"))
+    except ValueError:
+        worker_timeout = 1200
+    ceiling = max(1, worker_timeout - _WORKER_TIMEOUT_MARGIN_SECONDS)
+    return max(1, min(requested_seconds, ceiling))
+
+
 def _select_auth_flow(
     checkpoint: dict[str, Any] | None, requested_flow_id: str | None
 ) -> tuple[str | None, dict[str, Any] | None]:
@@ -94,6 +108,9 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         self._map_repo = map_repo
         self._requirement_repo = requirement_repo
         self._tool_gateway = tool_gateway or ToolGateway()
+        # Set as soon as this run owns a map, so failure handling updates the
+        # map this run was writing rather than whichever map is newest.
+        self.application_map_id: uuid.UUID | None = None
 
     async def _resolve_keywords(
         self, project_id: uuid.UUID, focus_requirements: list[str]
@@ -124,20 +141,13 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             )
         return keywords
 
-    async def _get_login_url(self, credential_ref: str | None, base_url: str) -> str:
-        if not credential_ref:
-            return base_url
-        try:
-            secret = await get_login_secret(credential_ref)
-            return secret.get("login_url", base_url)
-        except Exception:
-            return base_url
-
     async def run(self, request: AgentInputEnvelope) -> AgentOutputEnvelope:
         payload = DiscoveryPayload.model_validate(request.payload)
         keywords = await self._resolve_keywords(request.project_id, payload.focus_requirements)
 
-        login_url = await self._get_login_url(payload.target.credential_ref, payload.target.url)
+        login_url = await resolve_login_url(
+            payload.target.credential_ref, request.project_id, payload.target.url
+        )
 
         checkpoint: dict[str, Any] | None = None
         if payload.resume_application_map_id:
@@ -219,6 +229,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 checkpoint["graph"]["nodes"] = list(checkpoint_nodes.values())
                 app_map.status = "RUNNING"
                 app_map.termination_reason = None
+        self.application_map_id = app_map.id
         await self._map_repo.session.commit()
 
         automatic_limits = payload.crawl_budget.automatic_limits
@@ -231,7 +242,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 int(os.environ.get("DISCOVERY_AUTO_MAX_DEPTH", "50"))
                 if automatic_limits else payload.crawl_budget.max_depth
             ),
-            max_duration_seconds=(
+            max_duration_seconds=_duration_within_worker_timeout(
                 int(os.environ.get("DISCOVERY_AUTO_MAX_DURATION_SECONDS", "21600"))
                 if automatic_limits else payload.crawl_budget.max_duration_seconds
             ),
@@ -262,7 +273,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
 
         status = "FAILED"
         error_message: str | None = None
-        crawler: Crawler | None = None
+        crawler: ParallelCrawler | None = None
 
         # ── Diagnostic evidence collected during the crawl ────────────────
         # Captured from the crawler and client on failure or partial result.
@@ -324,7 +335,10 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 )
             crawler = ParallelCrawler(
                     client_factory=lambda: self._tool_gateway.chrome_devtools(
-                        self.name, payload.target.url, payload.target.credential_ref
+                        self.name,
+                        payload.target.url,
+                        payload.target.credential_ref,
+                        request.project_id,
                     ),
                     budget=budget,
                     keywords=keywords,

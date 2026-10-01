@@ -3,19 +3,31 @@
 import pytest
 
 from core.tool_gateway.mcp_clients.chrome_devtools_client import (
-    ApplicationReadinessTimeoutError,
     ChromeDevToolsClient,
     SecurityVerificationRequiredError,
+    _authenticated_session_visible,
+    _authentication_completed,
     _find_submit_uid,
     _find_uid,
-    _authenticated_session_visible,
-    _login_form_visible,
     _is_hosting_cold_start_page,
     _is_security_verification_page,
+    _login_form_visible,
     _same_site_allowed_patterns,
     _solve_math_captcha,
     _svg_captcha_text,
 )
+
+
+@pytest.mark.parametrize("snapshot, expected", [
+    ('uid=1_1 button "Logout"\nuid=1_2 link "Change password"', True),
+    ('uid=1_1 textbox "Password"\nuid=1_2 button "Login"', False),
+    ('uid=1_1 StaticText "Loading"', False),
+    ('uid=1_1 StaticText "Invalid password"', False),
+    ('uid=1_1 button "Sign out"', True),
+    ('uid=1_1 button "Logout"\nuid=1_2 textbox "New password"', True),
+])
+def test_authentication_completion_uses_controls(snapshot, expected):
+    assert _authentication_completed(snapshot) is expected
 
 
 def test_math_captcha_supports_unicode_minus():
@@ -167,6 +179,7 @@ async def test_visible_login_text_extracts_inline_svg_captcha(monkeypatch):
 async def test_svg_blob_challenge_is_read_in_browser():
     """Exercise the actual reader, including split digits and blob replacement."""
     import shutil
+
     from playwright.async_api import async_playwright
 
     executable = shutil.which("chromium")
@@ -388,13 +401,11 @@ async def test_readiness_waits_for_math_captcha_even_when_form_is_usable():
             'uid=1_0 RootWebArea "Login" url="https://cafinity.example/login"\n'
             'uid=1_1 textbox "Employee ID"\n'
             'uid=1_2 textbox "Password"\n'
-            'uid=1_5 StaticText "4 - 2 = ?"\n'
             'uid=1_3 textbox "Enter the answer"\n'
             'uid=1_4 button "LOGIN"',
             'uid=1_0 RootWebArea "Login" url="https://cafinity.example/login"\n'
             'uid=1_1 textbox "Employee ID"\n'
             'uid=1_2 textbox "Password"\n'
-            'uid=1_5 StaticText "4 - 2 = ?"\n'
             'uid=1_3 textbox "Enter the answer"\n'
             'uid=1_4 button "LOGIN"',
         ],
@@ -409,7 +420,8 @@ async def test_readiness_waits_for_math_captcha_even_when_form_is_usable():
 
 
 @pytest.mark.asyncio
-async def test_authenticate_selects_employee_role_and_solves_captcha_after_fill(monkeypatch):
+@pytest.mark.parametrize("account_actions", ["", '\nuid=2_2 button "Logout"\nuid=2_3 link "Change password"'])
+async def test_authenticate_selects_employee_role_and_solves_captcha_after_fill(monkeypatch, account_actions):
     client = ChromeDevToolsClient()
     client._credential_ref = "cred:employee"
     clicks: list[str] = []
@@ -438,6 +450,7 @@ async def test_authenticate_selects_employee_role_and_solves_captcha_after_fill(
         "uid=2_1 heading \"Welcome\""
     )
     state = {"page": "login"}
+    dashboard += account_actions
 
     def current_snapshot() -> str:
         if state["page"] == "home":
@@ -446,7 +459,7 @@ async def test_authenticate_selects_employee_role_and_solves_captcha_after_fill(
             return login_after_role
         return login_before_role
 
-    async def resolve_login(_ref):
+    async def resolve_login(_ref, _project_id=None):
         return {"username": "EMP001", "password": "secret", "account_role": "Employee"}
 
     async def take_snapshot():

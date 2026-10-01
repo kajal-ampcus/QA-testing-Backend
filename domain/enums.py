@@ -65,6 +65,16 @@ class RequirementStatus(StrEnum):
     PENDING_APPROVAL = "PENDING_APPROVAL"
     NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
     APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class TestCaseStatus(StrEnum):
+    DRAFT = "DRAFT"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    # The requirement moved to a newer version after this case was written.
+    OUTDATED = "OUTDATED"
 
 
 class RiskLevel(StrEnum):

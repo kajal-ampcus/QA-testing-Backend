@@ -12,7 +12,9 @@ RUN pip install --no-cache-dir .
 COPY alembic.ini ./
 COPY alembic/ alembic/
 COPY scripts/docker_entrypoint.py scripts/docker_entrypoint.py
-RUN useradd --create-home --uid 10001 qa
+RUN useradd --create-home --uid 10001 qa \
+    && mkdir -p /app/artifacts/discovery /app/logs \
+    && chown -R qa:qa /app/artifacts /app/logs
 USER qa
 ENTRYPOINT ["python", "scripts/docker_entrypoint.py"]
 CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

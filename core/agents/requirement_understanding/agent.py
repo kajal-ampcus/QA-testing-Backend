@@ -41,8 +41,13 @@ class RequirementUnderstandingAgent(BaseAgent[RequirementUnderstandingResult]):
             tool_name="extract_requirement",
         )
         extraction = RequirementExtraction.model_validate(llm_result.data)
+        # Criterion ids are used as edit and traceability keys, so they must be
+        # unique; models occasionally repeat or skip numbers.
+        for index, criterion in enumerate(extraction.acceptance_criteria, start=1):
+            criterion.id = f"AC-{index}"
 
-        needs_clarification = len(extraction.ambiguities) > 0
+        blocking = [a for a in extraction.ambiguities if a.requires_clarification]
+        needs_clarification = len(blocking) > 0
         # Confidence here is a simple, honest proxy for Milestone 1 — Section 22's
         # full evidence-agreement-based scoring (core/confidence/scoring.py) isn't
         # wired in yet; this is not meant to be the final confidence model.
@@ -50,7 +55,7 @@ class RequirementUnderstandingAgent(BaseAgent[RequirementUnderstandingResult]):
 
         evidence = [f"raw_text[:200]={raw_text[:200]!r}"]
         if needs_clarification:
-            evidence.append(f"{len(extraction.ambiguities)} ambiguity(ies) flagged by the model")
+            evidence.append(f"{len(blocking)} blocking ambiguity(ies) flagged by the model")
 
         decision = AgentDecision(
             decision=(

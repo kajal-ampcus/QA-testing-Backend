@@ -1,6 +1,13 @@
-"""
-Payload/artifact schemas for Test Data — field_constraints/data_class/
-run_scope_id in; test_data[]/cleanup_required out. See companion doc Part 2 #10.
+"""Named values generated against an observed field, never credentials."""
 
-Phase 0 stub.
-"""
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class FieldDatum(BaseModel):
+    key: str
+    name: str
+    value: str
+    category: Literal["POSITIVE", "NEGATIVE", "EDGE_CASE"]
+    source: str = Field(default="OBSERVED_DOM")

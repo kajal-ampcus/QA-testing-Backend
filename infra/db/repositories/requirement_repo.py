@@ -43,9 +43,14 @@ class RequirementRepository(BaseRepository):
         raw_text: str,
         extraction: Any,  # validated agent output, kept out of infra's import graph
         status: RequirementStatus,
+        external_ref: str | None = None,
     ) -> tuple[Requirement, RequirementVersion]:
         requirement = Requirement(
-            project_id=project_id, req_code=req_code, current_version=1, status=status
+            project_id=project_id,
+            req_code=req_code,
+            current_version=1,
+            status=status,
+            external_ref=external_ref,
         )
         self.session.add(requirement)
         await self.session.flush()  # assigns requirement.id without committing
@@ -93,8 +98,12 @@ class RequirementRepository(BaseRepository):
         current: RequirementVersion,
         resolutions: list[tuple[dict[str, Any], str]],
         resolved_by: str,
+        remaining_ambiguities: list[dict[str, Any]] | None = None,
     ) -> RequirementVersion:
-        """Record tester decisions as a new immutable version, without another LLM pass."""
+        """Record tester decisions as a new immutable version, without another LLM pass.
+
+        `remaining_ambiguities` carries informational (non-blocking) items the
+        tester chose not to resolve."""
         next_version = requirement.current_version + 1
         entries = [
             f"{index}. {ambiguity['field']}: {decision} (resolves: {ambiguity['issue']})"
@@ -119,7 +128,7 @@ class RequirementRepository(BaseRepository):
             title=current.title,
             description=current.description + "\n\nTester clarifications:\n" + "\n".join(entries),
             acceptance_criteria=[*current.acceptance_criteria, *criteria],
-            ambiguities=[],
+            ambiguities=list(remaining_ambiguities or []),
             domain_tags=list(current.domain_tags),
         )
         self.session.add(version)

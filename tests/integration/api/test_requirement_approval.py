@@ -181,11 +181,21 @@ def test_discovery_accepts_explicit_target_for_project(
 
     queued: list[dict[str, Any]] = []
 
-    async def fake_enqueue(function_name: str, project_id: str, payload: dict[str, Any]) -> str:
+    async def fake_enqueue(
+        function_name: str, project_id: str, payload: dict[str, Any], job_id: str | None = None
+    ) -> str:
         queued.append(payload)
         return "test-job"
 
+    async def allow_target(_url: str) -> None:
+        pass
+
+    async def claim_slot(_project_id: uuid.UUID) -> str:
+        return "test-job"
+
     monkeypatch.setattr(application_maps, "enqueue", fake_enqueue)
+    monkeypatch.setattr(application_maps, "_check_target", allow_target)
+    monkeypatch.setattr(application_maps, "_claim_discovery_slot", claim_slot)
     project = client.post(
         "/api/v1/projects",
         json={"name": "Target project", "application_url": "https://chatgpt.com/"},
@@ -206,6 +216,7 @@ def test_discovery_accepts_explicit_target_for_project(
     assert queued[0]["discovery_scope"] == {
         "mode": "deep",
         "selected_auth_flow": None,
+        "selected_auth_flows": [],
         "selected_areas": ["dashboard"],
         "selected_modules": ["users", "reports"],
     }

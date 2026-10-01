@@ -1,6 +1,7 @@
 """Container configuration must preserve secrets and support unattended browser startup."""
 
 import os
+from pathlib import Path
 
 from sqlalchemy.engine import make_url
 
@@ -74,3 +75,25 @@ def test_url_allowlist_keeps_blank_and_chrome_pages(monkeypatch):
     assert "https://sample.test/*" in patterns
     assert "about:*" in patterns
     assert "chrome://*" in patterns
+
+
+def test_compose_shares_discovery_evidence_between_api_and_worker():
+    compose = Path(__file__).resolve().parents[3] / "compose.yaml"
+    text = compose.read_text(encoding="utf-8")
+    evidence = "./artifacts/discovery:/app/artifacts/discovery"
+    assert "DISCOVERY_EVIDENCE_DIR: /app/artifacts/discovery" in text
+    assert text.count(evidence) >= 2
+    assert "host.docker.internal:host-gateway" in text
+    assert "VITE_API_KEY: ${VITE_API_KEY:-${API_KEY:-}}" in text
+    frontend_dockerfile = (
+        Path(__file__).resolve().parents[4] / "QA-testing-Frontend" / "Dockerfile"
+    )
+    frontend = frontend_dockerfile.read_text(encoding="utf-8")
+    assert "ARG VITE_API_KEY=" in frontend
+    nginx = (frontend_dockerfile.parent / "nginx.conf").read_text(encoding="utf-8")
+    assert "X-API-Key" in nginx
+    assert "Authorization" in nginx
+    api_dockerfile = Path(__file__).resolve().parents[3] / "deploy" / "docker" / "Dockerfile.api"
+    assert "/app/artifacts/discovery" in api_dockerfile.read_text(encoding="utf-8")
+    worker_dockerfile = Path(__file__).resolve().parents[3] / "deploy" / "docker" / "Dockerfile.worker"
+    assert "/app/artifacts/discovery" in worker_dockerfile.read_text(encoding="utf-8")

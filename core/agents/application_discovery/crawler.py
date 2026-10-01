@@ -25,6 +25,7 @@ FIXES IN THIS VERSION:
 """
 
 import json
+import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -33,11 +34,22 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urldefrag, urljoin, urlparse
 
-from core.agents.application_discovery.fingerprint import compute_fingerprint, normalize_url_pattern
+from core.agents.application_discovery.fingerprint import (
+    canonical_route,
+    compute_fingerprint,
+    gated_probe_kind,
+    is_chrome_label,
+    is_collection_mutation_action,
+    is_gated_reveal_action,
+    is_in_page_content_control,
+    repeated_in_page_control,
+)
 from core.policy_safety.destructive_action_lexicon import classify_risk
 from core.tool_gateway.gateway import BrowserInspection
 from core.tool_gateway.snapshot import parse_elements
 from domain.enums import EvidenceSource, RiskLevel
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -167,6 +179,15 @@ def _is_transient_widget_control(role: str, name: str) -> bool:
     }
 
 
+def _is_chrome_navigation_control(role: str, name: str, destination: str | None) -> bool:
+    """Skip shell toggles such as Menu that do not navigate to a new screen."""
+    if destination:
+        return False
+    if role not in {"button", "menuitem"}:
+        return False
+    return is_chrome_label(name)
+
+
 def _normalized_accessible_name(name: str) -> str:
     return " ".join(name.casefold().split())
 
@@ -193,6 +214,8 @@ class Crawler:
         self._failures: list[dict[str, str]] = []
         self._skipped: set[str] = set()
         self._visited_fingerprints: set[str] = set()
+        self._reveal_probed = False
+        self._collection_follow_queued = False
         self.termination_reason: str = "EXPLORATION_EXHAUSTED"
         self.coverage: dict[str, Any] = {}
 
@@ -272,11 +295,11 @@ class Crawler:
         # STEP 1: Clear cookies only once at the beginning of Phase 1
         # ---------------------------------------------------------
         if clear_session:
-            print("[crawler] Clearing browser cookies...")
+            logger.info("[crawler] Clearing browser cookies...")
 
             try:
                 await self._client.clear_cookies()
-                print("[crawler] Browser cookies cleared")
+                logger.info("[crawler] Browser cookies cleared")
 
             except Exception as exc:
                 detail = str(exc)
@@ -287,7 +310,7 @@ class Crawler:
                         f"{type(exc).__name__}: {detail}"
                     ) from exc
 
-                print(
+                logger.warning(
                     "[crawler] WARNING: clear_cookies failed: "
                     f"{type(exc).__name__}: {detail[:300]}"
                 )
@@ -310,7 +333,7 @@ class Crawler:
         # Remove duplicates while preserving order
         candidates = list(dict.fromkeys(candidates))
 
-        print(f"[crawler] Login candidates: {candidates}")
+        logger.info(f"[crawler] Login candidates: {candidates}")
 
         last_snapshot: object | None = None
 
@@ -319,24 +342,24 @@ class Crawler:
         # ---------------------------------------------------------
         for url in candidates:
 
-            print(f"[crawler] Navigating to: {url}")
+            logger.info(f"[crawler] Navigating to: {url}")
 
             try:
                 await self._client.navigate_page(url)
 
-                print(
+                logger.info(
                     f"[crawler] Navigation completed: {url}"
                 )
 
                 await self._client.wait_until_ready()
 
-                print(
+                logger.info(
                     f"[crawler] Page ready: {url}"
                 )
 
                 last_snapshot = await self._client.take_snapshot()
 
-                print(
+                logger.info(
                     f"[crawler] Snapshot captured: {url}"
                 )
 
@@ -357,7 +380,7 @@ class Crawler:
                 # ---------------------------------------------
                 # Normal navigation failure
                 # ---------------------------------------------
-                print(
+                logger.warning(
                     f"[crawler] Browser operation failed for {url}: "
                     f"{type(exc).__name__}: {detail[:300]}"
                 )
@@ -370,12 +393,12 @@ class Crawler:
             text = _snapshot_text(last_snapshot)
 
             if _looks_like_login_page(text):
-                print(
+                logger.info(
                     f"[crawler] Successfully landed on login page: {url}"
                 )
                 return last_snapshot
 
-            print(
+            logger.info(
                 f"[crawler] {url} did not look like a login page."
             )
 
@@ -385,7 +408,7 @@ class Crawler:
         # ---------------------------------------------------------
         if last_snapshot is not None:
 
-            print(
+            logger.warning(
                 "[crawler] WARNING: Could not confirm login page. "
                 "Using last captured snapshot."
             )
@@ -480,6 +503,8 @@ class Crawler:
             # controls were excluded from the discovery frontier.
             if _is_transient_widget_control(step.role, step.name):
                 continue
+            if _is_chrome_navigation_control(step.role, step.name, step.url):
+                continue
             if step.role == "link" and step.url:
                 await self._client.navigate_page(step.url)
                 await self._client.wait_until_ready()
@@ -491,7 +516,7 @@ class Crawler:
                     el
                     for el in elements
                     if el["role"] == step.role
-                    and _normalized_accessible_name(el["name"])
+                    and _normalized_accessible_name(el["name"] or el.get("description", ""))
                     == _normalized_accessible_name(step.name)
                     and (not step.url or el.get("url") == step.url)
                 ),
@@ -520,7 +545,7 @@ class Crawler:
         state_url = current_url or self._base_url
 
         if _is_external(current_url, self._base_url):
-            print(f"[crawler] Skipping external URL: {current_url}")
+            logger.info(f"[crawler] Skipping external URL: {current_url}")
             return None, []
 
         raw_elements = _parse_elements(snapshot)
@@ -546,13 +571,13 @@ class Crawler:
         fingerprint = compute_fingerprint(state_url, "\n".join(json.dumps(el, sort_keys=True) for el in semantic))
         self._current_fingerprint = fingerprint
         if fingerprint in self._visited_fingerprints:
-            print(f"[crawler] Already visited: {state_url} (fingerprint match)")
+            logger.info(f"[crawler] Already visited: {state_url} (fingerprint match)")
             # Phase 2 may start on the same public page as Phase 1. Keep its
             # controls available for the broader navigation policy without
             # persisting or counting that state twice.
             return None, _parse_elements(snapshot)
         if not raw_elements:
-            print(f"[crawler] WARNING: snapshot at {state_url} had no elements — skipping state")
+            logger.warning(f"[crawler] WARNING: snapshot at {state_url} had no elements — skipping state")
             return None, []
         self._visited_fingerprints.add(fingerprint)
 
@@ -585,12 +610,12 @@ class Crawler:
         console_errors, network_requests, screenshot = await self._capture_debug_signals()
         all_elements = self._build_elements(classified, console_errors, network_requests)
 
-        print(
+        logger.info(
             f"[crawler] Recorded state: {state_url} ({len(classified)} elements, path depth {len(path)})"
         )
         await on_state_discovered(
             {
-                "url_pattern": normalize_url_pattern(state_url),
+                "url_pattern": canonical_route(state_url),
                 "fingerprint": fingerprint,
                 "reached_via": [
                     (
@@ -614,6 +639,8 @@ class Crawler:
         self._visited_fingerprints.clear()
         self._failures.clear()
         self._skipped.clear()
+        self._reveal_probed = False
+        self._collection_follow_queued = False
         queued_link_destinations: set[str] = set()
         started = time.monotonic()
         actions_examined = 0
@@ -662,11 +689,11 @@ class Crawler:
                 if "BROWSER_CONNECTION_LOST" in detail:
                     termination = "BROWSER_CONNECTION_LOST"
 
-                    print(
+                    logger.error(
                         "[crawler] FATAL: Browser/MCP connection was closed."
                     )
 
-                    print(
+                    logger.info(
                         f"[crawler] Detail: {detail[:500]}"
                     )
 
@@ -675,7 +702,7 @@ class Crawler:
                 # ---------------------------------------------------------
                 # Normal phase failure
                 # ---------------------------------------------------------
-                print(
+                logger.warning(
                     f"[crawler] Phase failed: "
                     f"{failure['error']} - {failure['detail']}"
                 )
@@ -689,6 +716,7 @@ class Crawler:
                 nodes: list[dict[str, Any]],
                 path: list[ClickStep],
                 *,
+                force: bool = False,
                 expanded: set[str] = expanded,
                 queued: set[tuple[str, str, str, str]] = queued,
                 queue: list[QueueItem] = queue,
@@ -698,7 +726,7 @@ class Crawler:
                 if not nodes:
                     return
                 fingerprint = self._current_fingerprint
-                if fingerprint in expanded:
+                if fingerprint in expanded and not force:
                     return
                 expanded.add(fingerprint)
                 root = next((e for e in nodes if e.get("role") == "RootWebArea"), {})
@@ -717,6 +745,8 @@ class Crawler:
                         continue
                     if _is_transient_widget_control(role, name):
                         continue
+                    if _is_chrome_navigation_control(role, name, el.get("url")):
+                        continue
                     if el.get("disabled") or el.get("visible") is False:
                         continue
                     destination = el.get("url")
@@ -732,6 +762,9 @@ class Crawler:
                         if canonical_destination in queued_link_destinations:
                             continue
                         queued_link_destinations.add(canonical_destination)
+                    probe_kind = gated_probe_kind(
+                        name, el.get("description"), destination or el.get("url"), current_url
+                    )
                     # Never send messages, submit forms, log out, or mutate records
                     # as an incidental discovery action. Authentication is explicit.
                     safe_link_navigation = role == "link" and bool(destination)
@@ -742,11 +775,45 @@ class Crawler:
                             re.I,
                         )
                     )
-                    if (
+                    blocked_mutation = bool(
+                        re.search(
+                            r"\b(log.?out|sign.?out|delete|purchase|checkout|payment|transfer|withdraw)\b",
+                            " ".join(
+                                filter(
+                                    None,
+                                    [name, str(destination or ""), str(el.get("description") or "")],
+                                )
+                            ),
+                            re.I,
+                        )
+                    )
+                    icon_collection = probe_kind == "collection" and not str(name or "").strip()
+                    if icon_collection and (
+                        classify_risk(role, name or "cart") == RiskLevel.DESTRUCTIVE
+                        or blocked_mutation
+                        or el.get("input_type") == "submit"
+                    ):
+                        self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
+                        continue
+                    if not icon_collection and (
                         classify_risk(role, name) == RiskLevel.DESTRUCTIVE
+                        or is_collection_mutation_action(name)
                         or (named_form_action and not safe_link_navigation)
                         or el.get("input_type") == "submit"
                     ):
+                        self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
+                        continue
+                    in_page = is_in_page_content_control(role, name, el.get("url"), current_url)
+                    repeated = not destination and repeated_in_page_control(name, nodes)
+                    if probe_kind == "reveal":
+                        if self._reveal_probed:
+                            self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
+                            continue
+                    elif probe_kind == "collection":
+                        if not force or not self._reveal_probed or self._collection_follow_queued:
+                            self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
+                            continue
+                    elif in_page or repeated:
                         self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
                         continue
                     values = [None]
@@ -757,16 +824,29 @@ class Crawler:
                                 f"{urlparse(current_url).path}: combobox {name} (options unavailable)"
                             )
                     for value in values:
-                        key = (fingerprint, role, destination or name, str(value))
+                        identity = destination or name or str(el.get("description") or "")
+                        key = (fingerprint, role, identity, str(value))
                         if key in queued:
                             continue
                         queued.add(key)
+                        if probe_kind == "reveal":
+                            self._reveal_probed = True
+                        elif probe_kind == "collection":
+                            self._collection_follow_queued = True
                         if len(path) >= self._budget.max_depth:
                             depth_limited += 1
                             continue
                         queue.append(
                             QueueItem(
-                                path=[*path, ClickStep(role, name, destination, value)],
+                                path=[
+                                    *path,
+                                    ClickStep(
+                                        role,
+                                        name or str(el.get("description") or ""),
+                                        destination,
+                                        value,
+                                    ),
+                                ],
                                 score=_relevance_score(name, self._keywords),
                                 skip_auth=skip_auth,
                             )
@@ -793,7 +873,13 @@ class Crawler:
                     _, nodes = await self._record_state(
                         snapshot, recorded_path, on_state_discovered
                     )
-                    enqueue(nodes, item.path)
+                    enqueue(
+                        nodes,
+                        item.path,
+                        force=bool(
+                            item.path and is_gated_reveal_action(item.path[-1].name)
+                        ),
+                    )
                 except Exception as exc:
                     detail = str(exc)
 
@@ -812,28 +898,28 @@ class Crawler:
                     if "connection closed" in detail.lower():
                         termination = "BROWSER_CONNECTION_LOST"
 
-                        print(
+                        logger.error(
                             "[crawler] FATAL: MCP/browser connection closed "
                             "during action replay."
                         )
 
-                        print(
+                        logger.info(
                             f"[crawler] Action: {failure['action']}"
                         )
 
-                        print(
+                        logger.info(
                             f"[crawler] Detail: {failure['detail']}"
                         )
 
                         break
 
-                    print(
+                    logger.warning(
                         f"[crawler] Action failed: "
                         f"{failure['error']} - {failure['detail']}"
                     )
             pending += len(queue)
         if termination == "EXPLORATION_EXHAUSTED":
-            if self._failures:
+            if self._failures and not self._visited_fingerprints:
                 termination = "ACTION_FAILURES"
             elif depth_limited:
                 termination = "MAX_DEPTH_REACHED"

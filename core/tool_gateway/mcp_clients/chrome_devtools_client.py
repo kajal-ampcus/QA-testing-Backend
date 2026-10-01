@@ -9,6 +9,7 @@ core/tool_gateway/playwright_client.py, always.
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import socket
@@ -16,17 +17,18 @@ import tempfile
 import time
 import uuid
 from contextlib import AsyncExitStack, suppress
+from html import unescape
 from pathlib import Path
 from typing import Any, TextIO
-from html import unescape
 from urllib.parse import unquote, urlparse
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from core.tool_gateway.secret_resolver import resolve_login
-from core.tool_gateway.snapshot import parse_elements
+from core.tool_gateway.snapshot import merge_dom_hrefs, parse_elements
 
+logger = logging.getLogger(__name__)
 
 _MATH_EXPRESSION = re.compile(r"(\d{1,2})\s*([+\-*/x×÷−–＋])\s*(\d{1,2})")
 _CAPTCHA_FIELD_PATTERN = re.compile(
@@ -209,6 +211,22 @@ def _find_submit_uid(
             if any(_term_in_label(term, lowered) for term in wanted if len(term) > 3):
                 return uid
     return None
+
+
+def _authentication_completed(text: str, login_text: str = "") -> bool:
+    controls = _parse_controls(text)
+    if any(role in {"button", "link", "menuitem"} and
+           re.fullmatch(r"\s*(?:log\s*out|sign\s*out)\s*", name, re.I)
+           for _, role, name in controls):
+        return True
+    if any(role in {"textbox", "input"} and re.search(r"\b(?:password|passphrase|pin)\b", name, re.I)
+           for _, role, name in controls):
+        return False
+    old_url = re.search(r'RootWebArea[^\n]*url="([^"]+)"', login_text)
+    new_url = re.search(r'RootWebArea[^\n]*url="([^"]+)"', text)
+    return bool(old_url and new_url and old_url[1] != new_url[1]
+                and any(role in {"heading", "button", "link"} for _, role, _ in controls)
+                and not re.search(r"verification|one.time|captcha|loading", text, re.I))
 
 
 def _find_uid(
@@ -409,6 +427,7 @@ class ChromeDevToolsClient:
         allowed_url_pattern: str | None = None,
         headless: bool = True,
         credential_ref: str | None = None,
+        project_id: uuid.UUID | None = None,
         page_ready_timeout_seconds: float | None = None,
         cold_start_reload_interval_seconds: float | None = None,
         security_verification_timeout_seconds: float | None = None,
@@ -417,6 +436,7 @@ class ChromeDevToolsClient:
         self._allowed_url_pattern = allowed_url_pattern
         self._headless = headless
         self._credential_ref = credential_ref
+        self._project_id = project_id
         self._authenticated = False
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -530,17 +550,13 @@ class ChromeDevToolsClient:
     def _capture_logs(self) -> str:
         chunks: list[str] = []
         if self._errlog_file is not None:
-            try:
+            with suppress(OSError):
                 self._errlog_file.flush()
                 self._errlog_file.seek(0)
                 chunks.append(self._errlog_file.read()[-4000:])
-            except OSError:
-                pass
         if self._mcp_log_path is not None and self._mcp_log_path.exists():
-            try:
+            with suppress(OSError):
                 chunks.append(self._mcp_log_path.read_text(encoding="utf-8", errors="replace")[-4000:])
-            except OSError:
-                pass
         return "\n".join(chunk for chunk in chunks if chunk).strip()
 
     def _startup_error(self, exc: Exception) -> RuntimeError:
@@ -555,18 +571,14 @@ class ChromeDevToolsClient:
 
     async def _close_session(self) -> None:
         if self._exit_stack is not None:
-            try:
+            with suppress(Exception):
                 await self._exit_stack.aclose()
-            except Exception:
-                pass
         self._session = None
         self._exit_stack = None
         self._page_id = None
         if self._errlog_file is not None:
-            try:
+            with suppress(OSError):
                 self._errlog_file.close()
-            except OSError:
-                pass
             self._errlog_file = None
 
     async def _open_session(self) -> None:
@@ -574,7 +586,8 @@ class ChromeDevToolsClient:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"chrome-devtools-mcp-{os.getpid()}-{uuid.uuid4().hex[:8]}.stderr.log"
         self._mcp_log_path = log_path
-        self._errlog_file = open(log_path, "w+", encoding="utf-8")
+        # Lives for the whole MCP session; closed in _close_session.
+        self._errlog_file = open(log_path, "w+", encoding="utf-8")  # noqa: SIM115
         self._exit_stack = AsyncExitStack()
         read, write = await self._exit_stack.enter_async_context(
             stdio_client(self._server_params(), errlog=self._errlog_file)
@@ -600,10 +613,15 @@ class ChromeDevToolsClient:
     async def __aenter__(self) -> "ChromeDevToolsClient":
         async with ChromeDevToolsClient._startup_gate:
             last_error: Exception | None = None
+            allow_unrestricted_retry = (
+                os.environ.get("CHROME_DEVTOOLS_MCP_ALLOW_UNRESTRICTED_RETRY", "false").lower()
+                == "true"
+            )
             for attempt in range(3):
-                # Second+ attempts drop the Chrome 149+ URL allowlist; it can
-                # detach the initial tab and take the stdio server down.
-                self._omit_url_allowlist = attempt >= 1
+                # Chrome 149+ URL allowlists can detach the initial tab and take
+                # the stdio server down. Dropping the allowlist lets the browser
+                # reach any host, so it is an explicit opt-in, never a silent default.
+                self._omit_url_allowlist = allow_unrestricted_retry and attempt >= 1
                 try:
                     await self._open_session()
                     return self
@@ -741,22 +759,69 @@ class ChromeDevToolsClient:
             url: el.href || null,
             options: el.options ? [...el.options].filter(o => !o.disabled).map(o => o.value) : null
         }))"""
-        for offset in range(0, len(controls), 30):
-            batch = controls[offset : offset + 30]
-            raw = await self._call(
-                "evaluate_script",
-                self._page_args(
-                    function=function,
-                    args=[e["uid"] for e in batch],
-                    waitForStableDom=False,
-                ),
-            )
-            text = _snapshot_text(raw)
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-            data = json.loads(match.group(1) if match else text)
-            for node, attributes in zip(batch, data, strict=True):
-                node.update({k: v for k, v in attributes.items() if v is not None})
+        try:
+            for offset in range(0, len(controls), 30):
+                batch = controls[offset : offset + 30]
+                raw = await self._call(
+                    "evaluate_script",
+                    self._page_args(
+                        function=function,
+                        args=[e["uid"] for e in batch],
+                        waitForStableDom=False,
+                    ),
+                )
+                text = _snapshot_text(raw)
+                match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+                data = json.loads(match.group(1) if match else text)
+                for node, attributes in zip(batch, data, strict=True):
+                    node.update({k: v for k, v in attributes.items() if v is not None})
+        except Exception:
+            logger.debug("Could not attach DOM attributes to snapshot controls", exc_info=True)
+        with suppress(Exception):
+            nodes = merge_dom_hrefs(nodes, await self._same_origin_dom_hrefs())
         return nodes
+
+    async def _same_origin_dom_hrefs(self) -> list[dict[str, Any]]:
+        """Collect in-page <a href> values the accessibility snapshot may omit.
+
+        Header icons (cart, profile) are often unlabeled SVGs wrapping a link.
+        Navigating those hrefs is enough; we do not click unnamed buttons.
+        """
+        function = """() => {
+            const labelOf = (el) => {
+                const by = el.getAttribute("aria-labelledby");
+                const labelled = by
+                    ? by.split(/\\s+/).map((id) => document.getElementById(id)?.innerText || "").join(" ")
+                    : "";
+                return (el.getAttribute("aria-label") || el.getAttribute("title") || labelled || el.textContent || "")
+                    .replace(/\\s+/g, " ").trim();
+            };
+            const seen = new Set();
+            const links = [];
+            for (const a of document.querySelectorAll("a[href]")) {
+                const href = a.href;
+                if (!href || href.startsWith("javascript:")) continue;
+                let parsed;
+                try { parsed = new URL(href); } catch { continue; }
+                if (parsed.origin !== location.origin) continue;
+                const key = parsed.pathname.replace(/\\/+$/, "") + parsed.hash;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                links.push({ name: labelOf(a), url: parsed.href });
+            }
+            return links;
+        }"""
+        raw = await self._call(
+            "evaluate_script",
+            self._page_args(function=function, waitForStableDom=False),
+        )
+        text = _evaluate_script_text(raw)
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+        payload = match.group(1) if match else text
+        data = json.loads(payload)
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict) and item.get("url")]
 
     async def list_console_messages(self) -> Any:
         return await self._call("list_console_messages", self._page_args())
@@ -1195,10 +1260,7 @@ class ChromeDevToolsClient:
         """
         if self._credential_ref is None:
             return
-        print(
-            f"[DISCOVERY AUTH] Starting authentication "
-            f"credential_ref={self._credential_ref}"
-        )
+        logger.info("[DISCOVERY AUTH] Starting authentication credential_ref=%s", self._credential_ref)
         current = _parse_controls(_snapshot_text(await self.take_snapshot()))
         if self._authenticated and not any(
             role in {"textbox", "input"} and name.lower() == "password" for _, role, name in current
@@ -1206,13 +1268,18 @@ class ChromeDevToolsClient:
             return
         self._authenticated = False
 
-        secret = await resolve_login(self._credential_ref)
+        secret = await resolve_login(self._credential_ref, self._project_id)
 
         last_page_text = ""
+        login_page_text = ""
         for attempt in range(3):
             # Always re-read the snapshot fresh — CAPTCHA changes on each attempt
             await self.wait_until_ready()
             text = _snapshot_text(await self.take_snapshot())
+            if _authentication_completed(text, login_page_text):
+                self._authenticated = True
+                return
+            login_page_text = text
             if not _MATH_EXPRESSION.search(text):
                 # A visual CAPTCHA can be absent from the accessibility tree.
                 # Read visible DOM text and inline SVG text through the same
@@ -1223,8 +1290,8 @@ class ChromeDevToolsClient:
                     text = f"{text}\n{dom_text}"
             controls = _parse_controls(text)
             controls = await self._select_login_role(secret, controls)
-            print(
-                "[DISCOVERY AUTH] Page controls:",
+            logger.debug(
+                "[DISCOVERY AUTH] Page controls: %s",
                 [
                     {
                         "role": role,
@@ -1305,8 +1372,8 @@ class ChromeDevToolsClient:
             submit_uid = _find_submit_uid(controls, submit_names)
             if not submit_uid:
                 controls, submit_uid = await self._wait_for_submit_uid(submit_names)
-            print(
-                "[DISCOVERY AUTH] Detected login controls:",
+            logger.info(
+                "[DISCOVERY AUTH] Detected login controls: %s",
                 {
                     "username_uid": username_uid,
                     "password_uid": password_uid,
@@ -1316,7 +1383,7 @@ class ChromeDevToolsClient:
             if not username_uid or not password_uid or not submit_uid:
                 snapshot = _snapshot_text(await self.take_snapshot())
                 if _authenticated_session_visible(snapshot):
-                    print("[DISCOVERY AUTH] Already on an authenticated page; skipping login form.")
+                    logger.info("[DISCOVERY AUTH] Already on an authenticated page; skipping login form.")
                     self._authenticated = True
                     return
                 missing = []
@@ -1338,13 +1405,8 @@ class ChromeDevToolsClient:
                     if role in {"textbox", "input", "button", "link", "combobox", "radio"}
                 ]
                 if attempt < 2:
-                    print(
-                        "[DISCOVERY AUTH] Login controls missing, reloading form:",
-                        missing,
-                    )
-                    root = next(
-                        (name for uid, role, name in controls if role == "RootWebArea"),
-                        "",
+                    logger.warning(
+                        "[DISCOVERY AUTH] Login controls missing, reloading form: %s", missing
                     )
                     login_url = secret.get("login_url")
                     if not login_url:
@@ -1463,13 +1525,10 @@ class ChromeDevToolsClient:
                 await asyncio.sleep(0.5)
                 after = _snapshot_text(await self.take_snapshot())
                 last_page_text = after
-                print(
-                    "[DISCOVERY AUTH] Post-login snapshot:",
-                    after[:1000],
-                )
+                logger.debug("[DISCOVERY AUTH] Post-login snapshot: %s", after[:1000])
                 if _authenticated_session_visible(after):
                     self._authenticated = True
-                    print("[DISCOVERY AUTH] Login succeeded; authenticated session is visible.")
+                    logger.info("[DISCOVERY AUTH] Login succeeded; authenticated session is visible.")
                     return
 
                 if _INCORRECT_CAPTCHA_PATTERN.search(after):

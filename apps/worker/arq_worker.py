@@ -9,7 +9,11 @@ Run with: arq apps.worker.arq_worker.WorkerSettings
 
 import asyncio
 import os
+import time
+from pathlib import Path
 from typing import Any
+
+from arq import cron
 
 from apps.worker.tasks.run_discovery import run_discovery
 from infra.db.session import DATABASE_URL
@@ -24,10 +28,38 @@ if os.name == "nt" and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
 
 
+def prune_discovery_evidence() -> int:
+    """Delete discovery screenshots older than DISCOVERY_EVIDENCE_RETENTION_DAYS (0 keeps all)."""
+    try:
+        days = float(os.environ.get("DISCOVERY_EVIDENCE_RETENTION_DAYS", "30"))
+    except ValueError:
+        days = 30.0
+    if days <= 0:
+        return 0
+    directory = Path(os.environ.get("DISCOVERY_EVIDENCE_DIR", "artifacts/discovery"))
+    if not directory.is_dir():
+        return 0
+    cutoff = time.time() - days * 86400
+    removed = 0
+    for screenshot in directory.glob("*.png"):
+        try:
+            if screenshot.stat().st_mtime < cutoff:
+                screenshot.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+async def prune_evidence_job(ctx: dict[str, Any]) -> None:
+    removed = await asyncio.to_thread(prune_discovery_evidence)
+    if removed:
+        logger.info("Removed %d expired discovery screenshot(s)", removed)
+
+
 async def startup(ctx: dict[str, Any]) -> None:
-    # Per-worker-process resources go here as later milestones need them
-    # (e.g. a shared object-storage client). Nothing needed yet.
     ctx["database_url"] = DATABASE_URL
+    await prune_evidence_job(ctx)
     logger.info("Worker startup complete; queue=%s", QueueSettings().redis_url)
 
 
@@ -37,6 +69,7 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 
 class WorkerSettings:
     functions = [run_discovery]
+    cron_jobs = [cron(prune_evidence_job, hour={3}, minute={0}, run_at_startup=False)]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = QueueSettings().arq_settings()

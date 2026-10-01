@@ -29,15 +29,17 @@ import re
 import uuid
 from typing import Any
 
+from pydantic import ValidationError
+
 from core.agents.base import BaseAgent
+from core.agents.test_case_validation.agent import TestCaseValidationAgent
 from core.agents.test_design.fast_generate import generate_cases_from_map
 from core.agents.test_design.prompts import SYSTEM_PROMPT, build_user_prompt
 from core.agents.test_design.schemas import TestCaseBatch, TestCaseSpec, TestDesignResult
-from core.agents.test_design.validation import validate_case
 from domain.enums import EvidenceSource, confidence_band
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.requirement_repo import RequirementRepository
-from infra.db.repositories.test_case_repo import TestCaseRepository
+from infra.db.repositories.test_case_repo import TestCaseRepository, case_signature
 from infra.llm.base import LLMClient
 from infra.llm.factory import get_llm_client
 from schemas.envelope import (
@@ -57,23 +59,47 @@ def _check_ac_coverage(
     return [ac["id"] for ac in acceptance_criteria if ac["id"] not in covered]
 
 
-def _check_positive_negative_pairing(
+def _pairing_gaps(
     acceptance_criteria: list[dict[str, Any]],
     test_cases: list[TestCaseSpec],
-) -> list[str]:
+) -> list[dict[str, Any]]:
     categories_by_ac: dict[str, set[str]] = {}
     for tc in test_cases:
         for ac_id in tc.traceability:
             categories_by_ac.setdefault(ac_id, set()).add(tc.category)
-    gaps = []
+    gaps: list[dict[str, Any]] = []
     for ac in acceptance_criteria:
         ac_id = ac["id"]
         if ac_id not in categories_by_ac:
             continue  # already in uncovered list
         missing = [c for c in ("POSITIVE", "NEGATIVE") if c not in categories_by_ac[ac_id]]
         if missing:
-            gaps.append(f"{ac_id}: missing {'/'.join(missing)}")
+            gaps.append({"ac_id": ac_id, "missing": missing})
     return gaps
+
+
+def _check_positive_negative_pairing(
+    acceptance_criteria: list[dict[str, Any]],
+    test_cases: list[TestCaseSpec],
+) -> list[str]:
+    return [
+        f"{gap['ac_id']}: missing {'/'.join(gap['missing'])}"
+        for gap in _pairing_gaps(acceptance_criteria, test_cases)
+    ]
+
+
+def _spec_version_data(tc_spec: TestCaseSpec) -> dict[str, Any]:
+    return {
+        "title": tc_spec.title,
+        "objective": tc_spec.objective,
+        "preconditions": tc_spec.preconditions,
+        "steps": [s.model_dump(mode="json") for s in tc_spec.steps],
+        "expected_result": tc_spec.expected_result,
+        "test_data": tc_spec.test_data,
+        "traceability": tc_spec.traceability,
+        "category": tc_spec.category,
+        "confidence": tc_spec.confidence,
+    }
 
 
 def _low_confidence(test_cases: list[TestCaseSpec], threshold: float = 0.6) -> list[str]:
@@ -169,7 +195,7 @@ def _map_context_for_ac(
         state_score = sum(term in state_text for term in terms) + sum(element_scores)
         # Retain useful actionable controls even when wording differs from the AC.
         ranked_elements = sorted(
-            zip(element_scores, elements),
+            zip(element_scores, elements, strict=True),
             key=lambda item: (
                 item[0],
                 item[1].get("role") in {"textbox", "searchbox", "button", "link", "checkbox", "radio"},
@@ -271,6 +297,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         self._requirement_repo = requirement_repo
         self._map_repo = map_repo
         self._test_case_repo = test_case_repo
+        self._validator = TestCaseValidationAgent()
         design_model = (os.environ.get("TEST_DESIGN_LLM_MODEL") or "").strip() or None
         self._llm = llm_client or get_llm_client(model=design_model)
 
@@ -362,10 +389,22 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         requirement_version: int,
         application_map_id: uuid.UUID,
         specs: list[TestCaseSpec],
-    ) -> list[AgentArtifactRef]:
-        """Write a finished AC batch so the UI can show cases before the run ends."""
+        known_signatures: set[tuple[Any, ...]],
+        credential_ref: str | None = None,
+    ) -> tuple[list[AgentArtifactRef], int]:
+        """Write a finished AC batch so the UI can show cases before the run ends.
+
+        Cases identical to one already saved for this requirement and map are
+        skipped, so re-running generation does not pile up duplicates."""
         artifacts: list[AgentArtifactRef] = []
+        skipped = 0
         for tc_spec in specs:
+            version_data = _spec_version_data(tc_spec)
+            signature = case_signature(version_data)
+            if signature in known_signatures:
+                skipped += 1
+                continue
+            known_signatures.add(signature)
             tc_code = await self._test_case_repo.next_tc_code(project_id)
             tc, _ = await self._test_case_repo.create(
                 project_id=project_id,
@@ -373,21 +412,12 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 requirement_id=requirement_id,
                 requirement_version=requirement_version,
                 application_map_id=application_map_id,
-                version_data={
-                    "title": tc_spec.title,
-                    "objective": tc_spec.objective,
-                    "preconditions": tc_spec.preconditions,
-                    "steps": [s.model_dump(mode="json") for s in tc_spec.steps],
-                    "expected_result": tc_spec.expected_result,
-                    "test_data": tc_spec.test_data,
-                    "traceability": tc_spec.traceability,
-                    "category": tc_spec.category,
-                    "confidence": tc_spec.confidence,
-                },
+                version_data=version_data,
+                credential_ref=credential_ref,
             )
             artifacts.append(AgentArtifactRef(type="test_case", id=str(tc.id), version=1))
         await self._test_case_repo.session.commit()
-        return artifacts
+        return artifacts, skipped
 
     async def run(self, request: AgentInputEnvelope) -> TestDesignResult:
         requirement_id = uuid.UUID(request.payload["requirement_id"])
@@ -417,7 +447,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         else:
             app_map = await self._map_repo.get_latest_for_project(request.project_id)
 
-        if app_map is None:
+        if app_map is None or app_map.project_id != request.project_id:
             raise ValueError(
                 "No application map found for this project. "
                 "Run discovery first."
@@ -505,6 +535,11 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         total_input_tokens = total_output_tokens = 0
         model_name = ""
         ac_ids = {ac["id"] for ac in req_version.acceptance_criteria}
+        known_signatures = await self._test_case_repo.existing_signatures(
+            requirement_id, app_map.id
+        )
+        credential_ref = request.payload.get("credential_ref")
+        duplicates_skipped = 0
 
         heuristic_cases = generate_cases_from_map(
             pending_acs,
@@ -518,22 +553,24 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 continue
             all_test_cases.append(tc)
             tc = _renumber_steps(tc)
-            issues = validate_case(tc, map_states, ac_ids)
+            issues = self._validator.issues_for(tc, map_states, ac_ids)
             if issues:
                 validation_errors.append(f"'{tc.title}': {' | '.join(issues)}")
             else:
                 batch_valid.append(tc)
         if batch_valid:
             valid_cases.extend(batch_valid)
-            artifacts.extend(
-                await self._persist_specs(
-                    project_id=request.project_id,
-                    requirement_id=requirement_id,
-                    requirement_version=requirement.current_version,
-                    application_map_id=app_map.id,
-                    specs=batch_valid,
-                )
+            saved, skipped = await self._persist_specs(
+                project_id=request.project_id,
+                requirement_id=requirement_id,
+                requirement_version=requirement.current_version,
+                application_map_id=app_map.id,
+                specs=batch_valid,
+                known_signatures=known_signatures,
+                credential_ref=credential_ref,
             )
+            artifacts.extend(saved)
+            duplicates_skipped += skipped
         model_name = "map-grounded-batch"
 
         use_llm = (os.environ.get("TEST_DESIGN_USE_LLM") or "").strip().lower() in {
@@ -589,7 +626,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                             model_name = model
                         for tc in accepted:
                             tc = _renumber_steps(tc)
-                            issues = validate_case(tc, map_states, ac_ids)
+                            issues = self._validator.issues_for(tc, map_states, ac_ids)
                             if issues:
                                 validation_errors.append(
                                     f"'{tc.title}': {' | '.join(issues)}"
@@ -598,15 +635,17 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                                 llm_valid.append(tc)
                     if llm_valid:
                         valid_cases.extend(llm_valid)
-                        artifacts.extend(
-                            await self._persist_specs(
-                                project_id=request.project_id,
-                                requirement_id=requirement_id,
-                                requirement_version=requirement.current_version,
-                                application_map_id=app_map.id,
-                                specs=llm_valid,
-                            )
+                        saved, skipped = await self._persist_specs(
+                            project_id=request.project_id,
+                            requirement_id=requirement_id,
+                            requirement_version=requirement.current_version,
+                            application_map_id=app_map.id,
+                            specs=llm_valid,
+                            known_signatures=known_signatures,
+                            credential_ref=credential_ref,
                         )
+                        artifacts.extend(saved)
+                        duplicates_skipped += skipped
             finally:
                 for task in outstanding:
                     task.cancel()
@@ -621,32 +660,42 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         # If validation wiped everything, raise
         if not valid_cases:
             raise RuntimeError(
-                f"All generated test cases failed validation and were not saved.\n"
+                "All generated test cases failed validation and were not saved.\n"
                 + "\n".join(f"  • {e}" for e in validation_errors[:10])
             )
 
         # ── AC coverage checks ────────────────────────────────────────────
-        coverage_cases = list(valid_cases)
-        if requested_categories:
-            for _, version in await self._test_case_repo.list_for_requirement(requirement_id):
-                coverage_cases.append(
-                    TestCaseSpec.model_validate(
-                        {
-                            "title": version.title,
-                            "objective": version.objective,
-                            "category": version.category,
-                            "preconditions": version.preconditions,
-                            "steps": version.steps,
-                            "expected_result": version.expected_result,
-                            "test_data": version.test_data,
-                            "traceability": version.traceability,
-                            "confidence": version.confidence,
-                        }
+        # Coverage is judged over every current case for this requirement
+        # version (earlier runs, manual drafts, and this run), not just the
+        # cases this run happened to add.
+        coverage_cases: list[TestCaseSpec] = []
+        for saved_case, version in await self._test_case_repo.list_for_requirement(requirement_id):
+            if (
+                saved_case.requirement_version == requirement.current_version
+                and saved_case.status not in {"OUTDATED", "REJECTED"}
+            ):
+                try:
+                    coverage_cases.append(
+                        TestCaseSpec.model_validate(
+                            {
+                                "title": version.title,
+                                "objective": version.objective,
+                                "category": version.category,
+                                "preconditions": version.preconditions,
+                                "steps": version.steps,
+                                "expected_result": version.expected_result,
+                                "test_data": version.test_data,
+                                "traceability": version.traceability,
+                                "confidence": version.confidence,
+                            }
+                        )
                     )
-                )
+                except ValidationError:
+                    continue  # rows saved before the current step schema
         uncovered = _check_ac_coverage(req_version.acceptance_criteria, coverage_cases)
+        pairing_gaps = _pairing_gaps(req_version.acceptance_criteria, coverage_cases)
         partial_pairing = _check_positive_negative_pairing(req_version.acceptance_criteria, coverage_cases)
-        needs_review = _low_confidence(coverage_cases)
+        needs_review = _low_confidence(valid_cases)
 
         # ── Persist valid test cases ──────────────────────────────────────
         await self._map_repo.mark_generated_fingerprints(
@@ -694,6 +743,15 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 reason="LLM call failed or timed out for these ACs",
                 evidence=llm_errors[:5],
                 confidence=0.0,
+                source=EvidenceSource.INFERENCE,
+            ))
+
+        if duplicates_skipped:
+            decisions.append(AgentDecision(
+                decision=f"Skipped {duplicates_skipped} test case(s) identical to ones already saved",
+                reason="Same category, traceability and steps as an existing case for this requirement and map",
+                evidence=[f"Duplicates skipped: {duplicates_skipped}"],
+                confidence=1.0,
                 source=EvidenceSource.INFERENCE,
             ))
 
@@ -757,5 +815,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             test_cases=valid_cases,
             uncovered_acs=uncovered,
             partial_pairing_acs=partial_pairing,
+            pairing_gaps=pairing_gaps,
             needs_review_test_cases=needs_review,
+            duplicates_skipped=duplicates_skipped,
         )

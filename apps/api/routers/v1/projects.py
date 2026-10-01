@@ -5,7 +5,9 @@ Project CRUD — the root entity everything else scopes under (project_id).
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import AnyHttpUrl, BaseModel, Field
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,14 +20,18 @@ from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement, RequirementVersion
 from infra.db.models.test_case import TestCase, TestCaseVersion
+from infra.queue.broker import get_arq_pool
+from infra.queue.discovery_lock import active_discovery_job
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 class ProjectCreateRequest(BaseModel):
-    name: str
-    application_url: str | None = None
-    credential_ref: str | None = Field(default=None, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    application_url: AnyHttpUrl | None = None
+    # A new project owns no accounts yet; add one via /projects/{id}/credentials,
+    # which also sets it as the default.
+    credential_ref: None = None
 
 
 class ProjectResponse(BaseModel):
@@ -46,9 +52,8 @@ async def create_project(
     body: ProjectCreateRequest, session: AsyncSession = Depends(get_db_session)
 ) -> Project:
     project = Project(
-        name=body.name,
-        application_url=body.application_url,
-        credential_ref=body.credential_ref,
+        name=body.name.strip(),
+        application_url=str(body.application_url) if body.application_url else None,
     )
     session.add(project)
     await session.commit()
@@ -75,6 +80,19 @@ async def list_projects(session: AsyncSession = Depends(get_db_session)) -> list
     return list(result.scalars().all())
 
 
+async def _ensure_no_active_discovery(project_id: uuid.UUID) -> None:
+    try:
+        job_id = await active_discovery_job(await get_arq_pool(), project_id)
+    except (RedisConnectionError, RedisTimeoutError, OSError):
+        # Without Redis no discovery job can be running.
+        return
+    if job_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Stop the running discovery for this project before deleting it.",
+        )
+
+
 @router.delete("/{project_id}", status_code=204)
 async def delete_project(
     project_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)
@@ -83,6 +101,7 @@ async def delete_project(
     project = await session.get(Project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    await _ensure_no_active_discovery(project_id)
 
     await session.execute(
         delete(TestCaseVersion).where(

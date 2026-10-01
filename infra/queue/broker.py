@@ -22,9 +22,9 @@ async def get_arq_pool() -> ArqRedis:
     return _pool
 
 
-async def enqueue(task_name: str, *args: object) -> str:
+async def enqueue(task_name: str, *args: object, job_id: str | None = None) -> str:
     pool = await get_arq_pool()
-    job = await pool.enqueue_job(task_name, *args)
+    job = await pool.enqueue_job(task_name, *args, _job_id=job_id)
     if job is None:
         raise RuntimeError(
             f"Failed to enqueue '{task_name}' — arq returned no job (possible dedup collision)"

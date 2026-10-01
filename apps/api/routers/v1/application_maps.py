@@ -7,6 +7,7 @@ crawl can take minutes) and surfaces the resulting map.
 import asyncio
 import os
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -20,11 +21,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
+from core.policy_safety.environment_policy import DiscoveryTargetError, validate_discovery_target
 from domain.enums import RequirementStatus
+from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.queue.broker import enqueue, get_arq_pool
+from infra.queue.discovery_lock import claim_discovery, release_discovery
+
+_REDIS_ERRORS = (RedisConnectionError, RedisTimeoutError, OSError)
 
 router = APIRouter(prefix="/application-maps", tags=["application-maps"])
 
@@ -104,13 +110,57 @@ class ApplicationMapResponse(BaseModel):
     project_test_generation_coverage: dict[str, list[str]] = Field(default_factory=dict)
 
 
+async def _check_target(url: str) -> None:
+    try:
+        await validate_discovery_target(url)
+    except DiscoveryTargetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _check_credential(
+    session: AsyncSession, project_id: uuid.UUID, credential_ref: str | None
+) -> None:
+    if not credential_ref:
+        return
+    owned = await session.scalar(
+        select(DiscoveryCredential.id).where(
+            DiscoveryCredential.project_id == project_id,
+            DiscoveryCredential.credential_ref == credential_ref,
+            DiscoveryCredential.active.is_(True),
+        )
+    )
+    if owned is None:
+        raise HTTPException(
+            status_code=422, detail="Test account is not an active account of this project"
+        )
+
+
+async def _claim_discovery_slot(project_id: uuid.UUID) -> str:
+    try:
+        job_id = await claim_discovery(await get_arq_pool(), project_id)
+    except _REDIS_ERRORS as exc:
+        raise HTTPException(status_code=503, detail="Discovery queue is unavailable") from exc
+    if job_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Discovery is already running for this project. Stop it or wait for it to finish.",
+        )
+    return job_id
+
+
+async def _release_discovery_slot(project_id: uuid.UUID, job_id: str) -> None:
+    with suppress(*_REDIS_ERRORS):
+        await release_discovery(await get_arq_pool(), project_id, job_id)
+
+
 @router.post(
     "/projects/{project_id}/discover",
     response_model=DiscoveryTriggerResponse,
     status_code=202,
     responses={
         404: {"description": "Project not found"},
-        409: {"description": "Focus requirement is not approved/current"},
+        409: {"description": "Focus requirement is not approved/current, or discovery is running"},
+        422: {"description": "Target URL or test account is not allowed"},
         503: {"description": "Discovery queue is unavailable"},
     },
 )
@@ -158,10 +208,13 @@ async def trigger_discovery(
                 status_code=409, detail=f"Focus requirement version is not current: {ref}"
             )
         approved_refs.append(f"{requirement.id}@v{requirement.current_version}")
+    credential_ref = body.credential_ref or project.credential_ref
+    await _check_target(target_url)
+    await _check_credential(session, project_id, credential_ref)
     payload = {
         "target": {
             "url": target_url,
-            "credential_ref": body.credential_ref or project.credential_ref,
+            "credential_ref": credential_ref,
         },
         "focus_requirements": approved_refs,
         "crawl_budget": {
@@ -185,9 +238,11 @@ async def trigger_discovery(
         ),
         "start_from_scratch": body.start_from_scratch,
     }
+    claimed_job_id = await _claim_discovery_slot(project_id)
     try:
-        job_id = await enqueue("run_discovery", str(project_id), payload)
-    except (RedisConnectionError, RedisTimeoutError, OSError) as exc:
+        job_id = await enqueue("run_discovery", str(project_id), payload, job_id=claimed_job_id)
+    except (*_REDIS_ERRORS, RuntimeError) as exc:
+        await _release_discovery_slot(project_id, claimed_job_id)
         raise HTTPException(status_code=503, detail="Discovery queue is unavailable") from exc
     return DiscoveryTriggerResponse(job_id=job_id)
 

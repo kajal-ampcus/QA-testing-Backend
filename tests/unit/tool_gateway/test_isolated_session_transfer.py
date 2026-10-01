@@ -5,7 +5,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from core.tool_gateway.mcp_clients.chrome_devtools_client import ChromeDevToolsClient, _snapshot_text
+from core.tool_gateway.mcp_clients.chrome_devtools_client import (
+    ChromeDevToolsClient,
+    _snapshot_text,
+)
 
 
 @pytest.mark.skipif(os.environ.get("RUN_CHROME_SESSION_TEST") != "1", reason="requires installed Chrome MCP")

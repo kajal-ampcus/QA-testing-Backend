@@ -10,6 +10,10 @@ docker compose up -d --build --wait --wait-timeout 180
 docker compose ps -a
 ```
 
+Images copy application source at **build** time. After backend or frontend code changes, rebuild (`--build`) rather than only restarting containers.
+
+The API and worker share `./artifacts/discovery` so diagnostic screenshots written by the worker are served by the API. Target apps running on the Windows host must use `host.docker.internal` instead of `localhost`. Discovery of private/loopback hosts is allowed in this local stack unless you set `DISCOVERY_ALLOW_PRIVATE_TARGETS=false`. If `API_KEY` is set in `.env`, rebuild the frontend so `VITE_API_KEY` is baked into the UI.
+
 Docker Desktop groups everything under **qa-platform**. Containers are created
 from images by Docker; images are not pulled inside a parent container.
 
@@ -98,3 +102,7 @@ before any production deployment.
 - Credentials fail to save: configure a valid, stable CREDENTIAL_ENCRYPTION_KEY.
 - Target runs on your Windows host: use `host.docker.internal` instead of
   `localhost` in its application URL. Container localhost refers to itself.
+- Discovery screenshots 404: confirm `./artifacts/discovery` is mounted on both
+  `api` and `worker`, then rebuild those services.
+- API key 401 from the UI: set `API_KEY` and matching `VITE_API_KEY` (or rely on
+  Compose passing `API_KEY` as a frontend build arg), then rebuild `frontend`.
