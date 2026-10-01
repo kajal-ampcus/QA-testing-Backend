@@ -93,6 +93,49 @@ def test_destructive_controls_are_never_used() -> None:
     assert all(step.action != "click" for case in cases for step in case.steps)
 
 
+def test_theme_toggle_is_not_used_when_the_case_names_another_control() -> None:
+    states = [
+        {
+            "state_code": "STATE-003",
+            "url_pattern": "/dashboard",
+            "reached_via": [],
+            "elements": [
+                {"element_code": "EL-008", "role": "button", "name": "Toggle theme", "source": "OBSERVED_DOM"},
+                {"element_code": "EL-020", "role": "link", "name": "Orders", "source": "OBSERVED_DOM"},
+            ],
+        }
+    ]
+    cases = generate_cases_from_map(
+        [{"id": "AC-1", "text": "The employee can view a list of orders"}],
+        states,
+        "Orders",
+    )
+    positive = next(case for case in cases if case.category == "POSITIVE")
+    clicked = [step.target.element_name for step in positive.steps if step.action == "click"]
+    assert clicked == ["Orders"]
+
+
+def test_theme_toggle_alone_is_not_clicked_for_an_unrelated_case() -> None:
+    states = [
+        {
+            "state_code": "STATE-003",
+            "url_pattern": "/dashboard",
+            "reached_via": [],
+            "elements": [
+                {"element_code": "EL-008", "role": "button", "name": "Toggle theme", "source": "OBSERVED_DOM"},
+            ],
+        }
+    ]
+    cases = generate_cases_from_map(
+        [{"id": "AC-1", "text": "The employee can view orders"}],
+        states,
+        "Orders",
+    )
+    assert all(step.action != "click" for case in cases for step in case.steps)
+    for case in cases:
+        assert validate_case(case, states, {"AC-1"}) == []
+
+
 def test_edge_case_uses_boundary_values_not_negative_copy() -> None:
     acs = [{"id": "AC-1", "text": "User can log in"}]
     cases = generate_cases_from_map(acs, STATES, "Login", {"AC-1": {"NEGATIVE", "EDGE_CASE"}})

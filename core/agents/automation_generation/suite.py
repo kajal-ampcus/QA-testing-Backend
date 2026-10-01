@@ -147,7 +147,10 @@ def generate_suite(
         suite_dir / ".env.example",
         templates.render_env_example(base_url=application_url or "", names=sorted(set(env_names))),
     )
-    _write(suite_dir / "fixtures" / "auth.ts", templates.render_auth())
+    _write(
+        suite_dir / "fixtures" / "auth.ts",
+        templates.render_auth(base_url=json.dumps(application_url) if application_url else '""'),
+    )
     _write(suite_dir / "data" / "testdata.ts", templates.render_testdata(cases=data_cases))
     for page in pages.values():
         _write(suite_dir / "pages" / page["file_name"], templates.render_page(**page))
