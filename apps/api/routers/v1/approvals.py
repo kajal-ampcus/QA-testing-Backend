@@ -18,10 +18,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
-from domain.enums import ApprovalStatus, RequirementStatus, TestCaseStatus
+from domain.enums import ApprovalStatus, AutomationReviewStatus, RequirementStatus, TestCaseStatus
 from infra.db.models.approval import Approval
+from infra.db.models.automation import AutomationScript
 from infra.db.models.requirement import Requirement, RequirementVersion
 from infra.db.models.test_case import TestCase
+from infra.db.repositories.automation_repo import AutomationRepository
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
 
@@ -116,6 +118,21 @@ async def _test_case_side_effect(
     )
 
 
+async def _automation_side_effect(
+    session: AsyncSession, approval: Approval, new_status: ApprovalStatus
+) -> None:
+    script = await session.get(AutomationScript, approval.target_id, with_for_update=True)
+    if script is None or script.project_id != approval.project_id:
+        raise HTTPException(status_code=409, detail="Approval target is invalid")
+    _ensure_version_current(approval, script.current_version)
+    review_status = (
+        AutomationReviewStatus.APPROVED
+        if new_status == ApprovalStatus.APPROVED
+        else AutomationReviewStatus.REJECTED
+    )
+    AutomationRepository(session).append_version(script, review_status)
+
+
 async def _apply_target_side_effect(
     session: AsyncSession, approval: Approval, new_status: ApprovalStatus
 ) -> None:
@@ -123,6 +140,8 @@ async def _apply_target_side_effect(
         await _requirement_side_effect(session, approval, new_status)
     elif approval.target_type == "test_case":
         await _test_case_side_effect(session, approval, new_status)
+    elif approval.target_type == "automation_script":
+        await _automation_side_effect(session, approval, new_status)
     else:
         raise HTTPException(status_code=409, detail="Approval target type is not implemented")
 
