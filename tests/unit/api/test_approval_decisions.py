@@ -27,6 +27,7 @@ class FakeSession:
         self.objects = {type(item): item for item in objects}
         self.version = version
         self.committed = False
+        self.added: list[Any] = []
 
     async def get(self, model: type, _id: uuid.UUID, **_: Any) -> Any:
         return self.objects.get(model)
@@ -39,6 +40,9 @@ class FakeSession:
 
     async def refresh(self, _item: Any) -> None:
         pass
+
+    def add(self, item: Any) -> None:
+        self.added.append(item)
 
 
 def _approval(target_type: str, target: Any, version: int) -> Approval:
@@ -125,3 +129,34 @@ async def test_test_case_approval_sets_case_status() -> None:
     session = FakeSession(approval, case)
     await _decide(session, approval.id, APPROVE, ApprovalStatus.APPROVED)  # type: ignore[arg-type]
     assert case.status == enums.TestCaseStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_automation_approval_appends_a_reviewed_version() -> None:
+    from infra.db.models.automation import AutomationScript
+
+    script = AutomationScript(
+        id=uuid.uuid4(),
+        script_code="AUTO-001",
+        project_id=uuid.uuid4(),
+        generation_id=uuid.uuid4(),
+        test_case_id=uuid.uuid4(),
+        test_case_code="TC-001",
+        test_case_version=1,
+        application_map_id=uuid.uuid4(),
+        application_map_version=1,
+        framework="playwright",
+        file_path="tests/destructive/TC-001.delete.spec.ts",
+        selector_strategy=[],
+        risk_level=enums.RiskLevel.DESTRUCTIVE,
+        review_status=enums.AutomationReviewStatus.PENDING_APPROVAL,
+        review_findings={},
+        suite_summary={},
+        current_version=1,
+    )
+    approval = _approval("automation_script", script, version=1)
+    session = FakeSession(approval, script)
+    await _decide(session, approval.id, APPROVE, ApprovalStatus.APPROVED)  # type: ignore[arg-type]
+    assert script.review_status == enums.AutomationReviewStatus.APPROVED
+    assert script.current_version == 2
+    assert session.added and session.committed

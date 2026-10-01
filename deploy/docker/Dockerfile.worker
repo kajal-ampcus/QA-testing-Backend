@@ -49,7 +49,7 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/docker_entrypoint.py scripts/docker_entrypoint.py
 RUN useradd --create-home --uid 10001 qa \
-    && mkdir -p /app/artifacts/discovery /app/logs \
+    && mkdir -p /app/artifacts/discovery /app/artifacts/automation /app/logs \
     && chown -R qa:qa /app/artifacts /app/logs
 USER qa
 ENTRYPOINT ["python", "scripts/docker_entrypoint.py"]

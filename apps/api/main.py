@@ -23,6 +23,7 @@ from apps.api.routers.health import router as health_router
 from apps.api.routers.v1.agent_activity import router as agent_activity_router
 from apps.api.routers.v1.application_maps import router as application_maps_router
 from apps.api.routers.v1.approvals import router as approvals_router
+from apps.api.routers.v1.automation import router as automation_router
 from apps.api.routers.v1.credentials import router as credentials_router
 from apps.api.routers.v1.projects import router as projects_router
 from apps.api.routers.v1.reports import router as reports_router
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(application_maps_router, prefix="/api/v1")
     app.include_router(credentials_router, prefix="/api/v1")
     app.include_router(test_cases_router, prefix="/api/v1")
+    app.include_router(automation_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(agent_activity_router, prefix="/api/v1")
 

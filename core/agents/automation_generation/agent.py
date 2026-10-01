@@ -1,16 +1,75 @@
 """
-Agent 5 — Automation Generation Agent, absorbs Automation Planning
-(architecture doc Section 6, 13). Converts approved test cases into
-Playwright automation using Page Object Model conventions. Produces
-automation_plan (which cases to automate, POM structure) then
-automation_scripts. selector_strategy.py holds the priority order
-(getByRole/label -> data-testid -> CSS -> XPath); risk is computed once
-here and stored on the script (docs/PROJECT_STRUCTURE.md point 5 wiring).
+Agent 5 — Automation Generation.
 
-No live browser access except a dry-parse/lint sandbox — that's Execution's
-job. Human approval required for destructive-flow automation.
-
-Phase 0 stub.
+Turns approved test cases and their matching application map into a
+Playwright TypeScript Page Object suite. Selectors are chosen by
+selector_strategy.py. Templates are deterministic; this agent does not ask
+a model to invent locators or assertions.
 """
 
-# TODO (Phase 1): class AutomationGenerationAgent(BaseAgent): ...
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+from core.agents.automation_generation.suite import (
+    CaseInput,
+    StateInput,
+    SuitePlan,
+    generate_suite,
+)
+from core.agents.base import BaseAgent
+from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunStatus
+
+
+class AutomationGenerationAgent(BaseAgent[SuitePlan]):
+    name = "automation_generation"
+
+    async def run(self, request: AgentInputEnvelope) -> SuitePlan:
+        payload = request.payload
+        cases = [_case(item) for item in payload.get("cases", [])]
+        states = {
+            code: StateInput(
+                state_code=code,
+                url_pattern=str(item.get("url_pattern") or ""),
+                elements=list(item.get("elements") or []),
+            )
+            for code, item in (payload.get("states") or {}).items()
+        }
+        return generate_suite(
+            suite_dir=Path(request.constraints["suite_dir"]),
+            generation_id=UUID(str(payload["generation_id"])),
+            project_id=request.project_id,
+            application_url=payload.get("application_url"),
+            cases=cases,
+            states=states,
+        )
+
+    @staticmethod
+    def envelope(request: AgentInputEnvelope, plan: SuitePlan, errors: list[str] | None = None) -> AgentOutputEnvelope:
+        blocked = [item.tc_code for item in plan.scripts if item.blocked]
+        return AgentOutputEnvelope(
+            agent_run_id=request.agent_run_id,
+            status=AgentRunStatus.PARTIAL if blocked else AgentRunStatus.SUCCESS,
+            errors=errors or [],
+            decisions=[],
+        )
+
+
+def _case(item: dict[str, Any]) -> CaseInput:
+    return CaseInput(
+        test_case_id=UUID(str(item["test_case_id"])),
+        tc_code=str(item["tc_code"]),
+        version=int(item["version"]),
+        title=str(item.get("title") or item["tc_code"]),
+        requirement_id=UUID(str(item["requirement_id"])),
+        requirement_version=int(item["requirement_version"]),
+        application_map_id=UUID(str(item["application_map_id"])),
+        application_map_version=int(item["application_map_version"]),
+        project_id=UUID(str(item["project_id"])),
+        steps=list(item.get("steps") or []),
+        test_data=dict(item.get("test_data") or {}),
+        expected_result=str(item.get("expected_result") or ""),
+        credential_ref=item.get("credential_ref"),
+    )

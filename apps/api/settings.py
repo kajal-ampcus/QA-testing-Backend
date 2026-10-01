@@ -15,3 +15,8 @@ class ApiSettings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
     log_level: str = "INFO"
     api_key: str = ""
+    # development | staging | production — drives automation approval gates.
+    environment: str = "development"
+    automation_artifact_dir: str = "artifacts/automation"
+    # Absolute host path of the artifact directory. Empty disables IDE links.
+    automation_host_root: str = ""

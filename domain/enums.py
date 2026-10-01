@@ -85,6 +85,16 @@ class RiskLevel(StrEnum):
     DESTRUCTIVE = "DESTRUCTIVE"
 
 
+class AutomationReviewStatus(StrEnum):
+    """Static review plus the human gate for non-safe automation."""
+
+    REVIEWED = "REVIEWED"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    BLOCKED = "BLOCKED"
+
+
 class OrchestratorState(StrEnum):
     """Section 25's state machine. Milestone 1 only exercises CREATED and
     REQUIREMENTS_ANALYZED; the rest are defined now so later milestones don't

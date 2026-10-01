@@ -95,5 +95,12 @@ def test_compose_shares_discovery_evidence_between_api_and_worker():
     assert "Authorization" in nginx
     api_dockerfile = Path(__file__).resolve().parents[3] / "deploy" / "docker" / "Dockerfile.api"
     assert "/app/artifacts/discovery" in api_dockerfile.read_text(encoding="utf-8")
+    assert "/app/artifacts/automation" in api_dockerfile.read_text(encoding="utf-8")
+    assert "node:22-bookworm-slim" in api_dockerfile.read_text(encoding="utf-8")
     worker_dockerfile = Path(__file__).resolve().parents[3] / "deploy" / "docker" / "Dockerfile.worker"
     assert "/app/artifacts/discovery" in worker_dockerfile.read_text(encoding="utf-8")
+    assert "/app/artifacts/automation" in worker_dockerfile.read_text(encoding="utf-8")
+    automation = "./artifacts/automation:/app/artifacts/automation"
+    assert "AUTOMATION_ARTIFACT_DIR: /app/artifacts/automation" in text
+    assert "AUTOMATION_HOST_ROOT:" in text
+    assert text.count(automation) >= 2

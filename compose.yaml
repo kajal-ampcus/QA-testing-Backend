@@ -18,6 +18,8 @@ x-backend-env: &backend-env
   OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
   LOG_BASE_DIR: /app/logs
   DISCOVERY_EVIDENCE_DIR: /app/artifacts/discovery
+  AUTOMATION_ARTIFACT_DIR: /app/artifacts/automation
+  AUTOMATION_HOST_ROOT: ${AUTOMATION_HOST_ROOT:-}
   DISCOVERY_ALLOW_PRIVATE_TARGETS: ${DISCOVERY_ALLOW_PRIVATE_TARGETS:-true}
 
 x-backend: &backend
@@ -111,6 +113,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./artifacts/discovery:/app/artifacts/discovery
+      - ./artifacts/automation:/app/artifacts/automation
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -154,6 +157,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./artifacts/discovery:/app/artifacts/discovery
+      - ./artifacts/automation:/app/artifacts/automation
     depends_on:
       migrate:
         condition: service_completed_successfully

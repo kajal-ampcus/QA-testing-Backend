@@ -20,6 +20,7 @@ dependencies = [
     "arq>=0.26",  # worker/queue — chosen over Celery: async-native, matches our fully-async stack
     "boto3>=1.35",
     "cryptography>=43",  # directly used for encrypted discovery credentials
+    "jinja2>=3.1",  # deterministic Playwright suite templates
 ]
 
 [project.optional-dependencies]
