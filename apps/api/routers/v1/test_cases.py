@@ -10,9 +10,11 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
+from apps.api.routers.v1.approvals import _test_case_side_effect
 from core.agents.test_case_validation.agent import TestCaseValidationAgent
 from core.agents.test_design.agent import TestDesignAgent
 from core.agents.test_design.schemas import TestCaseSpec, TestStep
@@ -75,6 +77,17 @@ class SubmitTestCaseRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class BulkReviewRequest(BaseModel):
+    decided_by: str = Field(min_length=1, max_length=200)
+    test_case_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+
+
+class BulkReviewFailure(BaseModel):
+    test_case_id: uuid.UUID
+    tc_code: str | None = None
+    error: str
+
+
 class TestStepOut(BaseModel):
     step_number: int
     action: str
@@ -106,6 +119,13 @@ class TestCaseOut(BaseModel):
     status: str
     current_version: int
     current: TestCaseVersionOut
+
+
+class BulkReviewResponse(BaseModel):
+    approved: int
+    skipped: int
+    failed: list[BulkReviewFailure]
+    test_cases: list[TestCaseOut]
 
 
 class GenerateTestCasesResponse(BaseModel):
@@ -182,6 +202,58 @@ def _manual_steps(
             }
         )
     return steps
+
+
+async def _pending_test_case_approval(db: AsyncSession, test_case_id: uuid.UUID) -> Approval | None:
+    result = await db.execute(
+        select(Approval).where(
+            Approval.target_type == "test_case",
+            Approval.target_id == test_case_id,
+            Approval.status == ApprovalStatus.PENDING,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _submit_draft_for_approval(db: AsyncSession, test_case) -> Approval:
+    if test_case.status not in {TestCaseStatus.DRAFT, TestCaseStatus.REJECTED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only DRAFT or REJECTED cases can be submitted (is {test_case.status})",
+        )
+    requirement_pair = await RequirementRepository(db).get_with_current_version(
+        test_case.requirement_id
+    )
+    if requirement_pair is None or requirement_pair[0].status != RequirementStatus.APPROVED:
+        raise HTTPException(status_code=409, detail="Approve the requirement before this test case")
+    if test_case.requirement_version != requirement_pair[0].current_version:
+        raise HTTPException(
+            status_code=409,
+            detail="The requirement changed after this case was written; edit or regenerate it first",
+        )
+    tc_repo = TestCaseRepository(db)
+    await tc_repo.supersede_pending_approvals(test_case.id, "Superseded by a new submission")
+    approval = Approval(
+        project_id=test_case.project_id,
+        target_type="test_case",
+        target_id=test_case.id,
+        target_version=test_case.current_version,
+        status=ApprovalStatus.PENDING,
+    )
+    db.add(approval)
+    test_case.status = TestCaseStatus.PENDING_APPROVAL
+    await db.flush()
+    return approval
+
+
+async def _approve_test_case_approval(
+    db: AsyncSession, approval: Approval, decided_by: str
+) -> None:
+    await _test_case_side_effect(db, approval, ApprovalStatus.APPROVED)
+    approval.status = ApprovalStatus.APPROVED
+    approval.decided_by = decided_by
+    approval.reason = None
+    approval.decided_at = datetime.now(UTC)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -318,6 +390,82 @@ async def list_test_cases(
     tc_repo = TestCaseRepository(db)
     pairs = await tc_repo.list_for_project(project_id)
     return [_to_out(tc, v) for tc, v in pairs]
+
+
+@router.post("/projects/{project_id}/bulk-review", response_model=BulkReviewResponse)
+async def bulk_review_test_cases(
+    project_id: uuid.UUID,
+    body: BulkReviewRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> BulkReviewResponse:
+    """Submit and approve selected test cases in one reviewer pass."""
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+    decided_by = body.decided_by.strip()
+    if not decided_by:
+        raise HTTPException(status_code=422, detail="decided_by must not be blank")
+
+    tc_repo = TestCaseRepository(db)
+    approved: list[TestCaseOut] = []
+    failed: list[BulkReviewFailure] = []
+    skipped = 0
+    seen: set[uuid.UUID] = set()
+
+    for test_case_id in body.test_case_ids:
+        if test_case_id in seen:
+            continue
+        seen.add(test_case_id)
+        pair = await tc_repo.get_with_current_version(test_case_id, for_update=True)
+        if pair is None or pair[0].project_id != project_id:
+            failed.append(
+                BulkReviewFailure(
+                    test_case_id=test_case_id,
+                    error="Test case not found",
+                )
+            )
+            continue
+        test_case, _version = pair
+        if test_case.status == TestCaseStatus.APPROVED:
+            skipped += 1
+            continue
+        try:
+            if test_case.status in {TestCaseStatus.DRAFT, TestCaseStatus.REJECTED}:
+                approval = await _submit_draft_for_approval(db, test_case)
+            elif test_case.status == TestCaseStatus.PENDING_APPROVAL:
+                approval = await _pending_test_case_approval(db, test_case.id)
+                if approval is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="No pending approval exists for this test case",
+                    )
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot approve a {test_case.status} test case",
+                )
+            await _approve_test_case_approval(db, approval, decided_by)
+            await db.flush()
+            current = await tc_repo.get_with_current_version(test_case.id)
+            if current:
+                approved.append(_to_out(*current))
+        except HTTPException as exc:
+            detail = exc.detail
+            failed.append(
+                BulkReviewFailure(
+                    test_case_id=test_case.id,
+                    tc_code=test_case.tc_code,
+                    error=detail if isinstance(detail, str) else str(detail),
+                )
+            )
+
+    await db.commit()
+    return BulkReviewResponse(
+        approved=len(approved),
+        skipped=skipped,
+        failed=failed,
+        test_cases=approved,
+    )
 
 
 @router.post("/projects/{project_id}", response_model=TestCaseOut)
@@ -480,31 +628,7 @@ async def submit_test_case(
     """Send the current version to the approval gate (decided via /approvals)."""
     tc_repo = TestCaseRepository(db)
     test_case, version = await _load_for_change(tc_repo, test_case_id, body.expected_version)
-    if test_case.status not in {TestCaseStatus.DRAFT, TestCaseStatus.REJECTED}:
-        raise HTTPException(
-            status_code=409, detail=f"Only DRAFT or REJECTED cases can be submitted (is {test_case.status})"
-        )
-    requirement_pair = await RequirementRepository(db).get_with_current_version(
-        test_case.requirement_id
-    )
-    if requirement_pair is None or requirement_pair[0].status != RequirementStatus.APPROVED:
-        raise HTTPException(status_code=409, detail="Approve the requirement before this test case")
-    if test_case.requirement_version != requirement_pair[0].current_version:
-        raise HTTPException(
-            status_code=409,
-            detail="The requirement changed after this case was written; edit or regenerate it first",
-        )
-    await tc_repo.supersede_pending_approvals(test_case.id, "Superseded by a new submission")
-    db.add(
-        Approval(
-            project_id=test_case.project_id,
-            target_type="test_case",
-            target_id=test_case.id,
-            target_version=test_case.current_version,
-            status=ApprovalStatus.PENDING,
-        )
-    )
-    test_case.status = TestCaseStatus.PENDING_APPROVAL
+    await _submit_draft_for_approval(db, test_case)
     await db.commit()
     return _to_out(test_case, version)
 
