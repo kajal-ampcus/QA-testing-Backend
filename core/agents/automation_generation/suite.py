@@ -115,6 +115,27 @@ class SuitePlan:
     file_tree: list[str] = field(default_factory=list)
 
 
+def _carry_local_env(suite_dir: Path) -> None:
+    """Reuse the account file from the previous suite in this project folder.
+
+    A new generation only writes .env.example. Login needs the local .env,
+    and that file is never put in the download.
+    """
+    parent = suite_dir.parent
+    if not parent.is_dir():
+        return
+    candidates = sorted(
+        (path for path in parent.glob("*/.env") if path.parent != suite_dir),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"(?m)^TEST_USERNAME=\S", text) and re.search(r"(?m)^TEST_PASSWORD=\S", text):
+            (suite_dir / ".env").write_text(text, encoding="utf-8")
+            return
+
+
 def generate_suite(
     *,
     suite_dir: Path,
@@ -132,8 +153,12 @@ def generate_suite(
     planned_cases = [_plan_case(case, states, forbidden, generation_id) for case in cases]
     pages = _pages_for(planned_cases, states)
     data_cases = _data_cases(planned_cases)
-    env_names = [field["env"] for case in data_cases for field in case["fields"]]
-    env_names.extend(["TEST_USERNAME", "TEST_PASSWORD"])
+    env_names = [
+        field["env"]
+        for case in data_cases
+        for field in case["fields"]
+        if field["env"] not in {"TEST_USERNAME", "TEST_PASSWORD", "BASE_URL", "RUN_DESTRUCTIVE"}
+    ]
 
     _write(suite_dir / "package.json", _package_json(project_id))
     _write(suite_dir / "tsconfig.json", _tsconfig())
@@ -147,6 +172,7 @@ def generate_suite(
         suite_dir / ".env.example",
         templates.render_env_example(base_url=application_url or "", names=sorted(set(env_names))),
     )
+    _carry_local_env(suite_dir)
     _write(
         suite_dir / "fixtures" / "auth.ts",
         templates.render_auth(base_url=json.dumps(application_url) if application_url else '""'),

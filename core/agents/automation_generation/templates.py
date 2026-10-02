@@ -412,6 +412,7 @@ export default defineConfig({
   forbidOnly: true,
   retries: 0,
   timeout: 150_000,
+  expect: { timeout: 15_000 },
   use: {
     baseURL,
     headless: false,
@@ -419,7 +420,7 @@ export default defineConfig({
     actionTimeout: 20_000,
     navigationTimeout: 30_000,
     launchOptions: {
-      slowMo: 800,
+      slowMo: 1400,
       args: ["--start-maximized"],
     },
   },
