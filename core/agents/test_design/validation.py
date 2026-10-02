@@ -152,6 +152,7 @@ def validate_case(
                         if (
                             target_state
                             and href_path
+                            and next_step.target.state_code != step.target.state_code
                             and href_path != target_state.get("url_pattern", "")
                         ):
                             issues.append(

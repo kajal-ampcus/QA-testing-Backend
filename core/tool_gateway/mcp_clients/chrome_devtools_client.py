@@ -8,6 +8,7 @@ core/tool_gateway/playwright_client.py, always.
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import socket
 import tempfile
 import time
 import uuid
+from collections import Counter
 from contextlib import AsyncExitStack, suppress
 from html import unescape
 from pathlib import Path
@@ -380,6 +382,207 @@ def _captcha_challenge_kind(text: str) -> str:
     if _CAPTCHA_CHALLENGE_PATTERN.search(text):
         return "generic"
     return "none"
+
+
+_CAPTCHA_TOKEN = re.compile(r"^[A-Za-z0-9!@#$%^&*+=_?.-]{3,12}$")
+_CAPTCHA_UI_WORDS = {
+    "username",
+    "password",
+    "captcha",
+    "login",
+    "signin",
+    "submit",
+    "refresh",
+    "speak",
+    "remember",
+    "home",
+    "forgot",
+    "instructions",
+    "enter",
+    "click",
+    "icon",
+    "generate",
+    "show",
+    "hide",
+    "answer",
+    "question",
+    "math",
+}
+_CAPTCHA_OCR_CONFIG = (
+    "--psm 7 -c tessedit_char_whitelist="
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*+=_?.-"
+)
+
+
+def _text_captcha_token(widget_text: str) -> str | None:
+    """Read a letter, digit, or symbol token from the captcha widget only.
+
+    Page labels such as Username or Enter Captcha are not answers. A row of
+    single glyphs ("A b 3 $") is joined. Phrases are ignored.
+    """
+    if not widget_text or _is_security_verification_page(widget_text):
+        return None
+    if _solve_math_captcha(widget_text) is not None:
+        return None
+    candidates: list[str] = []
+    lines = [line.strip() for line in widget_text.splitlines() if line.strip()]
+    pieces = widget_text.split()
+    if pieces and all(len(piece) == 1 for piece in pieces):
+        candidates.append("".join(pieces))
+    for line in lines:
+        parts = line.split()
+        if len(parts) > 1:
+            if all(len(part) == 1 for part in parts):
+                candidates.append("".join(parts))
+            continue
+        candidates.append(line)
+    for candidate in candidates:
+        if candidate.lower() in _CAPTCHA_UI_WORDS:
+            continue
+        if _CAPTCHA_TOKEN.fullmatch(candidate):
+            return candidate
+    return None
+
+
+def _png_from_data_url(value: str) -> bytes | None:
+    if not value.startswith("data:image/") or value.startswith("data:image/svg"):
+        return None
+    header, _, payload = value.partition(",")
+    if ";base64" not in header or not payload:
+        return None
+    try:
+        return base64.b64decode(payload)
+    except ValueError:
+        return None
+
+
+def _captcha_ocr_token(raw: str) -> str | None:
+    """Keep a captcha reading and drop the quotes or line noise around it.
+
+    A phrase such as Enter Captcha is a field label. Single glyphs on one line
+    are joined, so "A T 7 r k z" stays one answer.
+    """
+    text = (raw or "").strip().strip("\"'`“”‘’")
+    pieces = text.split()
+    if len(pieces) > 1 and not all(len(piece) == 1 for piece in pieces):
+        return None
+    compact = "".join(pieces)
+    compact = compact.strip("._-")
+    if not compact or compact.lower() in _CAPTCHA_UI_WORDS:
+        return None
+    if not _CAPTCHA_TOKEN.fullmatch(compact):
+        return None
+    return compact
+
+
+def _choose_captcha_reading(readings: list[str]) -> str | None:
+    """Pick the captcha text that several readings agree on.
+
+    A symbol that only some readings keep, such as Ab3$, is preferred over the
+    same letters with that symbol dropped. Case is kept.
+    """
+    counts: Counter[str] = Counter()
+    first_seen: dict[str, int] = {}
+    for index, raw in enumerate(readings):
+        token = _captcha_ocr_token(raw)
+        if token is None:
+            continue
+        counts[token] += 1
+        first_seen.setdefault(token, index)
+    if not counts:
+        return None
+
+    def rank(token: str) -> tuple[int, int, int]:
+        mixed = int(any(char.isalpha() for char in token) and any(char.isdigit() for char in token))
+        return (counts[token], mixed, -first_seen[token])
+
+    chosen = max(counts, key=rank)
+    for token, count in counts.items():
+        if token == chosen or count < 1 or chosen not in token:
+            continue
+        extra = token.replace(chosen, "", 1)
+        if extra and all(not char.isalnum() for char in extra):
+            return token
+    return chosen
+
+
+def _ocr_captcha_png(png: bytes) -> str | None:
+    """Read letters, digits, and symbols from a captcha image already on screen.
+
+    Line noise through an alphanumeric image is unstable for one Tesseract
+    pass, so a few scaled readings vote. The displayed pixels are not fetched
+    again.
+    """
+    try:
+        import pytesseract
+        from PIL import Image, ImageOps
+    except ImportError:
+        logger.info("CAPTCHA image OCR dependencies are not installed")
+        return None
+    try:
+        image = Image.open(io.BytesIO(png)).convert("L")
+        if image.width < 280:
+            image = image.resize((image.width * 3, image.height * 3), Image.Resampling.LANCZOS)
+        variants = (image, ImageOps.autocontrast(image))
+        configs = (
+            "--psm 8 -c tessedit_char_whitelist="
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+            "--psm 7 -c tessedit_char_whitelist="
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+            _CAPTCHA_OCR_CONFIG,
+        )
+        readings: list[str] = []
+        for variant in variants:
+            for config in configs:
+                readings.append(pytesseract.image_to_string(variant, config=config))
+    except Exception as exc:
+        logger.info("CAPTCHA image OCR failed: %s", type(exc).__name__)
+        return None
+    answer = _choose_captcha_reading(readings)
+    if answer:
+        logger.info("[DISCOVERY AUTH] Captcha image read as %s", answer)
+    return answer
+
+
+def _captcha_answer_from_reading(
+    page_text: str,
+    widget_text: str = "",
+    image_png: bytes | None = None,
+) -> str | None:
+    """Solve a login captcha.
+
+    An equation in the captcha widget is math. An image of letters and digits
+    is read from that image. Arithmetic elsewhere on the page does not replace
+    the image.
+    """
+    if _is_security_verification_page(page_text) or _is_security_verification_page(widget_text):
+        return None
+    if widget_text:
+        widget_math = _solve_math_captcha(widget_text)
+        if widget_math is not None:
+            return str(widget_math)
+    if image_png:
+        token = _text_captcha_token(widget_text)
+        if token:
+            return token
+        return _ocr_captcha_png(image_png)
+    for sample in (widget_text, page_text):
+        if not sample:
+            continue
+        math = _solve_math_captcha(sample)
+        if math is not None:
+            return str(math)
+    return _text_captcha_token(widget_text)
+
+
+def _captcha_answer_required(text: str, captcha_uid: str | None) -> bool:
+    if _is_security_verification_page(text):
+        return False
+    return bool(
+        captcha_uid
+        or _CAPTCHA_FIELD_PATTERN.search(text)
+        or _captcha_challenge_kind(text) == "generic"
+    )
 
 
 def _stdio_environment() -> dict[str, str]:
@@ -1162,6 +1365,121 @@ class ChromeDevToolsClient:
         )
         return _evaluate_script_text(result)
 
+    async def _read_captcha_widget(self) -> tuple[str, bytes | None]:
+        """Read the captcha widget's own text and the image already painted on screen.
+
+        Drawing the displayed image does not request a new challenge, so the
+        token the form expects stays valid.
+        """
+        try:
+            result = await self._call(
+                "evaluate_script",
+                self._page_args(
+                    function="""async () => {
+                        const glyphs = [];
+                        const captchaHint = /captcha|challenge/i;
+                        const hintOf = (node) => [
+                            node.id,
+                            node.className,
+                            node.getAttribute && node.getAttribute("alt"),
+                            node.getAttribute && node.getAttribute("title"),
+                            node.getAttribute && node.getAttribute("aria-label")
+                        ].join(" ");
+                        const marked = [
+                            "[id*='captcha' i]",
+                            "[class*='captcha' i]",
+                            "[aria-label*='captcha' i]"
+                        ].join(", ");
+                        const field = document.querySelector([
+                            "input[placeholder*='captcha' i]",
+                            "input[aria-label*='captcha' i]",
+                            "input[name*='captcha' i]"
+                        ].join(", "));
+                        const readSvg = (svg) => {
+                            [...svg.querySelectorAll("text, tspan")]
+                                .map((node, index) => ({
+                                    x: node.hasAttribute("x")
+                                        ? parseFloat(node.getAttribute("x"))
+                                        : index,
+                                    text: (node.textContent || "").trim()
+                                }))
+                                .filter((item) => item.text)
+                                .sort((a, b) => a.x - b.x)
+                                .forEach((item) => glyphs.push(item.text));
+                        };
+                        document.querySelectorAll(marked).forEach((node) => {
+                            if (node.tagName === "SVG") readSvg(node);
+                            node.querySelectorAll("svg").forEach(readSvg);
+                        });
+                        const pictures = [];
+                        document.querySelectorAll("img, canvas").forEach((node) => {
+                            if (captchaHint.test(hintOf(node)) || node.closest(marked)) {
+                                pictures.push(node);
+                            }
+                        });
+                        if (!pictures.length && field) {
+                            let parent = field.parentElement;
+                            for (
+                                let depth = 0;
+                                parent && depth < 3 && !pictures.length;
+                                depth += 1
+                            ) {
+                                parent.querySelectorAll(
+                                    ":scope > img, :scope > canvas"
+                                ).forEach((node) => pictures.push(node));
+                                parent = parent.parentElement;
+                            }
+                        }
+                        let image = "";
+                        const paint = (source, width, height) => {
+                            if (!source || !width || !height || image) return;
+                            const canvas = document.createElement("canvas");
+                            canvas.width = width;
+                            canvas.height = height;
+                            try {
+                                canvas.getContext("2d").drawImage(source, 0, 0, width, height);
+                                image = canvas.toDataURL("image/png");
+                            } catch (_) {}
+                        };
+                        pictures.forEach((node) => {
+                            if (node.tagName === "CANVAS") {
+                                try {
+                                    image = image || node.toDataURL("image/png");
+                                } catch (_) {}
+                                return;
+                            }
+                            const src = node.currentSrc || node.src || "";
+                            const inline = src.startsWith("data:image/")
+                                && !src.startsWith("data:image/svg");
+                            if (inline) {
+                                image = image || src;
+                                return;
+                            }
+                            paint(
+                                node,
+                                node.naturalWidth || node.width,
+                                node.naturalHeight || node.height
+                            );
+                        });
+                        return JSON.stringify({ text: glyphs.join(" "), image });
+                    }""",
+                    args=[],
+                    waitForStableDom=False,
+                ),
+            )
+        except Exception:
+            return "", None
+        raw = _evaluate_script_text(result).strip()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw, None
+        if not isinstance(payload, dict):
+            return "", None
+        text = str(payload.get("text") or "")
+        image = payload.get("image") if isinstance(payload.get("image"), str) else ""
+        return text, _png_from_data_url(image)
+
     async def _login_text_for_captcha(self) -> str:
         snapshot = _snapshot_text(await self.take_snapshot())
         decoded = _svg_captcha_text(snapshot)
@@ -1171,15 +1489,18 @@ class ChromeDevToolsClient:
             snapshot = f"{await self._read_visible_login_text()}\n{snapshot}"
         return snapshot
 
-    async def _wait_for_math_captcha(self) -> tuple[int | None, str]:
-        """Poll until the arithmetic CAPTCHA is readable from the DOM or snapshot."""
+    async def _wait_for_captcha_answer(self) -> tuple[str | None, str]:
+        """Poll until a math, text, or image captcha on the login form can be read."""
         text = ""
-        for _ in range(20):
+        for _ in range(8):
             text = await self._login_text_for_captcha()
-            answer = _solve_math_captcha(text)
+            if _is_security_verification_page(text):
+                return None, text
+            widget_text, image = await self._read_captcha_widget()
+            answer = _captcha_answer_from_reading(text, widget_text, image)
             if answer is not None:
                 return answer, text
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.4)
         return None, text
 
     async def _wait_for_submit_uid(
@@ -1441,67 +1762,62 @@ class ChromeDevToolsClient:
                 "password field",
             )
 
-            # ── Solve the CAPTCHA when it is a supported arithmetic challenge ─
-            # Read the question AFTER filling credentials: some apps regenerate
-            # their challenge when the username/password fields change.
+            # ── Solve the CAPTCHA shown on this login form ───────────────
+            # Math is read as text. Letters, digits, and symbols are read from
+            # the captcha widget, or from the image already on screen.
+            # Credentials are not submitted while that answer is still empty.
             captcha_names = [
                 secret.get("captcha_selector", ""),
                 "enter the answer",
                 "your answer",
                 "captcha answer",
+                "enter captcha",
                 "answer",
                 "captcha",
             ]
-            answer, text = await self._wait_for_math_captcha()
+            answer, text = await self._wait_for_captcha_answer()
+            if _is_security_verification_page(text):
+                raise SecurityVerificationRequiredError(
+                    "The target is showing an interactive security verification page. "
+                    "Discovery does not click or bypass that challenge."
+                )
             controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
             captcha_uid = _find_uid(
                 controls,
                 captcha_names,
                 {"textbox", "input", "spinbutton"},
             )
-
-            challenge_kind = _captcha_challenge_kind(text)
-            has_captcha_image = bool(re.search(r'\bimage\b[^"]*"CAPTCHA"', text, re.I)) or bool(
-                _SVG_DATA_URI.search(text)
-            )
-            if challenge_kind == "generic" and not has_captcha_image:
-                raise RuntimeError(
-                    "A CAPTCHA challenge is visible on the login form, but it is not a "
-                    "supported arithmetic CAPTCHA. The discovery agent can only solve "
-                    "standard math-style challenges; this page requires a generic CAPTCHA "
-                    "workflow, a custom solver, or manual verification before discovery can continue. "
-                    f"Page text snippet: {text[:500]}"
-                )
-
-            if captcha_uid:
-                if answer is None:
-                    refresh_uid = _find_uid(
+            if _captcha_answer_required(text, captcha_uid) and not answer:
+                refresh_names = ["refresh captcha", "reload captcha", "new captcha", "refresh"]
+                for _refresh_attempt in range(3):
+                    refresh_uid = _find_uid(controls, refresh_names, {"button", "link"})
+                    if not refresh_uid:
+                        break
+                    await self.click(refresh_uid)
+                    answer, text = await self._wait_for_captcha_answer()
+                    controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
+                    captcha_uid = _find_uid(
                         controls,
-                        ["refresh captcha", "reload captcha", "new captcha", "refresh"],
-                        {"button", "link"},
+                        captcha_names,
+                        {"textbox", "input", "spinbutton"},
                     )
-                    # Some apps occasionally return an empty challenge and ask the
-                    # user to refresh it. Mirror that recovery automatically.
-                    if refresh_uid:
-                        for _refresh_attempt in range(3):
-                            await self.click(refresh_uid)
-                            answer, text = await self._wait_for_math_captcha()
-                            if answer is not None:
-                                break
-                    if answer is None:
-                        raise RuntimeError(
-                            "CAPTCHA remained unavailable after waiting for the challenge "
-                            "and 3 automatic refreshes. "
-                            f"Page text snippet: {text[:500]}"
-                        )
+                    if answer:
+                        break
+                if not answer:
+                    raise RuntimeError(
+                        "The login CAPTCHA could not be read. Discovery can solve a math "
+                        "question, or letters, digits, and symbols shown in the captcha. "
+                        f"Page text snippet: {text[:500]}"
+                    )
+            if captcha_uid and answer:
                 await self._fill_authentication_field(
                     captcha_uid,
-                    str(answer),
+                    answer,
                     captcha_names,
                     {"textbox", "input", "spinbutton"},
                     "CAPTCHA field",
                 )
-            elif _CAPTCHA_FIELD_PATTERN.search(text) or _solve_math_captcha(text) is not None:
+            elif _captcha_answer_required(text, captcha_uid):
                 raise RuntimeError(
                     "A CAPTCHA field is visible but no answer input could be detected. "
                     f"Page text snippet: {text[:500]}"
@@ -1547,7 +1863,7 @@ class ChromeDevToolsClient:
 
         raise RuntimeError(
             "Authentication failed after 3 attempts — login did not leave the "
-            "sign-in page. If a math CAPTCHA is shown, confirm it is visible "
-            "and that the Employee/Admin role radio is selected. "
+            "sign-in page. The saved account was submitted with the captcha answer "
+            "that could be read from the form. "
             f"Page text snippet: {last_page_text[:400]}"
         )

@@ -52,6 +52,17 @@ async def claim_discovery(pool: ArqRedis, project_id: uuid.UUID | str) -> str | 
     return job_id
 
 
+async def clear_inactive_discovery(pool: ArqRedis, project_id: uuid.UUID | str) -> None:
+    """Drop a discovery claim whose job is no longer queued or running."""
+    key = _key(project_id)
+    raw = await pool.get(key)
+    if raw is None:
+        return
+    job_id = raw.decode() if isinstance(raw, bytes) else str(raw)
+    if await Job(job_id, pool).status() not in _ACTIVE_STATUSES:
+        await pool.delete(key)
+
+
 async def release_discovery(pool: ArqRedis, project_id: uuid.UUID | str, job_id: str) -> None:
     """Release the claim only if it still belongs to this job."""
     key = _key(project_id)

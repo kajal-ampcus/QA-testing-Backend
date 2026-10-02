@@ -11,6 +11,7 @@ can display a developer-friendly report rather than a blank error state.
 """
 
 import os
+import re
 import uuid
 from typing import Any
 from urllib.parse import urljoin
@@ -38,6 +39,19 @@ def _extract_keywords(title: str, description: str, domain_tags: list[str]) -> l
     for text in (title, description):
         words.update(w.strip(".,!?").lower() for w in text.split() if len(w) > 3)
     return list(words)
+
+
+def _login_failure_detail(actions: list[dict[str, Any]]) -> str | None:
+    """Return the crawler message from a failed sign-in, without page snapshots."""
+    for failure in actions:
+        detail = str(failure.get("detail") or "")
+        if re.search(
+            r"authentication failed|could not be read|sign-in page|login form",
+            detail,
+            re.I,
+        ):
+            return detail.split("Page text snippet", 1)[0].strip() or detail
+    return None
 
 
 def _human_termination(reason: str | None) -> str:
@@ -375,6 +389,15 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             )
             diagnostic["auth_succeeded"] = coverage.get("authenticated_explored", False)
             diagnostic["auth_attempted"] = bool(getattr(crawler, "_authenticate", False))
+            if diagnostic["auth_attempted"] and not diagnostic["auth_succeeded"]:
+                login_error = _login_failure_detail(diagnostic["failed_actions"])
+                if login_error and not diagnostic["login_error"]:
+                    diagnostic["login_error"] = login_error
+                if not diagnostic["termination_detail"]:
+                    diagnostic["termination_detail"] = (
+                        "Login was attempted and did not succeed, so pages after "
+                        "login were not discovered."
+                    )
             security_failure = next(
                 (
                     failure
@@ -448,10 +471,14 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
         if not diagnostic["termination_detail"]:
             diagnostic["termination_detail"] = _human_termination(termination_reason)
 
-        # ── Only save diagnostic evidence on non-complete maps ────────────
-        # For COMPLETE maps the coverage field is enough. For FAILED/PARTIAL
-        # the diagnostic panel in the UI needs the extra detail.
-        save_diagnostic = diagnostic if status in ("FAILED", "PARTIAL") else None
+        # Keep the login failure even when the public crawl finishes.
+        # A COMPLETE map otherwise hides the fact that sign-in never succeeded.
+        auth_failed = bool(diagnostic.get("auth_attempted")) and not diagnostic.get(
+            "auth_succeeded"
+        )
+        save_diagnostic = (
+            diagnostic if status in ("FAILED", "PARTIAL") or auth_failed else None
+        )
 
         await self._map_repo.set_status(
             app_map.id,

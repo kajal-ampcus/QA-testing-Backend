@@ -28,7 +28,12 @@ from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.queue.broker import enqueue, get_arq_pool
-from infra.queue.discovery_lock import claim_discovery, release_discovery
+from infra.queue.discovery_lock import (
+    active_discovery_job,
+    claim_discovery,
+    clear_inactive_discovery,
+    release_discovery,
+)
 
 _REDIS_ERRORS = (RedisConnectionError, RedisTimeoutError, OSError)
 
@@ -117,22 +122,40 @@ async def _check_target(url: str) -> None:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-async def _check_credential(
-    session: AsyncSession, project_id: uuid.UUID, credential_ref: str | None
-) -> None:
-    if not credential_ref:
-        return
-    owned = await session.scalar(
-        select(DiscoveryCredential.id).where(
-            DiscoveryCredential.project_id == project_id,
-            DiscoveryCredential.credential_ref == credential_ref,
-            DiscoveryCredential.active.is_(True),
+async def _resolve_credential(
+    session: AsyncSession,
+    project: Project,
+    credential_ref: str | None,
+) -> str | None:
+    """Use an active account for this project.
+
+    Editing an account creates a new credential id and deactivates the old one.
+    A discover request that still carries the retired id follows the project's
+    current default instead of failing.
+    """
+    requested = credential_ref or project.credential_ref
+    if not requested:
+        return None
+
+    async def active(ref: str) -> bool:
+        owned = await session.scalar(
+            select(DiscoveryCredential.id).where(
+                DiscoveryCredential.project_id == project.id,
+                DiscoveryCredential.credential_ref == ref,
+                DiscoveryCredential.active.is_(True),
+            )
         )
+        return owned is not None
+
+    if await active(requested):
+        return requested
+    replacement = project.credential_ref
+    if replacement and replacement != requested and await active(replacement):
+        return replacement
+    raise HTTPException(
+        status_code=422,
+        detail="Test account is not an active account of this project",
     )
-    if owned is None:
-        raise HTTPException(
-            status_code=422, detail="Test account is not an active account of this project"
-        )
 
 
 async def _claim_discovery_slot(project_id: uuid.UUID) -> str:
@@ -208,9 +231,10 @@ async def trigger_discovery(
                 status_code=409, detail=f"Focus requirement version is not current: {ref}"
             )
         approved_refs.append(f"{requirement.id}@v{requirement.current_version}")
-    credential_ref = body.credential_ref or project.credential_ref
     await _check_target(target_url)
-    await _check_credential(session, project_id, credential_ref)
+    credential_ref = await _resolve_credential(
+        session, project, body.credential_ref or project.credential_ref
+    )
     payload = {
         "target": {
             "url": target_url,
@@ -264,6 +288,62 @@ async def get_discovery_job(job_id: str) -> DiscoveryJobResponse:
             job_id=job_id, status="failed", result={"error": type(exc).__name__}
         )
     return DiscoveryJobResponse(job_id=job_id, status=status.value, result=result)
+
+
+async def _close_running_map(session: AsyncSession, project_id: uuid.UUID) -> bool:
+    """Finish a map left RUNNING after the worker process is already gone."""
+    repo = ApplicationMapRepository(session)
+    app_map = await repo.get_latest_for_project(project_id)
+    if app_map is None or app_map.status != "RUNNING":
+        return False
+    states = await repo.count_states(app_map.id)
+    diagnostic = dict(app_map.diagnostic_evidence or {})
+    diagnostic["termination_detail"] = (
+        "Discovery was stopped. The saved pages can be continued."
+    )
+    await repo.set_status(
+        app_map.id,
+        "PARTIAL",
+        termination_reason="CANCELLED_BY_USER",
+        coverage={
+            **(app_map.coverage or {}),
+            "cancelled": True,
+            "recoverable": True,
+            "states_discovered": states,
+        },
+        diagnostic_evidence=diagnostic,
+    )
+    await session.commit()
+    return True
+
+
+@router.delete("/projects/{project_id}/discover", response_model=DiscoveryCancelResponse)
+async def stop_project_discovery(
+    project_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)
+) -> DiscoveryCancelResponse:
+    """Stop the project's crawl, including a run whose worker has already exited."""
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        pool = await get_arq_pool()
+        job_id = await active_discovery_job(pool, project_id)
+    except _REDIS_ERRORS as exc:
+        raise HTTPException(status_code=503, detail="Discovery queue is unavailable") from exc
+    if job_id:
+        try:
+            cancelled = await Job(job_id, pool).abort(timeout=5)
+        except TimeoutError:
+            return DiscoveryCancelResponse(job_id=job_id, status="cancellation_requested")
+        if cancelled:
+            return DiscoveryCancelResponse(job_id=job_id, status="cancelled")
+    closed = await _close_running_map(session, project_id)
+    with suppress(*_REDIS_ERRORS):
+        await clear_inactive_discovery(pool, project_id)
+    return DiscoveryCancelResponse(
+        job_id=job_id or "",
+        status="stopped" if closed else "already_finished",
+    )
 
 
 @router.delete("/jobs/{job_id}", response_model=DiscoveryCancelResponse)

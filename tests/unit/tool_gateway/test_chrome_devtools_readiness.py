@@ -13,8 +13,11 @@ from core.tool_gateway.mcp_clients.chrome_devtools_client import (
     _is_security_verification_page,
     _login_form_visible,
     _same_site_allowed_patterns,
+    _captcha_answer_from_reading,
+    _choose_captcha_reading,
     _solve_math_captcha,
     _svg_captcha_text,
+    _text_captcha_token,
 )
 
 
@@ -500,3 +503,228 @@ async def test_authenticate_selects_employee_role_and_solves_captcha_after_fill(
     assert ("1_4", "secret") in fills
     assert ("1_6", "16") in fills
     assert client._authenticated is True
+
+
+def test_text_captcha_token_joins_symbols_and_ignores_labels():
+    assert _text_captcha_token("Ab3$") == "Ab3$"
+    assert _text_captcha_token("A b 3 $") == "Ab3$"
+    assert _text_captcha_token("Username\nPassword\nEnter Captcha") is None
+
+
+def test_math_captcha_is_preferred_over_widget_text(monkeypatch):
+    def fail(_png):
+        raise AssertionError("ocr should not run when the challenge is math")
+
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client._ocr_captcha_png",
+        fail,
+    )
+    assert _captcha_answer_from_reading("Enter the answer\n3 + 16 = ?", "Ab3$") == "19"
+
+
+def test_alphanumeric_image_captcha_ignores_other_numbers(monkeypatch):
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client._ocr_captcha_png",
+        lambda _png: "AT7rkz",
+    )
+    assert (
+        _captcha_answer_from_reading("Enter Captcha\n3 + 16 = ?", "", b"png")
+        == "AT7rkz"
+    )
+
+
+def test_captcha_reading_keeps_the_agreed_alphanumeric_case():
+    assert _choose_captcha_reading(["AT7tkz", "AT7rkz", "“AT7rkz", "AT7EKZ"]) == "AT7rkz"
+    assert _choose_captcha_reading(["Ab3", "Ab3", "Ab3$"]) == "Ab3$"
+    assert _choose_captcha_reading(["Username", "Enter Captcha"]) is None
+
+
+def test_widget_text_captcha_does_not_need_ocr(monkeypatch):
+    def fail(_png):
+        raise AssertionError("ocr should not run when the widget text is readable")
+
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client._ocr_captcha_png",
+        fail,
+    )
+    assert _captcha_answer_from_reading("Enter Captcha", "Ab3$") == "Ab3$"
+
+
+def test_image_captcha_uses_local_ocr(monkeypatch):
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client._ocr_captcha_png",
+        lambda _png: "hzf2GU",
+    )
+    assert _captcha_answer_from_reading("Enter Captcha\nRefresh Captcha", "", b"png") == "hzf2GU"
+
+
+def test_security_interstitial_is_not_a_text_captcha(monkeypatch):
+    def fail(_png):
+        raise AssertionError("ocr should not run on an interactive verification page")
+
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client._ocr_captcha_png",
+        fail,
+    )
+    text = "Verify you are human\nChecking if the site connection is secure"
+    assert _is_security_verification_page(text)
+    assert _captcha_answer_from_reading(text, "Ab3$", b"png") is None
+
+
+@pytest.mark.asyncio
+async def test_authenticate_types_symbol_captcha_without_ocr(monkeypatch):
+    client = ChromeDevToolsClient()
+    client._credential_ref = "cred:cep"
+    fills: list[tuple[str, str]] = []
+    login = (
+        'uid=1_0 RootWebArea "Login" url="https://app.example/login"\n'
+        'uid=1_1 textbox "Username"\n'
+        'uid=1_2 textbox "Password"\n'
+        'uid=1_3 textbox "Enter Captcha"\n'
+        'uid=1_4 button "Login"'
+    )
+    home = 'uid=2_0 RootWebArea "Home" url="https://app.example/home"\nuid=2_1 button "Logout"'
+    state = {"page": "login"}
+
+    async def resolve_login(_ref, _project_id=None):
+        return {"username": "qa", "password": "secret", "account_role": "User"}
+
+    async def take_snapshot():
+        return home if state["page"] == "home" else login
+
+    async def widget():
+        return "Ab3$", None
+
+    async def fill(uid, value):
+        fills.append((uid, value))
+
+    async def click(uid):
+        if uid == "1_4":
+            state["page"] = "home"
+
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client.resolve_login",
+        resolve_login,
+    )
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client._ocr_captcha_png",
+        lambda _png: (_ for _ in ()).throw(AssertionError("ocr")),
+    )
+    monkeypatch.setattr(client, "take_snapshot", take_snapshot)
+    monkeypatch.setattr(client, "wait_until_ready", take_snapshot)
+    monkeypatch.setattr(client, "_read_visible_login_text", take_snapshot)
+    monkeypatch.setattr(client, "_read_captcha_widget", widget)
+    monkeypatch.setattr(client, "fill", fill)
+    monkeypatch.setattr(client, "click", click)
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client.asyncio.sleep",
+        lambda _seconds: _done(),
+    )
+
+    await client.authenticate()
+
+    assert ("1_3", "Ab3$") in fills
+    assert client._authenticated is True
+
+
+@pytest.mark.asyncio
+async def test_authenticate_fills_image_captcha_from_ocr(monkeypatch):
+    client = ChromeDevToolsClient()
+    client._credential_ref = "cred:cep"
+    fills: list[tuple[str, str]] = []
+    login = (
+        'uid=1_0 RootWebArea "Login" url="https://app.example/login"\n'
+        'uid=1_1 textbox "Username"\n'
+        'uid=1_2 textbox "Password"\n'
+        'uid=1_3 textbox "Enter Captcha"\n'
+        'uid=1_4 button "Login"'
+    )
+    home = 'uid=2_0 RootWebArea "Home" url="https://app.example/home"\nuid=2_1 button "Logout"'
+    state = {"page": "login"}
+
+    async def resolve_login(_ref, _project_id=None):
+        return {"username": "qa", "password": "secret", "account_role": "User"}
+
+    async def take_snapshot():
+        return home if state["page"] == "home" else login
+
+    async def widget():
+        return "", b"png-bytes"
+
+    async def fill(uid, value):
+        fills.append((uid, value))
+
+    async def click(uid):
+        if uid == "1_4":
+            state["page"] = "home"
+
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client.resolve_login",
+        resolve_login,
+    )
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client._ocr_captcha_png",
+        lambda _png: "hzf2GU",
+    )
+    monkeypatch.setattr(client, "take_snapshot", take_snapshot)
+    monkeypatch.setattr(client, "wait_until_ready", take_snapshot)
+    monkeypatch.setattr(client, "_read_visible_login_text", take_snapshot)
+    monkeypatch.setattr(client, "_read_captcha_widget", widget)
+    monkeypatch.setattr(client, "fill", fill)
+    monkeypatch.setattr(client, "click", click)
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client.asyncio.sleep",
+        lambda _seconds: _done(),
+    )
+
+    await client.authenticate()
+
+    assert ("1_3", "hzf2GU") in fills
+    assert client._authenticated is True
+
+
+@pytest.mark.asyncio
+async def test_authenticate_does_not_submit_when_captcha_cannot_be_read(monkeypatch):
+    client = ChromeDevToolsClient()
+    client._credential_ref = "cred:cep"
+    clicks: list[str] = []
+    login = (
+        'uid=1_0 RootWebArea "Login" url="https://app.example/login"\n'
+        'uid=1_1 textbox "Username"\n'
+        'uid=1_2 textbox "Password"\n'
+        'uid=1_3 textbox "Enter Captcha"\n'
+        'uid=1_4 button "Refresh Captcha"\n'
+        'uid=1_5 button "Login"'
+    )
+
+    async def resolve_login(_ref, _project_id=None):
+        return {"username": "qa", "password": "secret", "account_role": "User"}
+
+    async def widget():
+        return "", None
+
+    async def click(uid):
+        clicks.append(uid)
+
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client.resolve_login",
+        resolve_login,
+    )
+    monkeypatch.setattr(client, "take_snapshot", lambda: _done(login))
+    monkeypatch.setattr(client, "wait_until_ready", lambda: _done())
+    monkeypatch.setattr(client, "_read_visible_login_text", lambda: _done(login))
+    monkeypatch.setattr(client, "_read_captcha_widget", widget)
+    monkeypatch.setattr(client, "fill", lambda _uid, _value: _done())
+    monkeypatch.setattr(client, "click", click)
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client.asyncio.sleep",
+        lambda _seconds: _done(),
+    )
+
+    with pytest.raises(RuntimeError, match="could not be read"):
+        await client.authenticate()
+    assert "1_5" not in clicks
+
+
+async def _done(value=None):
+    return value

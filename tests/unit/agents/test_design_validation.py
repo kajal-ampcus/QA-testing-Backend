@@ -64,6 +64,66 @@ def test_rejects_unresolvable_data_and_preexisting_success_text():
     assert any("pre-existing page text" in issue for issue in issues)
 
 
+def test_negative_case_may_remain_on_the_page_when_the_control_has_an_href():
+    states = [
+        {
+            "state_code": "STATE-001",
+            "url_pattern": "/login",
+            "elements": [
+                {
+                    "element_code": "EL-001",
+                    "role": "link",
+                    "name": "Login",
+                    "url": "https://app.test/admin",
+                }
+            ],
+        },
+        {"state_code": "STATE-002", "url_pattern": "/dashboard", "elements": []},
+    ]
+    rejected = CaseSpec(
+        title="Empty username is rejected",
+        objective="Verify login stays on the page when username is empty",
+        category="NEGATIVE",
+        preconditions=["On the login page"],
+        steps=[
+            CaseStep(step_number=1, action="click", target=target("EL-001")),
+            CaseStep(
+                step_number=2,
+                action="assert",
+                target=StepTarget(state_code="STATE-001"),
+                expected="The current URL includes /login",
+            ),
+        ],
+        expected_result="The current URL includes /login",
+        test_data={},
+        traceability=["AC-1"],
+        confidence=0.6,
+    )
+    assert validate_case(rejected, states, {"AC-1"}) == []
+
+    navigated = CaseSpec(
+        title="Login opens admin",
+        objective="Verify the login control opens admin",
+        category="POSITIVE",
+        preconditions=["On the login page"],
+        steps=[
+            CaseStep(step_number=1, action="click", target=target("EL-001")),
+            CaseStep(
+                step_number=2,
+                action="assert",
+                target=StepTarget(state_code="STATE-002"),
+                expected="The admin page is visible",
+            ),
+        ],
+        expected_result="The admin page is visible",
+        test_data={},
+        traceability=["AC-1"],
+        confidence=0.8,
+    )
+    issues = validate_case(navigated, states, {"AC-1"})
+    assert any("link destination and asserted state disagree" in issue for issue in issues)
+
+
 def test_accepts_observed_precise_assertion():
     candidate = case(
         CaseStep(step_number=1, action="fill", target=target("EL-003"), value="{email}"),

@@ -808,6 +808,15 @@ class ParallelCrawler:
                                     await client.take_snapshot(), job.path
                                 )
                             else:
+                                async with self._lock:
+                                    self._live_view = {
+                                        "url": self._login_url or base_url,
+                                        "label": "Signing in",
+                                        "screenshot_ref": None,
+                                        "fingerprint": None,
+                                        "action": "authenticate",
+                                    }
+                                await self._save_checkpoint()
                                 snapshot = await crawler._replay_to(job.path, skip_auth=skip_auth)
                             if not skip_auth and not authenticated_here:
                                 authenticated_here = True
