@@ -43,6 +43,7 @@ from infra.db.models.requirement import Requirement
 from infra.db.models.test_case import TestCase, TestCaseVersion
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.automation_repo import AutomationRepository
+from infra.db.repositories.execution_repo import ExecutionRepository
 from infra.db.repositories.test_case_repo import TestCaseRepository
 from schemas.automation import (
     AutomationGenerationOut,
@@ -255,6 +256,7 @@ async def list_generations(
     for script in scripts:
         grouped.setdefault(script.generation_id, []).append(script)
     settings = ApiSettings()
+    execution_repo = ExecutionRepository(session)
     generations = [
         AutomationGenerationSummary(
             generation_id=generation_id,
@@ -267,6 +269,8 @@ async def list_generations(
             approval_required=any(
                 requires_approval("automation_script", item.risk_level, settings.environment) for item in items
             ),
+            executed=bool((items[0].suite_summary or {}).get("executed"))
+            or await execution_repo.has_completed_run(project_id, generation_id),
         )
         for generation_id, items in grouped.items()
     ]
@@ -287,7 +291,10 @@ async def get_generation(
     approvals = await _approval_ids(session, [row.id for row in rows])
     summary = dict(rows[0].suite_summary or {})
     summary["file_tree"] = _files_or_summary(project_id, generation_id, summary)
-    return _detail(rows, summary, approvals, ApiSettings(), include_sources=True)
+    executed = bool(summary.get("executed")) or await ExecutionRepository(session).has_completed_run(
+        project_id, generation_id
+    )
+    return _detail(rows, summary, approvals, ApiSettings(), include_sources=True, executed=executed)
 
 
 @router.get("/projects/{project_id}/generations/{generation_id}/download")
@@ -316,6 +323,7 @@ def _detail(
     settings: ApiSettings,
     *,
     include_sources: bool,
+    executed: bool = False,
 ) -> AutomationGenerationOut:
     generation_id = rows[0].generation_id
     project_id = rows[0].project_id
@@ -357,8 +365,8 @@ def _detail(
         download_url=f"/api/v1/automation/projects/{project_id}/generations/{generation_id}/download",
         vscode_url=None if links is None else links["vscode"],
         cursor_url=None if links is None else links["cursor"],
-        executed=False,
-        label=_LABEL,
+        executed=executed,
+        label="Executed against the application" if executed else _LABEL,
         sources=[SourceFileOut(**item) for item in sources],
     )
 

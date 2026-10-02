@@ -9,8 +9,8 @@ is allowed to import from here.
 Milestone 1 — projects, requirements, and approvals are real.
 Milestone 2 — application_maps is real (Discovery, enqueued via arq).
 Test design generation and retrieval are also mounted.
-Everything else in apps/api/routers/v1/ is still a Phase 0 stub and stays
-unmounted until its own milestone gives it real content.
+Automation generation/review and test execution are mounted.
+Failures, defects, and remaining Phase 0 stubs stay unmounted.
 """
 
 from fastapi import FastAPI
@@ -25,6 +25,7 @@ from apps.api.routers.v1.application_maps import router as application_maps_rout
 from apps.api.routers.v1.approvals import router as approvals_router
 from apps.api.routers.v1.automation import router as automation_router
 from apps.api.routers.v1.credentials import router as credentials_router
+from apps.api.routers.v1.executions import router as executions_router
 from apps.api.routers.v1.projects import router as projects_router
 from apps.api.routers.v1.reports import router as reports_router
 from apps.api.routers.v1.requirements import router as requirements_router
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(credentials_router, prefix="/api/v1")
     app.include_router(test_cases_router, prefix="/api/v1")
     app.include_router(automation_router, prefix="/api/v1")
+    app.include_router(executions_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(agent_activity_router, prefix="/api/v1")
 

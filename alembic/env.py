@@ -26,8 +26,10 @@ from infra.db.models import (  # noqa: F401
     audit_log,
     automation,
     discovery_credential,
+    execution,
     project,
     requirement,
+    test_case,
 )
 from infra.db.session import DATABASE_URL
 

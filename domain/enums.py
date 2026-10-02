@@ -95,6 +95,31 @@ class AutomationReviewStatus(StrEnum):
     BLOCKED = "BLOCKED"
 
 
+class TestRunStatus(StrEnum):
+    __test__ = False
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class TestResultStatus(StrEnum):
+    __test__ = False
+    PASSED = "PASSED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+    ERROR = "ERROR"
+
+
+class EvidenceChannel(StrEnum):
+    SCREENSHOT = "screenshot"
+    VIDEO = "video"
+    TRACE = "trace"
+    CONSOLE_LOG = "console_log"
+    NETWORK_LOG = "network_log"
+
+
 class OrchestratorState(StrEnum):
     """Section 25's state machine. Milestone 1 only exercises CREATED and
     REQUIREMENTS_ANALYZED; the rest are defined now so later milestones don't

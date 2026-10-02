@@ -16,6 +16,7 @@ from typing import Any
 from arq import cron
 
 from apps.worker.tasks.run_discovery import run_discovery
+from apps.worker.tasks.run_execution import run_execution
 from infra.db.session import DATABASE_URL
 from infra.logging_config import configure_logging
 from infra.queue.settings import QueueSettings
@@ -68,7 +69,7 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 
 
 class WorkerSettings:
-    functions = [run_discovery]
+    functions = [run_discovery, run_execution]
     cron_jobs = [cron(prune_evidence_job, hour={3}, minute={0}, run_at_startup=False)]
     on_startup = startup
     on_shutdown = shutdown

@@ -89,6 +89,7 @@ class AutomationGenerationSummary(BaseModel):
     script_count: int
     blocked_count: int
     approval_required: bool
+    executed: bool = False
 
 
 class AutomationListOut(BaseModel):
