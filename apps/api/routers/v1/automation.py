@@ -1,7 +1,8 @@
 """
 Automation script endpoints — generation, review, inspection, and download.
 
-Live Playwright execution is intentionally not part of this stage.
+After the suite is written, this stage queues the Test Execution Agent.
+The worker runs npx playwright test. The tester does not run that command.
 """
 
 import uuid
@@ -61,6 +62,18 @@ from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunSt
 router = APIRouter(prefix="/automation", tags=["automation"])
 
 _LABEL = "Generated and reviewed — not executed"
+
+
+async def _queue_execution(session: AsyncSession, project: Project, generation_id: uuid.UUID):
+    """Start the execution agent for a suite that was just written."""
+    from apps.api.routers.v1.executions import start_execution_run
+
+    try:
+        return await start_execution_run(session, project, generation_id, run_destructive=False)
+    except HTTPException as exc:
+        if exc.status_code in {409, 503}:
+            return None
+        raise
 
 
 def guard_eligible(
@@ -243,6 +256,11 @@ async def generate_automation(
         include_sources=True,
     )
     await session.commit()
+    queued = await _queue_execution(session, project, generation_id)
+    if queued is not None:
+        response.execution_job_id = uuid.UUID(queued.job_id)
+        response.execution_run_id = queued.run_id
+        response.label = "Generated — Playwright is running on the server"
     return response
 
 

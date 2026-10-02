@@ -77,6 +77,8 @@ class AutomationGenerationOut(BaseModel):
     cursor_url: str | None = None
     executed: bool = False
     label: str = "Generated and reviewed — not executed"
+    execution_job_id: UUID | None = None
+    execution_run_id: UUID | None = None
     sources: list[SourceFileOut] = Field(default_factory=list)
 
 

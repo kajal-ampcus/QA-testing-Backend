@@ -13,6 +13,8 @@ import json
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,7 @@ const executablePath = process.env.CHROME_EXECUTABLE_PATH || undefined;
 export default defineConfig({
   ...base,
   fullyParallel: false,
+  workers: 1,
   retries: 0,
   reporter: [
     ["json", { outputFile: "test-results/playwright-report.json" }],
@@ -39,13 +42,42 @@ export default defineConfig({
   ],
   use: {
     ...(base.use || {}),
+    headless: true,
+    viewport: { width: 1440, height: 900 },
     screenshot: "on",
     video: "on",
     trace: "on",
     launchOptions: {
       ...(executablePath ? { executablePath } : {}),
-      args: noSandbox ? ["--no-sandbox", "--disable-dev-shm-usage"] : [],
+      args: noSandbox
+        ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+        : [],
     },
+  },
+});
+"""
+
+# Visible window on the machine that has a desktop. Keeps the suite's slowMo
+# and maximized window from playwright.config.ts.
+_HEADED_OVERLAY = """\
+import { defineConfig } from "@playwright/test";
+import base from "./playwright.config";
+
+export default defineConfig({
+  ...base,
+  fullyParallel: false,
+  workers: 1,
+  retries: 0,
+  reporter: [
+    ["json", { outputFile: "test-results/playwright-report.json" }],
+    ["list"],
+  ],
+  use: {
+    ...(base.use || {}),
+    headless: false,
+    screenshot: "on",
+    video: "on",
+    trace: "on",
   },
 });
 """
@@ -125,9 +157,18 @@ async def execute_suite(
     if not node or not npm or not npx:
         raise RuntimeError("Node.js is not available in this runtime, so Playwright cannot run.")
     suite_dir.mkdir(parents=True, exist_ok=True)
+    headed_host = os.environ.get("EXECUTION_HEADED_HOST", "").strip()
     overlay = suite_dir / _OVERLAY_NAME
-    overlay.write_text(_OVERLAY, encoding="utf-8")
+    overlay.write_text(_HEADED_OVERLAY if headed_host else _OVERLAY, encoding="utf-8")
     (suite_dir / "test-results").mkdir(exist_ok=True)
+    if headed_host:
+        return await _run_on_headed_host(
+            suite_dir,
+            spec_paths=spec_paths,
+            env=env,
+            timeout=timeout,
+            host_url=headed_host,
+        )
 
     execute = runner or subprocess.run
     commands: list[list[str]] = []
@@ -176,6 +217,84 @@ async def execute_suite(
         stderr=str(getattr(completed, "stderr", "")),
         report_path=report_path,
         commands=commands,
+    )
+
+
+def host_suite_dir(suite_dir: Path) -> str:
+    """Map the container suite folder to the folder on the desktop machine."""
+    host_root = os.environ.get("AUTOMATION_HOST_ROOT", "").strip().replace("\\", "/").rstrip("/")
+    artifact_root = os.environ.get("AUTOMATION_ARTIFACT_DIR", "/app/artifacts/automation").strip().replace("\\", "/").rstrip("/")
+    raw = str(suite_dir).replace("\\", "/").rstrip("/")
+    if host_root and artifact_root and (raw == artifact_root or raw.startswith(artifact_root + "/")):
+        return f"{host_root}{raw[len(artifact_root):]}"
+    return raw
+
+
+async def _run_on_headed_host(
+    suite_dir: Path,
+    *,
+    spec_paths: list[str],
+    env: dict[str, str],
+    timeout: int,
+    host_url: str,
+) -> PlaywrightProcessResult:
+    """Ask the desktop process to run npx playwright test with a visible browser."""
+    forwarded = {
+        key: env[key]
+        for key in ("BASE_URL", "TEST_USERNAME", "TEST_PASSWORD", "RUN_DESTRUCTIVE")
+        if env.get(key)
+    }
+    payload = {
+        "suite_dir": host_suite_dir(suite_dir),
+        "spec_paths": spec_paths,
+        "timeout": timeout,
+        "env": forwarded,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{host_url.rstrip('/')}/v1/run",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Execution-Token": os.environ.get("EXECUTION_HEADED_TOKEN", ""),
+        },
+        method="POST",
+    )
+
+    def _post() -> dict[str, Any]:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout + 60) as response:
+                loaded = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"The visible browser runner refused the suite ({exc.code}): {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                "The visible browser runner is not available on this computer, so Playwright cannot open a window."
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise RuntimeError("The visible browser runner returned an unexpected response.")
+        return loaded
+
+    try:
+        loaded = await asyncio.to_thread(_post)
+    except RuntimeError as exc:
+        return PlaywrightProcessResult(
+            returncode=1,
+            report=None,
+            stdout="",
+            stderr=str(exc),
+            report_path=suite_dir / _REPORT_RELATIVE,
+            commands=[["headed-host", host_suite_dir(suite_dir)]],
+        )
+    report_path = suite_dir / _REPORT_RELATIVE
+    return PlaywrightProcessResult(
+        returncode=int(loaded.get("returncode", 1)),
+        report=_read_report(report_path),
+        stdout=str(loaded.get("stdout", "")),
+        stderr=str(loaded.get("stderr", "")),
+        report_path=report_path,
+        commands=[["headed-host", host_suite_dir(suite_dir)]],
     )
 
 

@@ -57,20 +57,16 @@ _MEDIA = {
 router = APIRouter(prefix="/executions", tags=["executions"])
 
 
-@router.post(
-    "/projects/{project_id}",
-    response_model=TriggerExecutionResponse,
-    status_code=202,
-)
-async def trigger_execution(
-    project_id: uuid.UUID,
-    body: TriggerExecutionRequest,
-    session: AsyncSession = Depends(get_db_session),
+async def start_execution_run(
+    session: AsyncSession,
+    project: Project,
+    generation_id: uuid.UUID,
+    *,
+    run_destructive: bool = False,
+    script_ids: list[uuid.UUID] | None = None,
 ) -> TriggerExecutionResponse:
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    scripts = await AutomationRepository(session).list_generation(project_id, body.generation_id)
+    """Queue the Test Execution Agent. The worker runs npx playwright test."""
+    scripts = await AutomationRepository(session).list_generation(project.id, generation_id)
     if not scripts:
         raise HTTPException(status_code=404, detail="Automation generation not found")
     snapshots = [
@@ -84,12 +80,12 @@ async def trigger_execution(
         for script in scripts
     ]
     try:
-        classify_scripts(snapshots, body.script_ids, body.run_destructive)
+        classify_scripts(snapshots, script_ids, run_destructive)
     except ExecutionEligibilityError as exc:
         raise HTTPException(status_code=409, detail=exc.message) from exc
 
     execution_repo = ExecutionRepository(session)
-    active = await execution_repo.active_for_generation(project_id, body.generation_id)
+    active = await execution_repo.active_for_generation(project.id, generation_id)
     if active is not None:
         raise HTTPException(
             status_code=409,
@@ -97,7 +93,7 @@ async def trigger_execution(
         )
 
     try:
-        suite = generation_dir(artifact_root(), project_id, body.generation_id)
+        suite = generation_dir(artifact_root(), project.id, generation_id)
     except ArtifactPathError as exc:
         raise HTTPException(status_code=404, detail="Generated suite files are not available.") from exc
     if not suite.is_dir():
@@ -107,12 +103,12 @@ async def trigger_execution(
     job_id = str(uuid.uuid4())
     run = TestRun(
         id=uuid.uuid4(),
-        project_id=project_id,
-        generation_id=body.generation_id,
+        project_id=project.id,
+        generation_id=generation_id,
         job_id=job_id,
         environment=settings.environment,
         base_url=project.application_url,
-        run_destructive=body.run_destructive,
+        run_destructive=run_destructive,
         status=TestRunStatus.QUEUED,
         summary={},
     )
@@ -120,16 +116,16 @@ async def trigger_execution(
     await session.commit()
     payload: dict[str, Any] = {
         "run_id": str(run.id),
-        "generation_id": str(body.generation_id),
+        "generation_id": str(generation_id),
         "suite_dir": str(suite),
-        "run_destructive": body.run_destructive,
-        "script_ids": [str(item) for item in body.script_ids] if body.script_ids else None,
+        "run_destructive": run_destructive,
+        "script_ids": [str(item) for item in script_ids] if script_ids else None,
         "credential_ref": project.credential_ref,
         "base_url": project.application_url,
         "environment": settings.environment,
     }
     try:
-        await enqueue("run_execution", str(project_id), payload, job_id=job_id)
+        await enqueue("run_execution", str(project.id), payload, job_id=job_id)
     except (*_REDIS_ERRORS, RuntimeError) as exc:
         stored = await session.get(TestRun, run.id)
         if stored is not None:
@@ -137,6 +133,28 @@ async def trigger_execution(
             await session.commit()
         raise HTTPException(status_code=503, detail="Execution queue is unavailable") from exc
     return TriggerExecutionResponse(job_id=job_id, run_id=run.id, status=TestRunStatus.QUEUED)
+
+
+@router.post(
+    "/projects/{project_id}",
+    response_model=TriggerExecutionResponse,
+    status_code=202,
+)
+async def trigger_execution(
+    project_id: uuid.UUID,
+    body: TriggerExecutionRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> TriggerExecutionResponse:
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return await start_execution_run(
+        session,
+        project,
+        body.generation_id,
+        run_destructive=body.run_destructive,
+        script_ids=body.script_ids,
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=ExecutionJobResponse)
