@@ -74,10 +74,30 @@ def _url_path(state: dict[str, Any]) -> str:
     return match.group(0) if match else "/"
 
 
-def _primary_click(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
+_CHROME = re.compile(r"\b(toggle theme|dark mode|light mode)\b", re.I)
+
+
+def _best_click(elements: list[dict[str, Any]], text: str) -> dict[str, Any] | None:
+    """Pick a control the case is about.
+
+    Theme switches are chrome. They are not the action for menu, order,
+    notification, or logout cases, even when they are the first button.
+    """
     clicks = [element for element in elements if _usable(element, _CLICKABLE)]
-    submits = [element for element in clicks if _SUBMIT.search(str(element.get("name") or ""))]
-    return (submits or clicks or [None])[0]
+    pool = [element for element in clicks if not _CHROME.search(str(element.get("name") or ""))]
+    if not pool:
+        return None
+    terms = {word.lower() for word in re.findall(r"[a-zA-Z0-9]{3,}", text)}
+
+    def score(element: dict[str, Any]) -> int:
+        name = str(element.get("name") or "").lower()
+        return sum(term in name for term in terms)
+
+    ranked = sorted(pool, key=score, reverse=True)
+    if score(ranked[0]) > 0:
+        return ranked[0]
+    submits = [element for element in pool if _SUBMIT.search(str(element.get("name") or ""))]
+    return (submits or pool)[0]
 
 
 def _result_state(
@@ -111,7 +131,7 @@ def _build_case(
 ) -> TestCaseSpec | None:
     elements = _observed(start)
     fills = [element for element in elements if _usable(element, _FILLABLE)][:3]
-    click = _primary_click(elements)
+    click = _best_click(elements, f"{title} {ac.get('text', '')}")
     if category == "EDGE_CASE" and not fills:
         return None  # nothing to vary; a copy of the NEGATIVE case adds no value
     result, confidence = _result_state(states, start, click)

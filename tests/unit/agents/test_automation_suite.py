@@ -114,6 +114,11 @@ def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:
     assert "application_map_version: 3" in spec
     assert 'getByRole("heading", { name: "Welcome", exact: true })' in (root / "pages" / "state-002.page.ts").read_text(encoding="utf-8")
     assert "await " in spec
+    assert 'from "../../fixtures/auth"' in spec
+    assert "sessionPage: page" in spec
+    config = (root / "playwright.config.ts").read_text(encoding="utf-8")
+    assert "workers: 1" in config
+    assert "headless: false" in config
     assert "expect(true)" not in spec
     assert "waitForTimeout" not in spec
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
@@ -239,9 +244,18 @@ def test_ide_links_require_an_absolute_host_root() -> None:
     generation_id = uuid4()
     assert ide_links("", project_id, generation_id) is None
     assert ide_links("artifacts/automation", project_id, generation_id) is None
+    assert ide_links(r"D:\..\Windows", project_id, generation_id) is None
     host = str(Path(Path.cwd().anchor) / "qa" / "artifacts" / "automation")
     links = ide_links(host, project_id, generation_id)
     assert links is not None
     assert links["vscode"].startswith("vscode://file/")
     assert links["cursor"].startswith("cursor://file/")
     assert str(generation_id) in links["vscode"]
+    windows = ide_links(r"D:\qa\artifacts\automation", project_id, generation_id)
+    assert windows is not None
+    assert windows["vscode"] == (
+        f"vscode://file/D:/qa/artifacts/automation/{project_id}/{generation_id}"
+    )
+    assert windows["cursor"] == (
+        f"cursor://file/D:/qa/artifacts/automation/{project_id}/{generation_id}"
+    )

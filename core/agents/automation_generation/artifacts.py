@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import os
 import zipfile
 from pathlib import Path
 from uuid import UUID
@@ -44,22 +43,49 @@ def build_zip(root: Path, suite_dir: Path) -> bytes:
     return buffer.getvalue()
 
 
+def _host_folder(raw: str) -> str | None:
+    """Absolute folder on the user's machine, including a Windows path seen from Linux."""
+    text = raw.strip().replace("\\", "/")
+    if not text:
+        return None
+    drive = ""
+    rest = text
+    if len(text) >= 2 and text[0].isalpha() and text[1] == ":":
+        drive = text[:2].upper()
+        rest = text[2:]
+        if rest and not rest.startswith("/"):
+            return None
+    elif text.startswith("/"):
+        rest = text
+    else:
+        return None
+    parts: list[str] = []
+    for part in rest.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+            continue
+        parts.append(part)
+    suffix = "/".join(parts)
+    if drive:
+        return f"{drive}/{suffix}" if suffix else f"{drive}/"
+    return f"/{suffix}" if suffix else "/"
+
+
 def ide_links(host_root: str, project_id: UUID, generation_id: UUID) -> dict[str, str] | None:
-    """Return IDE URIs only for an absolute host root."""
-    raw = host_root.strip()
-    if not raw:
+    """Return IDE URIs that open the generated suite folder on the host."""
+    root = _host_folder(host_root)
+    if root is None:
         return None
-    root = Path(raw)
-    if not root.is_absolute():
+    folder = f"{root.rstrip('/')}/{project_id}/{generation_id}"
+    if not folder.startswith(root.rstrip("/") + "/"):
         return None
-    root_abs = Path(os.path.abspath(root))
-    target_abs = Path(os.path.abspath(root_abs / str(project_id) / str(generation_id)))
-    if root_abs != target_abs and root_abs not in target_abs.parents:
-        return None
-    uri_path = target_abs.as_posix()
     return {
-        "vscode": f"vscode://file/{uri_path}",
-        "cursor": f"cursor://file/{uri_path}",
+        "vscode": f"vscode://file/{folder}",
+        "cursor": f"cursor://file/{folder}",
     }
 
 
