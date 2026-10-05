@@ -39,12 +39,20 @@ class FakeAutomationRepo:
 
 
 class FakeExecutionRepo:
-    def __init__(self, active: TestRun | None = None) -> None:
+    def __init__(self, active: TestRun | None = None, runs: list[TestRun] | None = None) -> None:
         self.active = active
+        self.runs = list(runs or [])
         self.added: list[TestRun] = []
 
     async def active_for_generation(self, _project_id: uuid.UUID, _generation_id: uuid.UUID) -> TestRun | None:
         return self.active
+
+    async def list_for_project(self, project_id: uuid.UUID) -> list[TestRun]:
+        return [run for run in self.runs if run.project_id == project_id]
+
+    def mark_finished(self, run: TestRun, status: str, summary: dict[str, object]) -> None:
+        run.status = status
+        run.summary = summary
 
     def add_run(self, run: TestRun) -> TestRun:
         self.added.append(run)
@@ -169,6 +177,76 @@ async def test_trigger_execution_rejects_active_run(
         )
     assert error.value.status_code == 409
     assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_stop_execution_cancels_the_projects_active_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = uuid.uuid4()
+    run = TestRun(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        generation_id=uuid.uuid4(),
+        job_id="job-cep",
+        status=TestRunStatus.RUNNING,
+        environment="development",
+        summary={"passed": 1, "failed": 0, "skipped": 0, "error": 0},
+    )
+    project = Project(id=project_id, name="CEP", application_url="https://cep.example.test")
+    fake = FakeExecutionRepo(runs=[run])
+    monkeypatch.setattr(executions, "ExecutionRepository", lambda _session: fake)
+
+    class FakeJob:
+        def __init__(self, job_id: str, _pool: object) -> None:
+            self.job_id = job_id
+
+        async def abort(self, timeout: int) -> bool:
+            assert timeout == 5
+            assert self.job_id == "job-cep"
+            return True
+
+    async def pool() -> object:
+        return object()
+
+    async def release(_run_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(executions, "Job", FakeJob)
+    monkeypatch.setattr(executions, "get_arq_pool", pool)
+    monkeypatch.setattr(executions, "release_live_display", release)
+
+    result = await executions.stop_execution(project_id, cast(AsyncSession, FakeSession(project)))
+
+    assert result.status == "cancelled"
+    assert result.job_id == "job-cep"
+    assert run.status == TestRunStatus.CANCELLED
+    assert run.summary["detail"] == "Execution was stopped."
+
+
+@pytest.mark.asyncio
+async def test_stop_execution_does_not_touch_a_finished_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = uuid.uuid4()
+    run = TestRun(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        generation_id=uuid.uuid4(),
+        job_id="job-done",
+        status=TestRunStatus.FAILED,
+        environment="development",
+        summary={"passed": 0, "failed": 1, "skipped": 0, "error": 0},
+    )
+    project = Project(id=project_id, name="Cafinity", application_url="https://cafinity.example.test")
+    monkeypatch.setattr(
+        executions, "ExecutionRepository", lambda _session: FakeExecutionRepo(runs=[run])
+    )
+
+    result = await executions.stop_execution(project_id, cast(AsyncSession, FakeSession(project)))
+
+    assert result.status == "already_finished"
+    assert run.status == TestRunStatus.FAILED
 
 
 def test_summary_accepts_playwright_log_string() -> None:

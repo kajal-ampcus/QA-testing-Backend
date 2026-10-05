@@ -5,6 +5,7 @@ agent and persist test_runs/test_results/evidence, not to make any judgment
 calls itself.
 """
 
+import asyncio
 import os
 import uuid
 from datetime import UTC, datetime
@@ -56,12 +57,35 @@ async def run_execution(ctx: dict[str, Any], project_id: str, payload: dict[str,
         )
         try:
             result = await agent.run(input_envelope)
+        except asyncio.CancelledError:
+            await session.rollback()
+            run_id = payload.get("run_id")
+            if run_id:
+                stored = await ExecutionRepository(session).get_run(uuid.UUID(str(run_id)))
+                if stored is not None and stored.status in {
+                    TestRunStatus.QUEUED,
+                    TestRunStatus.RUNNING,
+                }:
+                    ExecutionRepository(session).mark_finished(
+                        stored,
+                        TestRunStatus.CANCELLED,
+                        {
+                            **dict(stored.summary or {}),
+                            "passed": int((stored.summary or {}).get("passed") or 0),
+                            "failed": int((stored.summary or {}).get("failed") or 0),
+                            "skipped": int((stored.summary or {}).get("skipped") or 0),
+                            "error": int((stored.summary or {}).get("error") or 0),
+                            "detail": "Execution was stopped.",
+                        },
+                    )
+                    await session.commit()
+            raise
         except Exception as exc:
             await session.rollback()
             run_id = payload.get("run_id")
             if run_id:
                 stored = await ExecutionRepository(session).get_run(uuid.UUID(str(run_id)))
-                if stored is not None:
+                if stored is not None and stored.status != TestRunStatus.CANCELLED:
                     ExecutionRepository(session).mark_finished(
                         stored,
                         TestRunStatus.FAILED,

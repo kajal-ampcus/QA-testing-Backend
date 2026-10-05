@@ -37,12 +37,15 @@ from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
 from infra.object_storage.s3_client import S3Client
 from infra.queue.broker import enqueue, get_arq_pool
+from core.agents.test_execution.live_display import current_live_display, release_live_display
 from schemas.execution import (
     AssertionOut,
     EvidenceOut,
+    ExecutionCancelResponse,
     ExecutionJobResponse,
     ExecutionListOut,
     ExecutionReportOut,
+    LiveExecutionOut,
     TestResultOut,
     TestRunDetailOut,
     TestRunSummaryOut,
@@ -221,6 +224,54 @@ async def get_execution_job(
         run_id=None if stored is None else stored.id,
         result=result if isinstance(result, dict) else {"value": result},
     )
+
+
+@router.get("/live", response_model=LiveExecutionOut)
+async def live_execution() -> LiveExecutionOut:
+    """Project that currently owns the shared execution browser."""
+    owner = await current_live_display()
+    if owner is None:
+        return LiveExecutionOut()
+    project_id, run_id = owner
+    return LiveExecutionOut(project_id=project_id, run_id=run_id)
+
+
+@router.delete("/projects/{project_id}", response_model=ExecutionCancelResponse)
+async def stop_execution(
+    project_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> ExecutionCancelResponse:
+    """Stop this project's queued or running suite without starting another."""
+    if await session.get(Project, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    repo = ExecutionRepository(session)
+    runs = await repo.list_for_project(project_id)
+    active = next(
+        (run for run in runs if run.status in {TestRunStatus.QUEUED, TestRunStatus.RUNNING}),
+        None,
+    )
+    if active is None:
+        return ExecutionCancelResponse(job_id="", status="already_finished")
+    job_id = active.job_id or ""
+    if job_id:
+        try:
+            await Job(job_id, await get_arq_pool()).abort(timeout=5)
+        except TimeoutError:
+            pass
+        except _REDIS_ERRORS as exc:
+            raise HTTPException(status_code=503, detail="Execution queue is unavailable") from exc
+    summary = {
+        "passed": int((active.summary or {}).get("passed") or 0),
+        "failed": int((active.summary or {}).get("failed") or 0),
+        "skipped": int((active.summary or {}).get("skipped") or 0),
+        "error": int((active.summary or {}).get("error") or 0),
+        "detail": "Execution was stopped.",
+    }
+    if active.status in {TestRunStatus.QUEUED, TestRunStatus.RUNNING}:
+        repo.mark_finished(active, TestRunStatus.CANCELLED, summary)
+    await release_live_display(str(active.id))
+    await session.commit()
+    return ExecutionCancelResponse(job_id=job_id, status="cancelled")
 
 
 @router.get("/projects/{project_id}", response_model=ExecutionListOut)

@@ -172,15 +172,24 @@ const CAPTCHA_TOKEN = /^[A-Za-z0-9!@#$%^&*+=_?.-]{3,12}$/;
 
 function mathAnswer(text: string): string | null {
   const compact = text.replace(/\d(?:\s+\d)+/g, (item) => item.replace(/\s+/g, ""));
-  const match = compact.match(/(\d+)\s*([+\-−–x×*/÷])\s*(\d+)/);
-  if (!match) return null;
-  const left = Number(match[1]);
-  const right = Number(match[3]);
-  const operator = match[2];
-  if (operator === "+") return String(left + right);
-  if (operator === "-" || operator === "−" || operator === "–") return String(left - right);
-  if (operator === "x" || operator === "×" || operator === "*") return String(left * right);
-  if ((operator === "/" || operator === "÷") && right && left % right === 0) return String(left / right);
+  const pattern = /(\d{1,2})\s*([+\-−–x×*/÷])\s*(\d{1,2})/g;
+  const matches = [...compact.matchAll(pattern)];
+  matches.sort((left, right) => {
+    const nearEquals = (match: RegExpMatchArray) =>
+      compact.slice((match.index ?? 0) + match[0].length, (match.index ?? 0) + match[0].length + 8).includes("=")
+        ? 1
+        : 0;
+    return nearEquals(right) - nearEquals(left);
+  });
+  for (const match of matches) {
+    const left = Number(match[1]);
+    const right = Number(match[3]);
+    const operator = match[2];
+    if (operator === "+") return String(left + right);
+    if (operator === "-" || operator === "−" || operator === "–") return String(left - right);
+    if (operator === "x" || operator === "×" || operator === "*") return String(left * right);
+    if ((operator === "/" || operator === "÷") && right && left % right === 0) return String(left / right);
+  }
   return null;
 }
 
@@ -231,7 +240,9 @@ async function captchaWidgetText(page: Page): Promise<string> {
     ].join(", ");
     const glyphs: string[] = [];
     const readSvg = (svg: Element) => {
-      [...svg.querySelectorAll("text, tspan")]
+      const leaves = [...svg.querySelectorAll("tspan")];
+      const nodes = leaves.length ? leaves : [...svg.querySelectorAll("text")];
+      nodes
         .map((node, index) => ({
           x: node.hasAttribute("x") ? Number(node.getAttribute("x")) : index,
           text: (node.textContent || "").trim(),

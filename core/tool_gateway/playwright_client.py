@@ -13,9 +13,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import urllib.error
 import urllib.request
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -166,6 +168,68 @@ def refresh_auth_fixture(suite_dir: Path, env: dict[str, str]) -> None:
     auth.write_text(templates.render_auth(base_url=literal), encoding="utf-8")
 
 
+def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None or process.pid is None:
+        return
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            return
+        except OSError:
+            pass
+    with suppress(ProcessLookupError):
+        process.kill()
+
+
+async def _execute(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+    runner: Any | None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command. A custom runner is for tests; the real path can be killed."""
+    if runner is not None:
+        completed = await asyncio.to_thread(
+            runner,
+            cmd,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return completed
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(cwd),
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+    except TimeoutError:
+        _kill_process_group(process)
+        with suppress(Exception):
+            await process.wait()
+        raise subprocess.TimeoutExpired(cmd, timeout) from None
+    except asyncio.CancelledError:
+        _kill_process_group(process)
+        with suppress(Exception):
+            await process.wait()
+        raise
+    return subprocess.CompletedProcess(
+        cmd,
+        int(process.returncode or 0),
+        (stdout or b"").decode("utf-8", "replace"),
+        (stderr or b"").decode("utf-8", "replace"),
+    )
+
+
 async def execute_suite(
     suite_dir: Path,
     *,
@@ -194,20 +258,16 @@ async def execute_suite(
             host_url=headed_host,
         )
 
-    execute = runner or subprocess.run
     commands: list[list[str]] = []
     if not (suite_dir / "node_modules").is_dir():
         install = [npm, "install", "--ignore-scripts", "--no-audit", "--no-fund"]
         commands.append(install)
-        installed = await asyncio.to_thread(
-            execute,
+        installed = await _execute(
             install,
             cwd=suite_dir,
             env=env,
-            capture_output=True,
-            text=True,
             timeout=min(timeout, 180),
-            check=False,
+            runner=runner,
         )
         if int(getattr(installed, "returncode", 1)) != 0:
             return PlaywrightProcessResult(
@@ -222,15 +282,12 @@ async def execute_suite(
     test_cmd = [npx, "playwright", "test", f"--config={_OVERLAY_NAME}"]
     test_cmd.extend(spec_paths)
     commands.append(test_cmd)
-    completed = await asyncio.to_thread(
-        execute,
+    completed = await _execute(
         test_cmd,
         cwd=suite_dir,
         env=env,
-        capture_output=True,
-        text=True,
         timeout=timeout,
-        check=False,
+        runner=runner,
     )
     report_path = suite_dir / _REPORT_RELATIVE
     report = _read_report(report_path)

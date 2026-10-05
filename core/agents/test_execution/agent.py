@@ -27,6 +27,7 @@ from core.agents.test_execution.eligibility import (
     ScriptSnapshot,
     classify_scripts,
 )
+from core.agents.test_execution.live_display import claim_live_display, release_live_display
 from core.agents.test_execution.playwright_runner import PlaywrightRunner, RawTestOutcome
 from domain.enums import (
     EvidenceChannel,
@@ -94,24 +95,38 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             )
 
         self.execution_repo.mark_running(run)
-        await self.execution_repo.session.flush()
-
+        await self.execution_repo.session.commit()
+        await claim_live_display(str(request.project_id), str(run.id))
         try:
-            live = await self._run_live(run, request, payload, suite_dir, classified)
-        except Exception as exc:  # noqa: BLE001 - persist the failure, then re-raise for the worker
-            self.execution_repo.mark_finished(
-                run,
-                TestRunStatus.FAILED,
-                {
-                    "passed": 0,
-                    "failed": 0,
-                    "skipped": 0,
-                    "error": 1,
-                    "detail": f"{type(exc).__name__}: {exc}"[:2000],
-                },
+            try:
+                live = await self._run_live(run, request, payload, suite_dir, classified)
+            except Exception as exc:  # noqa: BLE001 - persist the failure, then re-raise for the worker
+                await self._reload_status(run)
+                if run.status != TestRunStatus.CANCELLED:
+                    self.execution_repo.mark_finished(
+                        run,
+                        TestRunStatus.FAILED,
+                        {
+                            "passed": 0,
+                            "failed": 0,
+                            "skipped": 0,
+                            "error": 1,
+                            "detail": f"{type(exc).__name__}: {exc}"[:2000],
+                        },
+                    )
+                    await self.execution_repo.session.flush()
+                raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
+        finally:
+            await release_live_display(str(run.id))
+
+        await self._reload_status(run)
+        if run.status == TestRunStatus.CANCELLED:
+            return AgentOutputEnvelope(
+                agent_run_id=request.agent_run_id,
+                status=AgentRunStatus.FAILED,
+                errors=["Execution was stopped."],
+                token_usage=None,
             )
-            await self.execution_repo.session.flush()
-            raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
 
         summary = _summary(list(run.results))
         log = _playwright_log(live)
@@ -252,6 +267,10 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                     ),
                 )
         return live
+
+    async def _reload_status(self, run: TestRun) -> None:
+        """Re-read status only. Refreshing the whole row drops unsaved results."""
+        await self.execution_repo.session.refresh(run, attribute_names=["status"])
 
     def _store_result(self, run: TestRun, result: TestResult) -> TestResult:
         run.results.append(result)

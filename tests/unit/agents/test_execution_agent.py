@@ -22,6 +22,13 @@ class FakeSession:
     async def flush(self) -> None:
         return None
 
+    async def commit(self) -> None:
+        return None
+
+    async def refresh(self, obj: object, attribute_names: list[str] | None = None) -> None:
+        if attribute_names is None and hasattr(obj, "results"):
+            obj.results = []
+
 
 class FakeExecutionRepo:
     def __init__(self, run: TestRun) -> None:
@@ -82,7 +89,14 @@ def _script(project_id: uuid.UUID, generation_id: uuid.UUID, **overrides: object
 
 
 @pytest.mark.asyncio
-async def test_execution_agent_persists_results_without_llm(tmp_path: Path) -> None:
+async def test_execution_agent_persists_results_without_llm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _quiet(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("core.agents.test_execution.agent.claim_live_display", _quiet)
+    monkeypatch.setattr("core.agents.test_execution.agent.release_live_display", _quiet)
     project_id = uuid.uuid4()
     generation_id = uuid.uuid4()
     run_id = uuid.uuid4()
