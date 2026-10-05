@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.dependencies import get_db_session
 from apps.api.routers.v1.automation import artifact_root
 from apps.api.settings import ApiSettings
+from core.agents.automation_generation.registry import execution_available
 from core.agents.automation_generation.artifacts import ArtifactPathError, generation_dir
 from core.agents.reporting.execution_report import (
     load_execution_report,
@@ -74,6 +75,15 @@ async def start_execution_run(
     scripts = await AutomationRepository(session).list_generation(project.id, generation_id)
     if not scripts:
         raise HTTPException(status_code=404, detail="Automation generation not found")
+    summary = dict(scripts[0].suite_summary or {})
+    if not execution_available(str(summary.get("language") or ""), scripts[0].framework):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Execution is not available for this language and framework yet. "
+                "Download the suite and run it locally."
+            ),
+        )
     snapshots = [
         ScriptSnapshot(
             id=script.id,

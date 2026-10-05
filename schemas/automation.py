@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 class GenerateAutomationRequest(BaseModel):
     test_case_ids: list[UUID] | None = None
+    language: str = "typescript"
+    framework: str = "playwright"
 
 
 class BlockedCaseOut(BaseModel):
@@ -73,6 +75,8 @@ class AutomationGenerationOut(BaseModel):
     approval_ids: list[UUID] = Field(default_factory=list)
     verification: VerificationOut
     download_url: str
+    language: str = "typescript"
+    framework: str = "playwright"
     vscode_url: str | None = None
     cursor_url: str | None = None
     executed: bool = False

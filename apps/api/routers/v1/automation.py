@@ -17,6 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.dependencies import get_db_session
 from apps.api.settings import ApiSettings
 from core.agents.automation_generation.agent import AutomationGenerationAgent
+from core.agents.automation_generation.registry import (
+    StackChoiceError,
+    execution_available,
+    normalize_stack,
+)
 from core.agents.automation_generation.artifacts import (
     build_zip,
     generation_dir,
@@ -109,6 +114,10 @@ async def generate_automation(
     project = await session.get(Project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        language, framework = normalize_stack(body.language, body.framework)
+    except StackChoiceError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from exc
 
     pairs = await TestCaseRepository(session).list_for_project(project_id)
     requirements = await _requirements(session, pairs)
@@ -145,6 +154,8 @@ async def generate_automation(
         payload={
             "generation_id": str(generation_id),
             "application_url": project.application_url,
+            "language": language,
+            "framework": framework,
             "cases": case_payload,
             "states": states,
         },
@@ -152,6 +163,8 @@ async def generate_automation(
     )
     try:
         plan = await AutomationGenerationAgent().run(gen_request)
+    except StackChoiceError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     _record_run(session, gen_request, AutomationGenerationAgent.name, AgentRunStatus.SUCCESS)
@@ -161,7 +174,10 @@ async def generate_automation(
         project_id=project_id,
         trigger="manual",
         payload={"forbidden_literals": sorted(forbidden)},
-        constraints={"suite_dir": str(suite_dir), "run_node": True},
+        constraints={
+            "suite_dir": str(suite_dir),
+            "run_node": language == "typescript" and framework == "playwright",
+        },
     )
     review = await AutomationReviewAgent().run(review_request)
     _record_run(
@@ -180,6 +196,8 @@ async def generate_automation(
         "file_tree": list_files(suite_dir),
         "application_map_id": str(full_map.id),
         "application_map_version": full_map.version,
+        "language": language,
+        "framework": framework,
     }
     repo = AutomationRepository(session)
     rows: list[AutomationScript] = []
@@ -204,7 +222,7 @@ async def generate_automation(
             requirement_version=script.requirement_version,
             application_map_id=script.application_map_id,
             application_map_version=script.application_map_version,
-            framework="playwright",
+            framework=framework,
             file_path=script.spec_path,
             selector_strategy=script.selectors,
             risk_level=script.risk,
@@ -264,6 +282,15 @@ async def approve_generation(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     rows = await _require_generation(session, project_id, generation_id)
+    summary = dict(rows[0].suite_summary or {})
+    if not execution_available(str(summary.get("language") or ""), rows[0].framework):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Execution is not available for this language and framework yet. "
+                "Download the suite and run it locally."
+            ),
+        )
     repo = AutomationRepository(session)
     approved = False
     for row in rows:
@@ -340,7 +367,10 @@ async def download_generation(
     generation_id: uuid.UUID,
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
-    await _require_generation(session, project_id, generation_id)
+    rows = await _require_generation(session, project_id, generation_id)
+    summary = dict(rows[0].suite_summary or {})
+    language = str(summary.get("language") or "typescript")
+    framework = str(summary.get("framework") or rows[0].framework or "playwright")
     root = artifact_root()
     suite = generation_dir(root, project_id, generation_id)
     if not suite.is_dir():
@@ -349,7 +379,9 @@ async def download_generation(
     return Response(
         content=payload,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="playwright-{generation_id}.zip"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{language}-{framework}-{generation_id}.zip"',
+        },
     )
 
 
@@ -400,6 +432,8 @@ def _detail(
             detail=str(verification.get("detail") or ""),
         ),
         download_url=f"/api/v1/automation/projects/{project_id}/generations/{generation_id}/download",
+        language=str(summary.get("language") or "typescript"),
+        framework=str(summary.get("framework") or rows[0].framework or "playwright"),
         vscode_url=None if links is None else links["vscode"],
         cursor_url=None if links is None else links["cursor"],
         executed=executed,

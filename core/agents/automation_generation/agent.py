@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from core.agents.automation_generation.registry import writer_for
 from core.agents.automation_generation.suite import (
     CaseInput,
     StateInput,
     SuitePlan,
-    generate_suite,
 )
 from core.agents.base import BaseAgent
 from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunStatus
@@ -37,7 +37,10 @@ class AutomationGenerationAgent(BaseAgent[SuitePlan]):
             )
             for code, item in (payload.get("states") or {}).items()
         }
-        return generate_suite(
+        language = str(payload.get("language") or "typescript")
+        framework = str(payload.get("framework") or "playwright")
+        write = writer_for(language, framework)
+        return write(
             suite_dir=Path(request.constraints["suite_dir"]),
             generation_id=UUID(str(payload["generation_id"])),
             project_id=request.project_id,
