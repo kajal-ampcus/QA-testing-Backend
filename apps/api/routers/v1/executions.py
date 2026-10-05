@@ -418,6 +418,15 @@ def _result_out(row: TestResult) -> TestResultOut:
             actual=str(assertion.get("actual") or ""),
             source=str(assertion.get("source") or "TEST_EXECUTION"),
         ),
+        category=str(assertion.get("category") or ""),
+        title=str(assertion.get("title") or ""),
+        inputs=[
+            {"name": str(item.get("name") or ""), "value": str(item.get("value") or "")}
+            for item in (assertion.get("inputs") or [])
+            if isinstance(item, dict)
+        ],
+        cause=str(assertion.get("cause") or ""),
+        recommendation=str(assertion.get("recommendation") or ""),
         evidence=EvidenceOut(
             screenshot=evidence.get("screenshot"),
             video=evidence.get("video"),

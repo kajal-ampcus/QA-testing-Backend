@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
+
 from core.agents.base import BaseAgent
 from core.agents.test_execution.eligibility import (
     ClassifiedScripts,
@@ -29,6 +31,7 @@ from core.agents.test_execution.eligibility import (
 )
 from core.agents.test_execution.live_display import claim_live_display, release_live_display
 from core.agents.test_execution.playwright_runner import PlaywrightRunner, RawTestOutcome
+from core.agents.test_execution.result_context import explain_failure, input_fields
 from domain.enums import (
     EvidenceChannel,
     EvidenceSource,
@@ -36,6 +39,7 @@ from domain.enums import (
     TestRunStatus,
 )
 from infra.db.models.automation import AutomationScript
+from infra.db.models.test_case import TestCaseVersion
 from infra.db.models.execution import TestResult, TestRun
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
@@ -78,6 +82,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             )
 
         scripts = await self.automation_repo.list_generation(request.project_id, generation_id)
+        case_context = await self._case_context(scripts)
         snapshots = [_snapshot(script, payload) for script in scripts]
         try:
             classified = classify_scripts(snapshots, requested_ids, run_destructive)
@@ -187,6 +192,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         payload: dict[str, Any],
         suite_dir: Path,
         classified: ClassifiedScripts,
+        case_context: dict[str, dict[str, Any]],
     ) -> Any:
         from core.agents.test_execution.playwright_runner import SuiteRunResult
 
@@ -199,11 +205,14 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                     automation_script_id=script.id,
                     spec_path=script.file_path,
                     status=TestResultStatus.SKIPPED,
-                    assertion={
-                        "expected": "skipped",
-                        "actual": "skipped",
-                        "source": EvidenceSource.TEST_EXECUTION,
-                    },
+                    assertion=self._assertion(
+                        case_context,
+                        script.id,
+                        status=TestResultStatus.SKIPPED,
+                        expected="skipped",
+                        actual="skipped",
+                        error=reason,
+                    ),
                     evidence={channel.value: None for channel in EvidenceChannel},
                     error_message=reason,
                 ),
@@ -237,11 +246,14 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                     automation_script_id=outcome.script_id,
                     spec_path=outcome.spec_path,
                     status=outcome.status,
-                    assertion={
-                        "expected": outcome.expected,
-                        "actual": outcome.actual,
-                        "source": EvidenceSource.TEST_EXECUTION,
-                    },
+                    assertion=self._assertion(
+                        case_context,
+                        outcome.script_id,
+                        status=outcome.status,
+                        expected=outcome.expected,
+                        actual=outcome.actual,
+                        error=outcome.error_message,
+                    ),
                     evidence=evidence,
                     duration_ms=outcome.duration_ms,
                     error_message=outcome.error_message,
@@ -257,11 +269,14 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                         automation_script_id=script.id,
                         spec_path=script.file_path,
                         status=TestResultStatus.ERROR,
-                        assertion={
-                            "expected": "pass",
-                            "actual": live.detail or "Playwright produced no JSON report.",
-                            "source": EvidenceSource.TEST_EXECUTION,
-                        },
+                        assertion=self._assertion(
+                            case_context,
+                            script.id,
+                            status=TestResultStatus.ERROR,
+                            expected="pass",
+                            actual=live.detail or "Playwright produced no JSON report.",
+                            error=live.detail or "Playwright produced no JSON report.",
+                        ),
                         evidence={channel.value: None for channel in EvidenceChannel},
                         error_message=live.detail or "Playwright produced no JSON report.",
                     ),
