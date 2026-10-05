@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import urllib.error
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from core.agents.automation_generation import templates
 from core.tool_gateway.secret_resolver import resolve_login
 
 _OVERLAY_NAME = "playwright.execution.config.ts"
@@ -145,6 +147,25 @@ class PlaywrightClient:
         return env
 
 
+def refresh_auth_fixture(suite_dir: Path, env: dict[str, str]) -> None:
+    """Replace the generated login helper so the next run can read the captcha.
+
+    Older suites only waited for an SVG math image with alt CAPTCHA. The
+    replacement solves math, numbers, letters, and mixed characters.
+    """
+    auth = suite_dir / "fixtures" / "auth.ts"
+    if not auth.is_file():
+        return
+    base = (env.get("BASE_URL") or "").strip()
+    if base:
+        literal = json.dumps(base)
+    else:
+        current = auth.read_text(encoding="utf-8")
+        match = re.search(r"const configured = (.+);", current)
+        literal = match.group(1).strip() if match else '""'
+    auth.write_text(templates.render_auth(base_url=literal), encoding="utf-8")
+
+
 async def execute_suite(
     suite_dir: Path,
     *,
@@ -159,6 +180,7 @@ async def execute_suite(
     if not node or not npm or not npx:
         raise RuntimeError("Node.js is not available in this runtime, so Playwright cannot run.")
     suite_dir.mkdir(parents=True, exist_ok=True)
+    refresh_auth_fixture(suite_dir, env)
     headed_host = os.environ.get("EXECUTION_HEADED_HOST", "").strip()
     overlay = suite_dir / _OVERLAY_NAME
     overlay.write_text(_HEADED_OVERLAY if headed_host else _LIVE_OVERLAY, encoding="utf-8")
