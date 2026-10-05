@@ -113,7 +113,9 @@ test.fixme([[ title ]], async () => {
 """
 
 _AUTH = r"""
+import { spawnSync } from "child_process";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { expect, test as base, type BrowserContext, type Page } from "@playwright/test";
 
@@ -143,6 +145,31 @@ function suiteBaseURL(): string {
   return chosen;
 }
 
+const CAPTCHA_UI = new Set([
+  "username",
+  "password",
+  "captcha",
+  "login",
+  "signin",
+  "submit",
+  "refresh",
+  "speak",
+  "remember",
+  "home",
+  "forgot",
+  "instructions",
+  "enter",
+  "click",
+  "icon",
+  "generate",
+  "show",
+  "hide",
+  "answer",
+  "question",
+  "math",
+]);
+const CAPTCHA_TOKEN = /^[A-Za-z0-9!@#$%^&*+=_?.-]{3,12}$/;
+
 function mathAnswer(text: string): string | null {
   const compact = text.replace(/\d(?:\s+\d)+/g, (item) => item.replace(/\s+/g, ""));
   const match = compact.match(/(\d+)\s*([+\-−–x×*/÷])\s*(\d+)/);
@@ -157,25 +184,113 @@ function mathAnswer(text: string): string | null {
   return null;
 }
 
-async function captchaAnswer(page: Page): Promise<string | null> {
-  const expression = await page.evaluate(() => {
-    const image = document.querySelector('img[alt="CAPTCHA"]');
+function textToken(widgetText: string): string | null {
+  const text = widgetText.trim();
+  if (!text || mathAnswer(text)) return null;
+  const candidates: string[] = [];
+  const pieces = text.split(/\s+/).filter(Boolean);
+  if (pieces.length && pieces.every((piece) => piece.length === 1)) candidates.push(pieces.join(""));
+  for (const line of text.split(/\n/)) {
+    const parts = line.trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) continue;
+    if (parts.length > 1) {
+      if (parts.every((part) => part.length === 1)) candidates.push(parts.join(""));
+      continue;
+    }
+    candidates.push(parts[0]);
+  }
+  for (const candidate of candidates) {
+    if (CAPTCHA_UI.has(candidate.toLowerCase())) continue;
+    if (CAPTCHA_TOKEN.test(candidate)) return candidate;
+  }
+  return null;
+}
+
+function ocrCaptchaPng(png: Buffer): string | null {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "captcha-"));
+  const file = path.join(dir, "captcha.png");
+  fs.writeFileSync(file, png);
+  const python = process.env.PYTHON || "python";
+  const result = spawnSync(python, ["-m", "core.agents.test_execution.captcha_solve", file], {
+    encoding: "utf8",
+    timeout: 20_000,
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  if (result.status !== 0) return null;
+  const answer = (result.stdout || "").trim();
+  return CAPTCHA_TOKEN.test(answer) ? answer : null;
+}
+
+async function captchaWidgetText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const marked = [
+      '[id*="captcha" i]',
+      '[class*="captcha" i]',
+      '[aria-label*="captcha" i]',
+      'img[alt*="captcha" i]',
+    ].join(", ");
+    const glyphs: string[] = [];
+    const readSvg = (svg: Element) => {
+      [...svg.querySelectorAll("text, tspan")]
+        .map((node, index) => ({
+          x: node.hasAttribute("x") ? Number(node.getAttribute("x")) : index,
+          text: (node.textContent || "").trim(),
+        }))
+        .filter((item) => item.text)
+        .sort((a, b) => a.x - b.x)
+        .forEach((item) => glyphs.push(item.text));
+    };
+    document.querySelectorAll(marked).forEach((node) => {
+      if (node.tagName === "svg") readSvg(node);
+      node.querySelectorAll("svg").forEach(readSvg);
+    });
+    const image = document.querySelector('img[alt*="captcha" i]');
     const src = image?.getAttribute("src") || "";
     const data = src.match(/^data:image\/svg\+xml[^,]*,(.*)$/i);
-    if (!data) return "";
-    const svg = /;base64/i.test(src) ? atob(data[1]) : decodeURIComponent(data[1]);
-    const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
-    return [...doc.querySelectorAll("tspan")]
-      .map((node, index) => ({
-        x: node.hasAttribute("x") ? Number(node.getAttribute("x")) : index,
-        text: (node.textContent || "").trim(),
-      }))
-      .filter((item) => item.text)
-      .sort((a, b) => a.x - b.x)
-      .map((item) => item.text)
-      .join(" ");
+    if (data) {
+      const svg = /;base64/i.test(src) ? atob(data[1]) : decodeURIComponent(data[1]);
+      const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
+      readSvg(doc.documentElement);
+    }
+    const phrases: string[] = [];
+    document.querySelectorAll(marked).forEach((node) => {
+      if (node.tagName === "IMG" || node.tagName === "INPUT" || node.tagName === "BUTTON") return;
+      const text = (node instanceof HTMLElement ? node.innerText : "").trim();
+      if (text) phrases.push(text);
+    });
+    return [...glyphs, ...phrases].join("\n");
   });
-  return mathAnswer(expression);
+}
+
+async function captchaPng(page: Page): Promise<Buffer | null> {
+  const dataUrl = await page.evaluate(() => {
+    const image = document.querySelector(
+      'img[alt*="captcha" i], img[id*="captcha" i], [id*="captcha" i] img, [class*="captcha" i] img',
+    );
+    const src = (image instanceof HTMLImageElement ? image.currentSrc || image.src : "") || "";
+    if (src.startsWith("data:image/") && !src.toLowerCase().startsWith("data:image/svg")) return src;
+    return "";
+  });
+  if (dataUrl.includes(",")) return Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
+  const picture = page
+    .locator('img[alt*="captcha" i], img[id*="captcha" i], [id*="captcha" i] img, [class*="captcha" i] img, canvas')
+    .first();
+  if (!(await picture.isVisible().catch(() => false))) return null;
+  return picture.screenshot().catch(() => null);
+}
+
+async function captchaAnswer(page: Page): Promise<string | null> {
+  const widget = await captchaWidgetText(page);
+  const widgetMath = mathAnswer(widget);
+  if (widgetMath) return widgetMath;
+  const png = await captchaPng(page);
+  if (png) {
+    const token = textToken(widget);
+    if (token) return token;
+    return ocrCaptchaPng(png);
+  }
+  const pageText = await page.locator("body").innerText().catch(() => "");
+  return mathAnswer(pageText) || textToken(widget);
 }
 
 async function loginNotice(page: Page): Promise<string> {
@@ -219,27 +334,37 @@ async function enterApplication(page: Page): Promise<void> {
     .first();
   await secret.fill(password);
   let notice = "";
+  const answerBox = page
+    .getByPlaceholder(/captcha|answer/i)
+    .or(page.getByRole("textbox", { name: /captcha|answer/i }))
+    .or(page.locator('input[name*="captcha" i], input[id*="captcha" i]'))
+    .first();
+  const picture = page
+    .locator('img[alt*="captcha" i], img[id*="captcha" i], [id*="captcha" i] img, [class*="captcha" i] img')
+    .first();
   for (let attempt = 0; attempt < 3; attempt += 1) {
     notice = await loginNotice(page);
     if (/too many captcha requests/i.test(notice)) {
       await waitOutCaptchaLimit(page);
       continue;
     }
-    await page.locator('img[alt="CAPTCHA"]').waitFor({ state: "visible", timeout: 15_000 });
-    await page.waitForFunction(() => {
-      const src = document.querySelector('img[alt="CAPTCHA"]')?.getAttribute("src") || "";
-      return src.includes("data:image/svg+xml");
-    }, undefined, { timeout: 15_000 });
-    const answer = await captchaAnswer(page);
-    if (!answer) {
-      notice = (await loginNotice(page)) || "The math CAPTCHA was not readable.";
-      break;
+    const needsCaptcha =
+      (await answerBox.isVisible().catch(() => false)) ||
+      (await picture.isVisible().catch(() => false));
+    if (needsCaptcha) {
+      await picture.waitFor({ state: "visible", timeout: 15_000 }).catch(() => undefined);
+      const answer = await captchaAnswer(page);
+      if (!answer) {
+        notice = (await loginNotice(page)) || "The CAPTCHA could not be read.";
+        const refresh = page.getByRole("button", { name: /refresh captcha|reload captcha|new captcha/i });
+        if (await refresh.isEnabled().catch(() => false)) {
+          await refresh.click();
+          continue;
+        }
+        break;
+      }
+      await answerBox.fill(answer);
     }
-    const answerBox = page
-      .getByRole("textbox", { name: /answer/i })
-      .or(page.getByPlaceholder(/answer/i))
-      .first();
-    await answerBox.fill(answer);
     await page.getByRole("button", { name: /^log\s*in$/i }).click();
     try {
       await page.waitForURL((url) => !/\/login\/?$/i.test(url.pathname), { timeout: 20_000 });

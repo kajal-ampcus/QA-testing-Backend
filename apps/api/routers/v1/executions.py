@@ -21,6 +21,10 @@ from apps.api.dependencies import get_db_session
 from apps.api.routers.v1.automation import artifact_root
 from apps.api.settings import ApiSettings
 from core.agents.automation_generation.artifacts import ArtifactPathError, generation_dir
+from core.agents.reporting.execution_report import (
+    load_execution_report,
+    run_is_finished,
+)
 from core.agents.test_execution.eligibility import (
     ExecutionEligibilityError,
     ScriptSnapshot,
@@ -38,6 +42,7 @@ from schemas.execution import (
     EvidenceOut,
     ExecutionJobResponse,
     ExecutionListOut,
+    ExecutionReportOut,
     TestResultOut,
     TestRunDetailOut,
     TestRunSummaryOut,
@@ -242,6 +247,29 @@ async def get_execution_run(
 
 
 @router.get(
+    "/projects/{project_id}/runs/{run_id}/report",
+    response_model=ExecutionReportOut,
+)
+async def get_execution_report(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> ExecutionReportOut:
+    """Playwright execution report for one finished run."""
+    if await session.get(Project, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    run = await ExecutionRepository(session).get_run_for_project(project_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Test run not found")
+    if not run_is_finished(run.status):
+        raise HTTPException(
+            status_code=409,
+            detail="The execution report is available after the Playwright run finishes.",
+        )
+    return await load_execution_report(session, run)
+
+
+@router.get(
     "/projects/{project_id}/runs/{run_id}/results/{result_id}/evidence/{channel}"
 )
 async def get_evidence(
@@ -269,10 +297,13 @@ async def get_evidence(
     except Exception as exc:  # noqa: BLE001 - storage misses become 404
         raise HTTPException(status_code=404, detail="Evidence object was not found") from exc
     media, suffix = _MEDIA[channel]
+    # A screenshot link from the Excel report should open the picture in the
+    # browser. The other evidence files stay downloads.
+    shown = "inline" if channel == EvidenceChannel.SCREENSHOT.value else "attachment"
     return Response(
         content=data,
         media_type=media,
-        headers={"Content-Disposition": f'attachment; filename="{channel}{suffix}"'},
+        headers={"Content-Disposition": f'{shown}; filename="{channel}{suffix}"'},
     )
 
 

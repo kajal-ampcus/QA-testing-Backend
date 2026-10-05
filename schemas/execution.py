@@ -84,3 +84,39 @@ class TestRunDetailOut(TestRunSummaryOut):
 
 class ExecutionListOut(BaseModel):
     runs: list[TestRunSummaryOut]
+
+
+class ExecutionReportCounts(BaseModel):
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    error: int
+    pass_rate: float
+    duration_ms: int
+
+
+class ExecutionReportResult(BaseModel):
+    id: UUID
+    test_case_code: str
+    title: str
+    requirement_code: str
+    status: str
+    expected: str
+    actual: str
+    duration_ms: int | None = None
+    error_message: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ExecutionReportOut(BaseModel):
+    run_id: UUID
+    project_id: UUID
+    generation_id: UUID
+    environment: str
+    base_url: str | None = None
+    status: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    counts: ExecutionReportCounts
+    results: list[ExecutionReportResult] = Field(default_factory=list)

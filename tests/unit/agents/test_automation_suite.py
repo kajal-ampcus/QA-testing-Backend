@@ -115,6 +115,11 @@ def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:
     assert 'getByRole("heading", { name: "Welcome", exact: true })' in (root / "pages" / "state-002.page.ts").read_text(encoding="utf-8")
     assert "await " in spec
     assert 'from "../../fixtures/auth"' in spec
+    auth = (root / "fixtures" / "auth.ts").read_text(encoding="utf-8")
+    assert 'img[alt="CAPTCHA"]' not in auth
+    assert 'img[alt*="captcha" i]' in auth
+    assert "core.agents.test_execution.captcha_solve" in auth
+    assert "captcha|answer" in auth
     assert "sessionPage: page" in spec
     config = (root / "playwright.config.ts").read_text(encoding="utf-8")
     assert "workers: 1" in config
