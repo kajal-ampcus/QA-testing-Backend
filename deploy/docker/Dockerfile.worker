@@ -19,6 +19,10 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
         chromium \
         fonts-liberation \
         fonts-noto-color-emoji \
+        novnc \
+        websockify \
+        x11vnc \
+        xvfb \
     && chromium --version \
     && rm -rf /var/lib/apt/lists/*
 
@@ -53,10 +57,10 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
     && chmod -R a+rX /opt/ms-playwright \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
-COPY scripts/docker_entrypoint.py scripts/docker_entrypoint.py
+COPY scripts/docker_entrypoint.py scripts/run_worker.py scripts/
 RUN useradd --create-home --uid 10001 qa \
     && mkdir -p /app/artifacts/discovery /app/artifacts/automation /app/logs \
     && chown -R qa:qa /app/artifacts /app/logs
 USER qa
 ENTRYPOINT ["python", "scripts/docker_entrypoint.py"]
-CMD ["arq", "apps.worker.arq_worker.WorkerSettings"]
+CMD ["python", "scripts/run_worker.py"]

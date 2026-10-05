@@ -103,4 +103,12 @@ def test_compose_shares_discovery_evidence_between_api_and_worker():
     automation = "./artifacts/automation:/app/artifacts/automation"
     assert "AUTOMATION_ARTIFACT_DIR: /app/artifacts/automation" in text
     assert "AUTOMATION_HOST_ROOT:" in text
+    assert 'DISPLAY: ":99"' in text
+    assert "EXECUTION_HEADED_HOST" not in text
     assert text.count(automation) >= 2
+    assert "xvfb" in worker_dockerfile.read_text(encoding="utf-8")
+    assert "x11vnc" in worker_dockerfile.read_text(encoding="utf-8")
+    assert "novnc" in worker_dockerfile.read_text(encoding="utf-8")
+    assert "websockify" in worker_dockerfile.read_text(encoding="utf-8")
+    assert "run_worker.py" in worker_dockerfile.read_text(encoding="utf-8")
+    assert "location /live/" in nginx

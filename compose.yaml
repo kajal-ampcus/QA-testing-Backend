@@ -150,9 +150,8 @@ services:
       # /usr/bin/chromium (not the Google Chrome path used on some hosts).
       CHROME_EXECUTABLE_PATH: /usr/bin/chromium
       CHROME_NO_SANDBOX: "true"
-      # Docker has no desktop. This host process opens the visible browser.
-      EXECUTION_HEADED_HOST: http://host.docker.internal:8765
-      EXECUTION_HEADED_TOKEN: local-dev-headed
+      # Chromium is headed on this display and streamed to the Execution page.
+      DISPLAY: ":99"
       WORKER_MAX_JOBS: ${WORKER_MAX_JOBS:-1}
       WORKER_JOB_TIMEOUT: ${WORKER_JOB_TIMEOUT:-1200}
     extra_hosts:

@@ -24,7 +24,9 @@ from core.tool_gateway.secret_resolver import resolve_login
 
 _OVERLAY_NAME = "playwright.execution.config.ts"
 _REPORT_RELATIVE = "test-results/playwright-report.json"
-_OVERLAY = """\
+
+# Headed Chromium on the worker virtual display. The Execution page streams it.
+_LIVE_OVERLAY = """\
 import { defineConfig } from "@playwright/test";
 import base from "./playwright.config";
 
@@ -42,7 +44,7 @@ export default defineConfig({
   ],
   use: {
     ...(base.use || {}),
-    headless: true,
+    headless: false,
     viewport: { width: 1440, height: 900 },
     screenshot: "on",
     video: "on",
@@ -50,7 +52,7 @@ export default defineConfig({
     launchOptions: {
       ...(executablePath ? { executablePath } : {}),
       args: noSandbox
-        ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+        ? ["--no-sandbox", "--disable-dev-shm-usage"]
         : [],
     },
   },
@@ -159,7 +161,7 @@ async def execute_suite(
     suite_dir.mkdir(parents=True, exist_ok=True)
     headed_host = os.environ.get("EXECUTION_HEADED_HOST", "").strip()
     overlay = suite_dir / _OVERLAY_NAME
-    overlay.write_text(_HEADED_OVERLAY if headed_host else _OVERLAY, encoding="utf-8")
+    overlay.write_text(_HEADED_OVERLAY if headed_host else _LIVE_OVERLAY, encoding="utf-8")
     (suite_dir / "test-results").mkdir(exist_ok=True)
     if headed_host:
         return await _run_on_headed_host(
