@@ -47,6 +47,7 @@ class AutomationGenerationAgent(BaseAgent[SuitePlan]):
             application_url=payload.get("application_url"),
             cases=cases,
             states=states,
+            incremental=bool(request.constraints.get("incremental")),
         )
 
     @staticmethod

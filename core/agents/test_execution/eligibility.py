@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from domain.enums import AutomationReviewStatus, RiskLevel
@@ -40,6 +41,18 @@ class ScriptSnapshot:
 class ClassifiedScripts:
     runnable: list[ScriptSnapshot]
     skipped: list[tuple[ScriptSnapshot, str]]
+
+
+def resolve_pending_script_ids(
+    requested: list[UUID] | None,
+    pending: list[Any] | None,
+) -> list[UUID] | None:
+    """Use the caller's selection, or the specs written by the latest generate."""
+    if requested is not None:
+        return requested
+    if not pending:
+        return None
+    return [UUID(str(item)) for item in pending]
 
 
 def classify_scripts(

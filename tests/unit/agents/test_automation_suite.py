@@ -5,7 +5,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from core.agents.automation_generation.artifacts import build_zip, ide_links
-from core.agents.automation_generation.suite import CaseInput, StateInput, generate_suite
+from core.agents.automation_generation.suite import (
+    CaseInput,
+    StateInput,
+    case_ids_to_write,
+    generate_suite,
+)
 from core.agents.automation_review.lint_rules import lint_suite
 
 
@@ -127,6 +132,7 @@ def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:
     config = (root / "playwright.config.ts").read_text(encoding="utf-8")
     assert "workers: 1" in config
     assert "headless: false" in config
+    assert "process.env[match[1]]?.trim()" in config
     assert "expect(true)" not in spec
     assert "waitForTimeout" not in spec
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
@@ -267,3 +273,43 @@ def test_ide_links_require_an_absolute_host_root() -> None:
     assert windows["cursor"] == (
         f"cursor://file/D:/qa/artifacts/automation/{project_id}/{generation_id}"
     )
+
+
+def test_later_cases_are_added_to_the_same_suite(tmp_path) -> None:
+    ids = _ids()
+    suite = tmp_path / "suite"
+    generation_id = uuid4()
+    shared = dict(
+        suite_dir=suite,
+        generation_id=generation_id,
+        project_id=ids["project_id"],
+        application_url="https://shop.example",
+        states=_states(),
+        incremental=True,
+    )
+    first = generate_suite(cases=[_case(ids)], **shared)
+    spec = next(suite.rglob("TC-001*.spec.ts"))
+    spec.write_text(spec.read_text(encoding="utf-8") + "\n// kept\n", encoding="utf-8")
+    (suite / "fixtures" / "auth.ts").write_text("// edited in the editor\n", encoding="utf-8")
+    second_ids = {**ids, "case_id": uuid4()}
+    second = generate_suite(
+        cases=[_case(second_ids, tc_code="TC-002", title="Stay signed in")],
+        **shared,
+    )
+    assert first.generation_id == second.generation_id
+    assert "// kept" in spec.read_text(encoding="utf-8")
+    assert (suite / "fixtures" / "auth.ts").read_text(encoding="utf-8") == "// edited in the editor\n"
+    assert any(path.name.startswith("TC-002") for path in suite.rglob("*.spec.ts"))
+    manifest = json.loads((suite / "manifest.json").read_text(encoding="utf-8"))
+    codes = {item["test_case_code"] for item in manifest["cases"]}
+    assert codes == {"TC-001", "TC-002"}
+
+
+def test_case_ids_to_write_skips_an_unchanged_version() -> None:
+    kept = uuid4()
+    changed = uuid4()
+    added = uuid4()
+    assert case_ids_to_write(
+        [(kept, 1), (changed, 2), (added, 1)],
+        {kept: 1, changed: 1},
+    ) == [changed, added]

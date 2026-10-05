@@ -64,6 +64,41 @@ def test_positive_case_asserts_the_state_its_click_leads_to() -> None:
     assert positive.confidence == 0.8
 
 
+def test_link_destination_is_not_taken_from_a_word_inside_another_url() -> None:
+    states = [
+        {
+            "state_code": "STATE-015",
+            "url_pattern": "/en/admin",
+            "reached_via": ["click(role=authentication,name='Log in')"],
+            "elements": [
+                {
+                    "element_code": "EL-006",
+                    "role": "link",
+                    "name": "Dashboard",
+                    "url": "https://app.test/en/admin",
+                    "source": "OBSERVED_DOM",
+                }
+            ],
+        },
+        {
+            "state_code": "STATE-023",
+            "url_pattern": "/en/dic/dashboard/documents",
+            "reached_via": [
+                "navigate(url='https://app.test/en/dic/dashboard/documents',observed_link='Documents')"
+            ],
+            "elements": [],
+        },
+    ]
+    cases = generate_cases_from_map(
+        [{"id": "AC-1", "text": "After successful authentication, the user is redirected to the Super Admin Dashboard."}],
+        states,
+        "Super Admin Login",
+    )
+    for case in cases:
+        assert validate_case(case, states, {"AC-1"}) == []
+        assert case.steps[-1].target.state_code == "STATE-015"
+
+
 def test_positive_case_without_observed_result_stays_on_start_state() -> None:
     states = [
         STATES[0],

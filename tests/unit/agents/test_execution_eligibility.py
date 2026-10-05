@@ -6,6 +6,7 @@ from core.agents.test_execution.eligibility import (
     ExecutionEligibilityError,
     ScriptSnapshot,
     classify_scripts,
+    resolve_pending_script_ids,
 )
 from domain.enums import AutomationReviewStatus, RiskLevel
 
@@ -54,6 +55,14 @@ def test_unknown_script_id_is_rejected() -> None:
     script = _script()
     with pytest.raises(ExecutionEligibilityError, match="is not part of this generation"):
         classify_scripts([script], [uuid4()], False)
+
+
+def test_pending_increment_is_used_when_the_caller_does_not_choose_scripts() -> None:
+    first = uuid4()
+    second = uuid4()
+    assert resolve_pending_script_ids(None, [str(second)]) == [second]
+    assert resolve_pending_script_ids([first], [str(second)]) == [first]
+    assert resolve_pending_script_ids(None, None) is None
 
 
 def test_unapproved_destructive_stays_skipped_even_with_flag() -> None:

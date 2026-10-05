@@ -36,7 +36,11 @@ from core.agents.automation_generation.eligibility import (
     RequirementSnapshot,
     select_eligible,
 )
-from core.agents.automation_generation.suite import CaseInput, _forbidden_literals
+from core.agents.automation_generation.suite import (
+    CaseInput,
+    _forbidden_literals,
+    case_ids_to_write,
+)
 from core.agents.automation_review.agent import AutomationReviewAgent
 from core.policy_safety.approval_gates import requires_approval
 from domain.enums import ApprovalStatus, AutomationReviewStatus, RiskLevel
@@ -91,6 +95,31 @@ def artifact_root(settings: ApiSettings | None = None) -> Path:
     return configured.resolve()
 
 
+async def _write_login_env(project: Project, suite_dir: Path) -> None:
+    """Write the suite .env from the discovery account. Never write the secret into source files."""
+    if not project.credential_ref:
+        return
+    from core.tool_gateway.secret_resolver import resolve_login
+
+    try:
+        secret = await resolve_login(project.credential_ref, project.id)
+    except Exception:
+        return
+    username = str(secret.get("username") or "").replace("\n", "").strip()
+    password = str(secret.get("password") or "").replace("\n", "")
+    if not username or not password:
+        return
+    base_url = (project.application_url or "").replace("\n", "").strip()
+    lines = [
+        f"BASE_URL={base_url}",
+        f"TEST_USERNAME={username}",
+        f"TEST_PASSWORD={password}",
+        "RUN_DESTRUCTIVE=false",
+        "",
+    ]
+    (suite_dir / ".env").write_text("\n".join(lines), encoding="utf-8")
+
+
 def presentation_status(scripts: list[AutomationScript]) -> str:
     statuses = {script.review_status for script in scripts}
     if AutomationReviewStatus.PENDING_APPROVAL in statuses:
@@ -136,8 +165,34 @@ async def generate_automation(
     if full_map is None:
         raise HTTPException(status_code=409, detail="The matching application map is not available.")
 
-    generation_id = uuid.uuid4()
+    repo = AutomationRepository(session)
+    previous = await repo.list_for_project(project_id)
+    generation_id = _canonical_generation(previous) or uuid.uuid4()
+    existing_rows = [row for row in previous if row.generation_id == generation_id]
     suite_dir = generation_dir(artifact_root(settings), project_id, generation_id)
+    folder_ready = (suite_dir / "manifest.json").is_file()
+    stored_versions = (
+        {row.test_case_id: row.test_case_version for row in existing_rows} if folder_ready else {}
+    )
+    needed = set(
+        case_ids_to_write(
+            [(case.id, version.version) for case, version in selected],
+            stored_versions,
+        )
+    )
+    to_write = [(case, version) for case, version in selected if case.id in needed]
+    if not to_write and existing_rows:
+        summary = dict(existing_rows[0].suite_summary or {})
+        summary["file_tree"] = _files_or_summary(project_id, generation_id, summary)
+        response = _detail(
+            existing_rows,
+            summary,
+            await _approval_ids(session, [row.id for row in existing_rows]),
+            settings,
+            include_sources=True,
+        )
+        response.label = "Those cases are already in this suite. The files on disk are shown below."
+        return response
     states = {
         state.state_code: {
             "url_pattern": state.url_pattern,
@@ -145,7 +200,7 @@ async def generate_automation(
         }
         for state in full_map.states
     }
-    case_payload = [_case_payload(case, version, full_map.version) for case, version in selected]
+    case_payload = [_case_payload(case, version, full_map.version) for case, version in to_write]
     forbidden = _forbidden(case_payload)
     gen_request = AgentInputEnvelope(
         agent_run_id=uuid.uuid4(),
@@ -159,7 +214,7 @@ async def generate_automation(
             "cases": case_payload,
             "states": states,
         },
-        constraints={"suite_dir": str(suite_dir)},
+        constraints={"suite_dir": str(suite_dir), "incremental": True},
     )
     try:
         plan = await AutomationGenerationAgent().run(gen_request)
@@ -167,6 +222,7 @@ async def generate_automation(
         raise HTTPException(status_code=422, detail=exc.message) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await _write_login_env(project, suite_dir)
     _record_run(session, gen_request, AutomationGenerationAgent.name, AgentRunStatus.SUCCESS)
 
     review_request = AgentInputEnvelope(
@@ -199,8 +255,8 @@ async def generate_automation(
         "language": language,
         "framework": framework,
     }
-    repo = AutomationRepository(session)
-    rows: list[AutomationScript] = []
+    by_case = {row.test_case_id: row for row in existing_rows}
+    written: list[AutomationScript] = []
     approvals: list[Approval] = []
     for script in plan.scripts:
         needs_approval = requires_approval("automation_script", script.risk, environment)
@@ -208,42 +264,62 @@ async def generate_automation(
             status = AutomationReviewStatus.PENDING_APPROVAL
         elif script.blocked:
             status = AutomationReviewStatus.BLOCKED
+        elif review.lint.literal_credentials:
+            status = AutomationReviewStatus.REJECTED
         else:
             status = AutomationReviewStatus.REVIEWED
-        row = AutomationScript(
-            id=uuid.uuid4(),
-            script_code=await repo.next_script_code(project_id),
-            project_id=project_id,
-            generation_id=generation_id,
-            test_case_id=script.test_case_id,
-            test_case_code=script.tc_code,
-            test_case_version=script.version,
-            requirement_id=script.requirement_id,
-            requirement_version=script.requirement_version,
-            application_map_id=script.application_map_id,
-            application_map_version=script.application_map_version,
-            framework=framework,
-            file_path=script.spec_path,
-            selector_strategy=script.selectors,
-            risk_level=script.risk,
-            review_status=status,
-            review_findings={"blocked_reason": script.blocked_reason},
-            suite_summary=summary,
-            current_version=1,
-            created_at=datetime.now(UTC),
-        )
-        repo.add_script(
-            row,
-            {
-                "file_path": row.file_path,
-                "selector_strategy": row.selector_strategy,
-                "risk_level": row.risk_level,
-                "review_status": row.review_status,
-                "review_findings": row.review_findings,
-                "suite_summary": summary,
-            },
-        )
-        rows.append(row)
+        current = by_case.get(script.test_case_id)
+        if current is None:
+            row = AutomationScript(
+                id=uuid.uuid4(),
+                script_code=await repo.next_script_code(project_id),
+                project_id=project_id,
+                generation_id=generation_id,
+                test_case_id=script.test_case_id,
+                test_case_code=script.tc_code,
+                test_case_version=script.version,
+                requirement_id=script.requirement_id,
+                requirement_version=script.requirement_version,
+                application_map_id=script.application_map_id,
+                application_map_version=script.application_map_version,
+                framework="playwright",
+                file_path=script.spec_path,
+                selector_strategy=script.selectors,
+                risk_level=script.risk,
+                review_status=status,
+                review_findings={"blocked_reason": script.blocked_reason},
+                suite_summary=summary,
+                current_version=1,
+                created_at=datetime.now(UTC),
+            )
+            repo.add_script(
+                row,
+                {
+                    "file_path": row.file_path,
+                    "selector_strategy": row.selector_strategy,
+                    "risk_level": row.risk_level,
+                    "review_status": row.review_status,
+                    "review_findings": row.review_findings,
+                    "suite_summary": summary,
+                },
+            )
+            by_case[script.test_case_id] = row
+        else:
+            if current.file_path != script.spec_path:
+                old_spec = suite_dir / current.file_path
+                if old_spec.is_file():
+                    old_spec.unlink()
+            current.test_case_code = script.tc_code
+            current.test_case_version = script.version
+            current.requirement_version = script.requirement_version
+            current.application_map_version = script.application_map_version
+            current.file_path = script.spec_path
+            current.selector_strategy = script.selectors
+            current.risk_level = script.risk
+            current.review_findings = {"blocked_reason": script.blocked_reason}
+            repo.append_version(current, status)
+            row = current
+        written.append(row)
         if needs_approval:
             approval = Approval(
                 id=uuid.uuid4(),
@@ -255,6 +331,11 @@ async def generate_automation(
             )
             session.add(approval)
             approvals.append(approval)
+    summary["pending_script_ids"] = [str(row.id) for row in written]
+    summary["file_tree"] = list_files(suite_dir)
+    for row in by_case.values():
+        row.suite_summary = dict(summary)
+    rows = list(by_case.values())
     response = _detail(
         rows,
         summary,
@@ -263,7 +344,13 @@ async def generate_automation(
         include_sources=True,
     )
     await session.commit()
-    response.label = "Generated and reviewed — approve the suite before it runs"
+    if existing_rows:
+        response.label = (
+            "Added the new specs to the existing suite. "
+            "The next run executes only those specs."
+        )
+    else:
+        response.label = "Generated and reviewed — continue to Execution to run it"
     return response
 
 
@@ -568,6 +655,14 @@ def _forbidden(cases: list[dict]) -> set[str]:
         for item in cases
     ]
     return _forbidden_literals(parsed)
+
+
+def _canonical_generation(scripts: list[AutomationScript]) -> uuid.UUID | None:
+    """The suite folder already opened for this project, if one exists."""
+    if not scripts:
+        return None
+    latest = max(scripts, key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC))
+    return latest.generation_id
 
 
 def _files_or_summary(project_id: uuid.UUID, generation_id: uuid.UUID, summary: dict) -> list[str]:

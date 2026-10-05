@@ -30,6 +30,7 @@ from core.agents.test_execution.eligibility import (
     ExecutionEligibilityError,
     ScriptSnapshot,
     classify_scripts,
+    resolve_pending_script_ids,
 )
 from domain.enums import EvidenceChannel, TestRunStatus
 from infra.db.models.execution import TestResult, TestRun
@@ -87,6 +88,11 @@ async def start_execution_run(
                 "Download the suite and run it locally."
             ),
         )
+    explicit_ids = script_ids
+    script_ids = resolve_pending_script_ids(
+        script_ids, (scripts[0].suite_summary or {}).get("pending_script_ids")
+    )
+    used_pending = explicit_ids is None and script_ids is not None
     snapshots = [
         ScriptSnapshot(
             id=script.id,
@@ -101,6 +107,12 @@ async def start_execution_run(
         classify_scripts(snapshots, script_ids, run_destructive)
     except ExecutionEligibilityError as exc:
         raise HTTPException(status_code=409, detail=exc.message) from exc
+
+    if used_pending:
+        for script in scripts:
+            summary = dict(script.suite_summary or {})
+            summary.pop("pending_script_ids", None)
+            script.suite_summary = summary
 
     execution_repo = ExecutionRepository(session)
     active = await execution_repo.active_for_generation(project.id, generation_id)

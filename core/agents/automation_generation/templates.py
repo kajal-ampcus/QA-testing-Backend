@@ -131,7 +131,10 @@ function loadSuiteEnv(): void {
   for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
     const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
     if (!match) continue;
-    process.env[match[1]] = match[2].trim().replace(/^["']|["']$/g, "");
+    const value = match[2].trim().replace(/^["']|["']$/g, "");
+    // Discovery and Execution inject the account. A blank or older file must not replace it.
+    if (!value || process.env[match[1]]?.trim()) continue;
+    process.env[match[1]] = value;
   }
 }
 
@@ -326,7 +329,7 @@ async function enterApplication(page: Page): Promise<void> {
   const username = process.env.TEST_USERNAME?.trim() ?? "";
   const password = process.env.TEST_PASSWORD?.trim() ?? "";
   if (!username || !password) {
-    throw new Error("Set TEST_USERNAME and TEST_PASSWORD in the suite .env before running.");
+    throw new Error("The discovery login is not available. Choose or edit the account on Automation, then generate again.");
   }
   await page.goto("/login", { waitUntil: "domcontentloaded" });
   await waitOutCaptchaLimit(page);
@@ -531,7 +534,10 @@ function loadSuiteEnv(): void {
   for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
     const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
     if (!match) continue;
-    process.env[match[1]] = match[2].trim().replace(/^["']|["']$/g, "");
+    const value = match[2].trim().replace(/^["']|["']$/g, "");
+    // Discovery and Execution inject the account. A blank or older file must not replace it.
+    if (!value || process.env[match[1]]?.trim()) continue;
+    process.env[match[1]] = value;
   }
 }
 
@@ -583,7 +589,7 @@ chain for the whole suite.
 
 ## Environment
 
-Copy `.env.example` to `.env` and fill values locally. Do not commit `.env`.
+The platform writes `.env` from the discovery account when the suite is generated. Do not commit `.env`, and do not paste passwords into the TypeScript files. Edit the account on the Automation step if a different login is needed.
 
 - `BASE_URL` — application under test
 - `TEST_USERNAME` and `TEST_PASSWORD` — account inputs, when a flow needs them

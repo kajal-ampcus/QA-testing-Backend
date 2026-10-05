@@ -136,6 +136,11 @@ def _carry_local_env(suite_dir: Path) -> None:
             return
 
 
+def case_ids_to_write(requested: list[tuple[UUID, int]], stored: dict[UUID, int]) -> list[UUID]:
+    """Cases with no spec yet, or whose approved version changed."""
+    return [case_id for case_id, version in requested if stored.get(case_id) != version]
+
+
 def generate_suite(
     *,
     suite_dir: Path,
@@ -144,10 +149,14 @@ def generate_suite(
     application_url: str | None,
     cases: list[CaseInput],
     states: dict[str, StateInput],
+    incremental: bool = False,
 ) -> SuitePlan:
-    if suite_dir.exists():
-        shutil.rmtree(suite_dir)
-    suite_dir.mkdir(parents=True)
+    if incremental:
+        suite_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        if suite_dir.exists():
+            shutil.rmtree(suite_dir)
+        suite_dir.mkdir(parents=True)
 
     forbidden = _forbidden_literals(cases)
     planned_cases = [_plan_case(case, states, forbidden, generation_id) for case in cases]
@@ -160,28 +169,43 @@ def generate_suite(
         if field["env"] not in {"TEST_USERNAME", "TEST_PASSWORD", "BASE_URL", "RUN_DESTRUCTIVE"}
     ]
 
-    _write(suite_dir / "package.json", _package_json(project_id))
-    _write(suite_dir / "tsconfig.json", _tsconfig())
-    _write(suite_dir / "env.d.ts", _ENV_DTS)
-    _write(
+    write = _write_if_absent if incremental else _write
+    write(suite_dir / "package.json", _package_json(project_id))
+    write(suite_dir / "tsconfig.json", _tsconfig())
+    write(suite_dir / "env.d.ts", _ENV_DTS)
+    write(
         suite_dir / "playwright.config.ts",
         templates.render_config(base_url=json.dumps(application_url) if application_url else None),
     )
-    _write(suite_dir / ".gitignore", templates.render_gitignore())
-    _write(
+    write(suite_dir / ".gitignore", templates.render_gitignore())
+    write(
         suite_dir / ".env.example",
         templates.render_env_example(base_url=application_url or "", names=sorted(set(env_names))),
     )
-    _carry_local_env(suite_dir)
-    _write(
+    if not (suite_dir / ".env").is_file():
+        _carry_local_env(suite_dir)
+    write(
         suite_dir / "fixtures" / "auth.ts",
         templates.render_auth(base_url=json.dumps(application_url) if application_url else '""'),
     )
-    _write(suite_dir / "data" / "testdata.ts", templates.render_testdata(cases=data_cases))
+    _merge_testdata(suite_dir / "data" / "testdata.ts", data_cases, replace=not incremental)
+    written_pages: list[Path] = []
     for page in pages.values():
-        _write(suite_dir / "pages" / page["file_name"], templates.render_page(**page))
+        page_path = suite_dir / "pages" / page["file_name"]
+        rendered_page = templates.render_page(**page)
+        if incremental and page_path.is_file():
+            merged = _augment_page(page_path.read_text(encoding="utf-8"), rendered_page)
+            if merged != page_path.read_text(encoding="utf-8"):
+                _write(page_path, merged)
+                written_pages.append(page_path)
+        else:
+            _write(page_path, rendered_page)
+            written_pages.append(page_path)
+    written_specs: list[Path] = []
     for planned in planned_cases:
-        _write(suite_dir / planned.spec_path, planned.source)
+        spec_path = suite_dir / planned.spec_path
+        _write(spec_path, planned.source)
+        written_specs.append(spec_path)
 
     map_id = cases[0].application_map_id if cases else None
     map_version = cases[0].application_map_version if cases else None
@@ -213,8 +237,10 @@ def generate_suite(
             for item in scripts
         ],
     }
+    if incremental:
+        manifest = _merge_manifest(suite_dir / "manifest.json", manifest)
     _write(suite_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n")
-    _write(
+    write(
         suite_dir / "README.md",
         templates.render_readme(
             project_id=project_id,
@@ -223,7 +249,11 @@ def generate_suite(
             map_version=map_version or "",
         ),
     )
-    _reject_secret_literals(suite_dir, forbidden)
+    _reject_secret_literals(
+        suite_dir,
+        forbidden,
+        only=written_specs + written_pages if incremental else None,
+    )
     manifest["files"] = list_files(suite_dir)
     _write(suite_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n")
 
@@ -604,16 +634,33 @@ def _contains_secret(text: str, forbidden: set[str]) -> bool:
     return any(secret and secret in text for secret in forbidden)
 
 
-def _reject_secret_literals(suite_dir: Path, forbidden: set[str]) -> None:
+def _reject_secret_literals(
+    suite_dir: Path, forbidden: set[str], *, only: list[Path] | None = None
+) -> None:
     if not forbidden:
         return
-    for path in suite_dir.rglob("*"):
-        if not path.is_file():
+    if only is None:
+        paths = [path for path in suite_dir.rglob("*") if path.is_file()]
+    else:
+        paths = [path for path in only if path.is_file()]
+    hits = []
+    for path in paths:
+        if any(part in _SECRET_SKIP for part in path.relative_to(suite_dir).parts):
             continue
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
         if _contains_secret(text, forbidden):
-            shutil.rmtree(suite_dir, ignore_errors=True)
-            raise RuntimeError("Refusing to keep a suite that contained a secret literal.")
+            hits.append(path)
+    if not hits:
+        return
+    if only is None:
+        shutil.rmtree(suite_dir, ignore_errors=True)
+    else:
+        for path in hits:
+            path.unlink(missing_ok=True)
+    raise RuntimeError("Refusing to keep a suite that contained a secret literal.")
 
 
 def _selector_record(selector: SelectorDecision) -> dict[str, Any]:
@@ -714,9 +761,95 @@ def _max_risk(levels: list[str]) -> str:
     return max(levels, key=lambda item: _RISK_RANK.get(item, 0))
 
 
+_SECRET_SKIP = {"node_modules", "test-results", "playwright-report", "blob-report"}
+_METHOD_BLOCK = re.compile(r"\n  async (\w+)\([^)]*\) \{.*?\n  \}\n", re.S)
+_LOCATOR_LINE = re.compile(r"^  readonly (?!page\b)(\w+): Locator;$", re.M)
+_ASSIGN_LINE = re.compile(r"^    this\.(\w+) = .*;$", re.M)
+
+
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _write_if_absent(path: Path, content: str) -> None:
+    if path.is_file():
+        return
+    _write(path, content)
+
+
+def _merge_testdata(path: Path, data_cases: list[dict[str, Any]], *, replace: bool) -> None:
+    rendered = templates.render_testdata(cases=data_cases)
+    if replace or not path.is_file():
+        _write(path, rendered)
+        return
+    text = path.read_text(encoding="utf-8")
+    missing = [
+        case
+        for case in data_cases
+        if not re.search(rf"\b{re.escape(str(case['code']))}\s*:", text)
+    ]
+    if not missing:
+        return
+    if "} as const;" not in text or "export const testData = {" not in text:
+        _write(path, rendered)
+        return
+    addition = templates.render_testdata(cases=missing)
+    inner = addition.split("export const testData = {", 1)[1].rsplit("} as const;", 1)[0]
+    _write(path, text.replace("} as const;", inner + "} as const;", 1))
+
+
+def _augment_page(existing: str, rendered: str) -> str:
+    """Add locators and methods the new spec needs. Leave a rewritten class alone."""
+    if "export class" not in existing or "readonly page: Page;" not in existing:
+        return existing
+    updated = existing
+    for name in _LOCATOR_LINE.findall(rendered):
+        if f"readonly {name}:" in updated:
+            continue
+        line = next(line for line in rendered.splitlines() if line.startswith(f"  readonly {name}:"))
+        updated = updated.replace("  readonly page: Page;\n", f"  readonly page: Page;\n{line}\n", 1)
+    for name in _ASSIGN_LINE.findall(rendered):
+        if name == "page" or f"this.{name} =" in updated:
+            continue
+        line = next(line for line in rendered.splitlines() if line.startswith(f"    this.{name} ="))
+        anchor = "    this.page = page;\n"
+        if anchor not in updated:
+            continue
+        updated = updated.replace(anchor, anchor + line + "\n", 1)
+    for match in _METHOD_BLOCK.finditer(rendered):
+        name = match.group(1)
+        if name in {"open", "waitForReady", "expectOnPage"}:
+            continue
+        if re.search(rf"\basync {name}\s*\(", updated):
+            continue
+        if not updated.rstrip().endswith("}"):
+            continue
+        updated = updated.rstrip()[:-1].rstrip() + "\n" + match.group(0).strip("\n") + "\n}\n"
+    return updated
+
+
+def _merge_manifest(path: Path, fresh: dict[str, Any]) -> dict[str, Any]:
+    if not path.is_file():
+        return fresh
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return fresh
+    if not isinstance(existing, dict):
+        return fresh
+    by_id = {
+        str(item.get("test_case_id")): item
+        for item in existing.get("cases") or []
+        if isinstance(item, dict) and item.get("test_case_id")
+    }
+    for item in fresh.get("cases") or []:
+        by_id[str(item["test_case_id"])] = item
+    existing["cases"] = list(by_id.values())
+    existing["project_id"] = fresh["project_id"]
+    existing["generation_id"] = fresh["generation_id"]
+    existing["application_url"] = fresh["application_url"]
+    return existing
 
 
 def _package_json(project_id: UUID) -> str:

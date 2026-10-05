@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from core.agents.test_data.agent import value_for_element
 from core.agents.test_design.schemas import StepTarget, TestCaseSpec, TestStep
@@ -16,6 +17,8 @@ from core.agents.test_design.schemas import StepTarget, TestCaseSpec, TestStep
 _FILLABLE = {"textbox", "searchbox", "spinbutton", "combobox"}
 _CLICKABLE = {"button", "link", "checkbox", "radio"}
 _SUBMIT = re.compile(r"\b(submit|send|save|log.?in|sign.?in|continue|next)\b", re.I)
+_CONTROL_LABEL = re.compile(r"observed_link='([^']*)'|name='([^']*)'", re.I)
+_CLICK_NAME = re.compile(r"^click\s+([^()]+)$", re.I)
 
 
 def _observed(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -97,7 +100,27 @@ def _best_click(elements: list[dict[str, Any]], text: str) -> dict[str, Any] | N
     if score(ranked[0]) > 0:
         return ranked[0]
     submits = [element for element in pool if _SUBMIT.search(str(element.get("name") or ""))]
-    return (submits or pool)[0]
+    return submits[0] if submits else None
+
+
+def _route(url: str) -> str:
+    text = str(url or "").strip()
+    if not text or text.startswith("data:"):
+        return ""
+    path = urlparse(text).path if "://" in text else text
+    return path.rstrip("/") or "/"
+
+
+def _control_label(step: str) -> str:
+    match = _CONTROL_LABEL.search(step)
+    if match:
+        return next(group for group in match.groups() if group)
+    click = _CLICK_NAME.match(step.strip())
+    return click.group(1).strip() if click else ""
+
+
+def _norm_label(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.casefold())
 
 
 def _result_state(
@@ -105,13 +128,21 @@ def _result_state(
 ) -> tuple[dict[str, Any], float]:
     """The state the click is observed to lead to, with a confidence.
 
-    Only a state whose last recorded step used this control counts as its
-    result; otherwise the case asserts on the start state instead of guessing."""
-    name = str((click or {}).get("name") or "").strip().lower()
+    A link uses its href. A button uses the recorded control name. A word
+    that only happens to appear inside another page's URL is not a destination.
+    """
+    href = _route(str((click or {}).get("url") or ""))
+    if href:
+        for state in states:
+            if state["state_code"] != start["state_code"] and _route(str(state.get("url_pattern") or "")) == href:
+                return state, 0.8
+        return start, 0.5
+    name = _norm_label(str((click or {}).get("name") or ""))
     if len(name) >= 2:
         for state in states:
             path = state.get("reached_via") or []
-            if state["state_code"] != start["state_code"] and path and name in str(path[-1]).lower():
+            label = _norm_label(_control_label(str(path[-1]))) if path else ""
+            if state["state_code"] != start["state_code"] and label and label == name:
                 return state, 0.8
     return start, 0.5
 
