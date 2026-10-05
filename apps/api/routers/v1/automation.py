@@ -1,8 +1,8 @@
 """
 Automation script endpoints — generation, review, inspection, and download.
 
-After the suite is written, this stage queues the Test Execution Agent.
-The worker runs npx playwright test. The tester does not run that command.
+After the suite is written, a tester reviews it and approves it.
+Approval queues the Test Execution Agent. The worker runs npx playwright test.
 """
 
 import uuid
@@ -58,22 +58,11 @@ from schemas.automation import (
     VerificationOut,
 )
 from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunStatus
+from schemas.execution import TriggerExecutionResponse
 
 router = APIRouter(prefix="/automation", tags=["automation"])
 
 _LABEL = "Generated and reviewed — not executed"
-
-
-async def _queue_execution(session: AsyncSession, project: Project, generation_id: uuid.UUID):
-    """Start the execution agent for a suite that was just written."""
-    from apps.api.routers.v1.executions import start_execution_run
-
-    try:
-        return await start_execution_run(session, project, generation_id, run_destructive=False)
-    except HTTPException as exc:
-        if exc.status_code in {409, 503}:
-            return None
-        raise
 
 
 def guard_eligible(
@@ -256,12 +245,42 @@ async def generate_automation(
         include_sources=True,
     )
     await session.commit()
-    queued = await _queue_execution(session, project, generation_id)
-    if queued is not None:
-        response.execution_job_id = uuid.UUID(queued.job_id)
-        response.execution_run_id = queued.run_id
-        response.label = "Generated — Playwright is running on the server"
+    response.label = "Generated and reviewed — approve the suite before it runs"
     return response
+
+
+@router.post(
+    "/projects/{project_id}/generations/{generation_id}/approve",
+    response_model=TriggerExecutionResponse,
+    status_code=202,
+)
+async def approve_generation(
+    project_id: uuid.UUID,
+    generation_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> TriggerExecutionResponse:
+    """Mark the reviewed suite approved and queue Playwright for that generation."""
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    rows = await _require_generation(session, project_id, generation_id)
+    repo = AutomationRepository(session)
+    approved = False
+    for row in rows:
+        blocked = row.review_status == AutomationReviewStatus.BLOCKED or bool(
+            (row.review_findings or {}).get("blocked_reason")
+        )
+        if blocked or row.review_status == AutomationReviewStatus.REJECTED:
+            continue
+        if row.review_status != AutomationReviewStatus.APPROVED:
+            repo.append_version(row, AutomationReviewStatus.APPROVED)
+        approved = True
+    if not approved:
+        raise HTTPException(status_code=409, detail="No scripts in this suite can be approved.")
+    await session.commit()
+    from apps.api.routers.v1.executions import start_execution_run
+
+    return await start_execution_run(session, project, generation_id, run_destructive=False)
 
 
 @router.get("/projects/{project_id}", response_model=AutomationListOut)

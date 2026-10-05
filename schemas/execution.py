@@ -40,6 +40,11 @@ class EvidenceOut(BaseModel):
     network_log: str | None = None
 
 
+class InputFieldOut(BaseModel):
+    name: str
+    value: str
+
+
 class TestResultOut(BaseModel):
     id: UUID
     automation_script_id: UUID | None = None
@@ -49,6 +54,11 @@ class TestResultOut(BaseModel):
     evidence: EvidenceOut
     duration_ms: int | None = None
     error_message: str | None = None
+    category: str = ""
+    title: str = ""
+    inputs: list[InputFieldOut] = Field(default_factory=list)
+    cause: str = ""
+    recommendation: str = ""
 
 
 class TestRunSummaryOut(BaseModel):

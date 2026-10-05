@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
+
 from core.agents.base import BaseAgent
 from core.agents.test_execution.eligibility import (
     ClassifiedScripts,
@@ -28,6 +30,7 @@ from core.agents.test_execution.eligibility import (
     classify_scripts,
 )
 from core.agents.test_execution.playwright_runner import PlaywrightRunner, RawTestOutcome
+from core.agents.test_execution.result_context import explain_failure, input_fields
 from domain.enums import (
     EvidenceChannel,
     EvidenceSource,
@@ -35,6 +38,7 @@ from domain.enums import (
     TestRunStatus,
 )
 from infra.db.models.automation import AutomationScript
+from infra.db.models.test_case import TestCaseVersion
 from infra.db.models.execution import TestResult, TestRun
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
@@ -77,6 +81,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             )
 
         scripts = await self.automation_repo.list_generation(request.project_id, generation_id)
+        case_context = await self._case_context(scripts)
         snapshots = [_snapshot(script, payload) for script in scripts]
         try:
             classified = classify_scripts(snapshots, requested_ids, run_destructive)
@@ -97,7 +102,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         await self.execution_repo.session.flush()
 
         try:
-            live = await self._run_live(run, request, payload, suite_dir, classified)
+            live = await self._run_live(run, request, payload, suite_dir, classified, case_context)
         except Exception as exc:  # noqa: BLE001 - persist the failure, then re-raise for the worker
             self.execution_repo.mark_finished(
                 run,
@@ -172,6 +177,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         payload: dict[str, Any],
         suite_dir: Path,
         classified: ClassifiedScripts,
+        case_context: dict[str, dict[str, Any]],
     ) -> Any:
         from core.agents.test_execution.playwright_runner import SuiteRunResult
 
@@ -184,11 +190,14 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                     automation_script_id=script.id,
                     spec_path=script.file_path,
                     status=TestResultStatus.SKIPPED,
-                    assertion={
-                        "expected": "skipped",
-                        "actual": "skipped",
-                        "source": EvidenceSource.TEST_EXECUTION,
-                    },
+                    assertion=self._assertion(
+                        case_context,
+                        script.id,
+                        status=TestResultStatus.SKIPPED,
+                        expected="skipped",
+                        actual="skipped",
+                        error=reason,
+                    ),
                     evidence={channel.value: None for channel in EvidenceChannel},
                     error_message=reason,
                 ),
@@ -222,11 +231,14 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                     automation_script_id=outcome.script_id,
                     spec_path=outcome.spec_path,
                     status=outcome.status,
-                    assertion={
-                        "expected": outcome.expected,
-                        "actual": outcome.actual,
-                        "source": EvidenceSource.TEST_EXECUTION,
-                    },
+                    assertion=self._assertion(
+                        case_context,
+                        outcome.script_id,
+                        status=outcome.status,
+                        expected=outcome.expected,
+                        actual=outcome.actual,
+                        error=outcome.error_message,
+                    ),
                     evidence=evidence,
                     duration_ms=outcome.duration_ms,
                     error_message=outcome.error_message,
@@ -242,16 +254,68 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                         automation_script_id=script.id,
                         spec_path=script.file_path,
                         status=TestResultStatus.ERROR,
-                        assertion={
-                            "expected": "pass",
-                            "actual": live.detail or "Playwright produced no JSON report.",
-                            "source": EvidenceSource.TEST_EXECUTION,
-                        },
+                        assertion=self._assertion(
+                            case_context,
+                            script.id,
+                            status=TestResultStatus.ERROR,
+                            expected="pass",
+                            actual=live.detail or "Playwright produced no JSON report.",
+                            error=live.detail or "Playwright produced no JSON report.",
+                        ),
                         evidence={channel.value: None for channel in EvidenceChannel},
                         error_message=live.detail or "Playwright produced no JSON report.",
                     ),
                 )
         return live
+
+    async def _case_context(self, scripts: list[AutomationScript]) -> dict[str, dict[str, Any]]:
+        if not scripts:
+            return {}
+        result = await self.execution_repo.session.execute(
+            select(TestCaseVersion).where(
+                TestCaseVersion.test_case_id.in_([script.test_case_id for script in scripts])
+            )
+        )
+        versions = {(item.test_case_id, item.version): item for item in result.scalars().all()}
+        context: dict[str, dict[str, Any]] = {}
+        for script in scripts:
+            version = versions.get((script.test_case_id, script.test_case_version))
+            if version is None:
+                context[str(script.id)] = {
+                    "category": "",
+                    "title": script.test_case_code,
+                    "inputs": [],
+                }
+                continue
+            context[str(script.id)] = {
+                "category": version.category,
+                "title": version.title,
+                "inputs": input_fields(version.test_data, version.steps),
+            }
+        return context
+
+    @staticmethod
+    def _assertion(
+        case_context: dict[str, dict[str, Any]],
+        script_id: UUID | None,
+        *,
+        status: str,
+        expected: str,
+        actual: str,
+        error: str | None,
+    ) -> dict[str, Any]:
+        case = case_context.get(str(script_id or ""), {})
+        cause, recommendation = explain_failure(str(status), error, expected, actual)
+        return {
+            "expected": expected,
+            "actual": actual,
+            "source": EvidenceSource.TEST_EXECUTION,
+            "category": case.get("category") or "",
+            "title": case.get("title") or "",
+            "inputs": list(case.get("inputs") or []),
+            "cause": cause,
+            "recommendation": recommendation,
+        }
 
     def _store_result(self, run: TestRun, result: TestResult) -> TestResult:
         run.results.append(result)

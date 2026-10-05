@@ -18,9 +18,22 @@ from infra.object_storage.s3_client import InMemoryS3Client
 from schemas.envelope import AgentInputEnvelope
 
 
+class _EmptyScalars:
+    def all(self) -> list[object]:
+        return []
+
+
+class _EmptyResult:
+    def scalars(self) -> _EmptyScalars:
+        return _EmptyScalars()
+
+
 class FakeSession:
     async def flush(self) -> None:
         return None
+
+    async def execute(self, _statement: object) -> _EmptyResult:
+        return _EmptyResult()
 
 
 class FakeExecutionRepo:
