@@ -16,7 +16,9 @@ from infra.db.models.agent_run import AgentRun
 from infra.db.models.application_map import ApplicationMap, ApplicationMapState
 from infra.db.models.approval import Approval
 from infra.db.models.audit_log import AuditLog
+from infra.db.models.automation import AutomationScript, AutomationVersion
 from infra.db.models.discovery_credential import DiscoveryCredential
+from infra.db.models.execution import TestResult, TestRun
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement, RequirementVersion
 from infra.db.models.test_case import TestCase, TestCaseVersion
@@ -103,6 +105,14 @@ async def delete_project(
         raise HTTPException(status_code=404, detail="Project not found")
     await _ensure_no_active_discovery(project_id)
 
+    script_ids = select(AutomationScript.id).where(AutomationScript.project_id == project_id)
+    run_ids = select(TestRun.id).where(TestRun.project_id == project_id)
+    await session.execute(delete(TestResult).where(TestResult.test_run_id.in_(run_ids)))
+    await session.execute(delete(TestRun).where(TestRun.project_id == project_id))
+    await session.execute(
+        delete(AutomationVersion).where(AutomationVersion.automation_script_id.in_(script_ids))
+    )
+    await session.execute(delete(AutomationScript).where(AutomationScript.project_id == project_id))
     await session.execute(
         delete(TestCaseVersion).where(
             TestCaseVersion.test_case_id.in_(
