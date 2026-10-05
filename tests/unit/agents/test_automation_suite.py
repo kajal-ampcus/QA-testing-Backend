@@ -119,6 +119,9 @@ def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:
     assert 'img[alt="CAPTCHA"]' not in auth
     assert 'img[alt*="captcha" i]' in auth
     assert "core.agents.test_execution.captcha_solve" in auth
+    assert 'querySelectorAll("tspan")' in auth
+    assert 'querySelectorAll("text, tspan")' not in auth
+    assert r"(\d{1,2})" in auth
     assert "captcha|answer" in auth
     assert "sessionPage: page" in spec
     config = (root / "playwright.config.ts").read_text(encoding="utf-8")

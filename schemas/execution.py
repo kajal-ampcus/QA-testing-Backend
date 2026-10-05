@@ -26,6 +26,16 @@ class ExecutionJobResponse(BaseModel):
     result: dict[str, Any] | None = None
 
 
+class ExecutionCancelResponse(BaseModel):
+    job_id: str
+    status: str
+
+
+class LiveExecutionOut(BaseModel):
+    project_id: UUID | None = None
+    run_id: UUID | None = None
+
+
 class AssertionOut(BaseModel):
     expected: str
     actual: str

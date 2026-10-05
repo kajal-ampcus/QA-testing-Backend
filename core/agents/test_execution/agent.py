@@ -29,6 +29,7 @@ from core.agents.test_execution.eligibility import (
     ScriptSnapshot,
     classify_scripts,
 )
+from core.agents.test_execution.live_display import claim_live_display, release_live_display
 from core.agents.test_execution.playwright_runner import PlaywrightRunner, RawTestOutcome
 from core.agents.test_execution.result_context import explain_failure, input_fields
 from domain.enums import (
@@ -99,24 +100,38 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             )
 
         self.execution_repo.mark_running(run)
-        await self.execution_repo.session.flush()
-
+        await self.execution_repo.session.commit()
+        await claim_live_display(str(request.project_id), str(run.id))
         try:
-            live = await self._run_live(run, request, payload, suite_dir, classified, case_context)
-        except Exception as exc:  # noqa: BLE001 - persist the failure, then re-raise for the worker
-            self.execution_repo.mark_finished(
-                run,
-                TestRunStatus.FAILED,
-                {
-                    "passed": 0,
-                    "failed": 0,
-                    "skipped": 0,
-                    "error": 1,
-                    "detail": f"{type(exc).__name__}: {exc}"[:2000],
-                },
+            try:
+                live = await self._run_live(run, request, payload, suite_dir, classified)
+            except Exception as exc:  # noqa: BLE001 - persist the failure, then re-raise for the worker
+                await self._reload_status(run)
+                if run.status != TestRunStatus.CANCELLED:
+                    self.execution_repo.mark_finished(
+                        run,
+                        TestRunStatus.FAILED,
+                        {
+                            "passed": 0,
+                            "failed": 0,
+                            "skipped": 0,
+                            "error": 1,
+                            "detail": f"{type(exc).__name__}: {exc}"[:2000],
+                        },
+                    )
+                    await self.execution_repo.session.flush()
+                raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
+        finally:
+            await release_live_display(str(run.id))
+
+        await self._reload_status(run)
+        if run.status == TestRunStatus.CANCELLED:
+            return AgentOutputEnvelope(
+                agent_run_id=request.agent_run_id,
+                status=AgentRunStatus.FAILED,
+                errors=["Execution was stopped."],
+                token_usage=None,
             )
-            await self.execution_repo.session.flush()
-            raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
 
         summary = _summary(list(run.results))
         log = _playwright_log(live)
@@ -268,54 +283,9 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                 )
         return live
 
-    async def _case_context(self, scripts: list[AutomationScript]) -> dict[str, dict[str, Any]]:
-        if not scripts:
-            return {}
-        result = await self.execution_repo.session.execute(
-            select(TestCaseVersion).where(
-                TestCaseVersion.test_case_id.in_([script.test_case_id for script in scripts])
-            )
-        )
-        versions = {(item.test_case_id, item.version): item for item in result.scalars().all()}
-        context: dict[str, dict[str, Any]] = {}
-        for script in scripts:
-            version = versions.get((script.test_case_id, script.test_case_version))
-            if version is None:
-                context[str(script.id)] = {
-                    "category": "",
-                    "title": script.test_case_code,
-                    "inputs": [],
-                }
-                continue
-            context[str(script.id)] = {
-                "category": version.category,
-                "title": version.title,
-                "inputs": input_fields(version.test_data, version.steps),
-            }
-        return context
-
-    @staticmethod
-    def _assertion(
-        case_context: dict[str, dict[str, Any]],
-        script_id: UUID | None,
-        *,
-        status: str,
-        expected: str,
-        actual: str,
-        error: str | None,
-    ) -> dict[str, Any]:
-        case = case_context.get(str(script_id or ""), {})
-        cause, recommendation = explain_failure(str(status), error, expected, actual)
-        return {
-            "expected": expected,
-            "actual": actual,
-            "source": EvidenceSource.TEST_EXECUTION,
-            "category": case.get("category") or "",
-            "title": case.get("title") or "",
-            "inputs": list(case.get("inputs") or []),
-            "cause": cause,
-            "recommendation": recommendation,
-        }
+    async def _reload_status(self, run: TestRun) -> None:
+        """Re-read status only. Refreshing the whole row drops unsaved results."""
+        await self.execution_repo.session.refresh(run, attribute_names=["status"])
 
     def _store_result(self, run: TestRun, result: TestResult) -> TestResult:
         run.results.append(result)
