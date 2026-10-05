@@ -119,6 +119,36 @@ import os from "os";
 import path from "path";
 import { expect, test as base, type BrowserContext, type Page } from "@playwright/test";
 
+function chooseDropdowns(page: Page): void {
+  const names = ["locator", "getByRole", "getByLabel", "getByPlaceholder", "getByText", "getByTestId", "getByAltText", "getByTitle"] as const;
+  for (const name of names) {
+    const original = page[name].bind(page) as (...args: never[]) => {
+      fill: (value: string, options?: { timeout?: number }) => Promise<void>;
+      elementHandle: (options?: { timeout?: number }) => Promise<{ evaluate: (fn: (node: Element) => string) => Promise<string> } | null>;
+      selectOption: (values: string | { label: string }) => Promise<string[]>;
+    };
+    (page as unknown as Record<string, (...args: never[]) => unknown>)[name] = (...args: never[]) => {
+      const locator = original(...args);
+      const fill = locator.fill.bind(locator);
+      locator.fill = async (value: string, options?: { timeout?: number }) => {
+        const handle = await locator.elementHandle({ timeout: options?.timeout }).catch(() => null);
+        const tag = handle ? await handle.evaluate((node) => node.tagName).catch(() => "") : "";
+        if (tag === "SELECT") {
+          if (!value) return;
+          try {
+            await locator.selectOption({ label: value });
+          } catch {
+            await locator.selectOption(value);
+          }
+          return;
+        }
+        return fill(value, options);
+      };
+      return locator;
+    };
+  }
+}
+
 /**
  * One browser window for the whole run.
  * Tests reuse this page instead of opening a new window each time.
@@ -324,6 +354,15 @@ async function waitOutCaptchaLimit(page: Page): Promise<void> {
   await page.reload({ waitUntil: "domcontentloaded" });
 }
 
+function sessionEndControl(page: Page) {
+  const name = /^\s*(log\s*out|sign\s*out)\s*$/i;
+  return page.getByRole("button", { name }).or(page.getByRole("link", { name }));
+}
+
+async function hasSignedInSession(page: Page): Promise<boolean> {
+  return sessionEndControl(page).first().isVisible().catch(() => false);
+}
+
 async function enterApplication(page: Page): Promise<void> {
   loadSuiteEnv();
   const username = process.env.TEST_USERNAME?.trim() ?? "";
@@ -383,7 +422,8 @@ async function enterApplication(page: Page): Promise<void> {
     try {
       await page.waitForURL((url) => !/\/login\/?$/i.test(url.pathname), { timeout: 20_000 });
       // A reload before the session is stored sends the app back to the login page.
-      await page.getByRole("button", { name: /^log\s*out$/i }).waitFor({ state: "visible", timeout: 20_000 });
+      // CEP labels this control "Sign out"; other apps use "Log out".
+      await sessionEndControl(page).first().waitFor({ state: "visible", timeout: 20_000 });
       return;
     } catch {
       notice = await loginNotice(page);
@@ -398,6 +438,26 @@ function onLoginPage(url: string): boolean {
   return /\/login(?:\/|$)/i.test(new URL(url).pathname);
 }
 
+async function openSignedIn(page: Page, navigate: Page["goto"], target: URL, options?: Parameters<Page["goto"]>[1]) {
+  const before = await page.evaluate(() => (document.body?.innerText ?? "").slice(0, 2000));
+  const next = `${target.pathname}${target.search}${target.hash}`;
+  await page.evaluate((path) => {
+    window.history.pushState({}, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, next);
+  // A client-side app swaps the screen. CEP keeps the old screen, so load the address.
+  const rendered = await page
+    .waitForFunction(
+      (previous) => (document.body?.innerText ?? "").slice(0, 2000) !== previous,
+      before,
+      { timeout: 1_500 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  if (rendered) return null;
+  return navigate.call(page, target.href, options);
+}
+
 function keepSignedInSession(page: Page): void {
   const navigate = page.goto.bind(page);
   let signingIn = false;
@@ -405,28 +465,20 @@ function keepSignedInSession(page: Page): void {
     const current = page.url();
     const base = current.startsWith("http") ? current : suiteBaseURL();
     const target = new URL(url, base);
-    if (!signingIn && onLoginPage(current) && !onLoginPage(target.href)) {
+    if (onLoginPage(target.href)) {
+      return navigate(url, options);
+    }
+    if (!signingIn && onLoginPage(current)) {
       signingIn = true;
       try {
         await enterApplication(page);
       } finally {
         signingIn = false;
       }
-      const next = `${target.pathname}${target.search}${target.hash}`;
-      await page.evaluate((path) => {
-        window.history.pushState({}, "", path);
-        window.dispatchEvent(new PopStateEvent("popstate"));
-      }, next);
-      return null;
     }
-    const signedIn = current.startsWith("http") && !onLoginPage(current);
-    if (signedIn && target.origin === new URL(current).origin) {
-      const next = `${target.pathname}${target.search}${target.hash}`;
-      await page.evaluate((path) => {
-        window.history.pushState({}, "", path);
-        window.dispatchEvent(new PopStateEvent("popstate"));
-      }, next);
-      return null;
+    const signedIn = page.url().startsWith("http") && !onLoginPage(page.url());
+    if (signedIn && target.origin === new URL(page.url()).origin) {
+      return openSignedIn(page, navigate, target, options);
     }
     return navigate(url, options);
   };
@@ -480,6 +532,7 @@ export const test = base.extend<{}, { sessionContext: BrowserContext; sessionPag
   sessionPage: [
     async ({ sessionContext }, use) => {
       const page = await sessionContext.newPage();
+      chooseDropdowns(page);
       page.setDefaultTimeout(20_000);
       page.setDefaultNavigationTimeout(30_000);
       keepSignedInSession(page);
@@ -494,8 +547,7 @@ export const test = base.extend<{}, { sessionContext: BrowserContext; sessionPag
 });
 
 test.beforeEach(async ({ sessionPage }) => {
-  const signedIn = await sessionPage.getByRole("button", { name: "Logout", exact: true }).isVisible().catch(() => false);
-  if (!signedIn) {
+  if (!(await hasSignedInSession(sessionPage))) {
     await enterApplication(sessionPage);
   }
 });

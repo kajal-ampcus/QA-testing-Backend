@@ -31,3 +31,8 @@ def test_refresh_replaces_the_svg_only_login(tmp_path) -> None:
     assert 'const configured = "https://shop.example";' in text
     assert "captcha_solve" in text
     assert 'img[alt*="captcha" i]' in text
+    assert "sign\\s*out" in text
+    assert 'name: "Logout", exact: true' not in text
+    assert "openSignedIn" in text
+    assert "navigate.call(page, target.href, options)" in text
+    assert 'tag === "SELECT"' in text

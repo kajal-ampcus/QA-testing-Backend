@@ -17,6 +17,7 @@ import signal
 import subprocess
 import urllib.error
 import urllib.request
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,7 +28,53 @@ from core.agents.automation_generation import templates
 from core.tool_gateway.secret_resolver import resolve_login
 
 _OVERLAY_NAME = "playwright.execution.config.ts"
+_PROGRESS_NAME = "execution-progress.cjs"
 _REPORT_RELATIVE = "test-results/playwright-report.json"
+_LIVE_RESULTS_RELATIVE = "test-results/live-results.jsonl"
+
+# Prints the test title when it starts and appends one JSON line when it ends,
+# so the Execution page can list that case before the suite process exits.
+_PROGRESS_REPORTER = """\
+const fs = require("fs");
+const path = require("path");
+
+class ProgressReporter {
+  onBegin(_config, suite) {
+    process.stdout.write("Running " + suite.allTests().length + " tests\\n");
+  }
+  onTestBegin(test) {
+    process.stdout.write("\\u25b6 " + clock() + " " + test.title + "\\n");
+  }
+  onTestEnd(test, result) {
+    const mark = result.status === "passed" ? "\\u2713" : result.status === "skipped" ? "-" : "\\u2718";
+    const seconds = (result.duration / 1000).toFixed(1);
+    process.stdout.write(mark + " " + clock() + " " + test.title + " \\u00b7 " + result.status + " \\u00b7 " + seconds + "s\\n");
+    writeCase(test, result);
+  }
+}
+function clock() {
+  return new Date().toISOString().slice(11, 19);
+}
+function writeCase(test, result) {
+  const error = result.error && result.error.message ? String(result.error.message).slice(0, 4000) : "";
+  const attachments = [];
+  for (const item of result.attachments || []) {
+    if (item && item.path) attachments.push({ name: item.name || "", path: item.path });
+  }
+  const line = JSON.stringify({
+    title: test.title || "",
+    file: (test.location && test.location.file) || "",
+    status: result.status || "",
+    duration: result.duration || 0,
+    error: error,
+    attachments: attachments,
+  });
+  const file = path.join(process.cwd(), "test-results", "live-results.jsonl");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, line + "\\n");
+}
+module.exports = ProgressReporter;
+"""
 
 # Headed Chromium on the worker virtual display. The Execution page streams it.
 _LIVE_OVERLAY = """\
@@ -44,6 +91,7 @@ export default defineConfig({
   retries: 0,
   reporter: [
     ["json", { outputFile: "test-results/playwright-report.json" }],
+    ["./execution-progress.cjs"],
     ["list"],
   ],
   use: {
@@ -76,6 +124,7 @@ export default defineConfig({
   retries: 0,
   reporter: [
     ["json", { outputFile: "test-results/playwright-report.json" }],
+    ["./execution-progress.cjs"],
     ["list"],
   ],
   use: {
@@ -111,6 +160,8 @@ class PlaywrightClient:
         run_destructive: bool,
         timeout: int = 900,
         runner: Any | None = None,
+        on_output: Callable[[str], Awaitable[None]] | None = None,
+        on_case: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> PlaywrightProcessResult:
         env = await self._environment(
             project_id=project_id,
@@ -124,6 +175,8 @@ class PlaywrightClient:
             env=env,
             timeout=timeout,
             runner=runner,
+            on_output=on_output,
+            on_case=on_case,
         )
 
     async def _environment(
@@ -181,6 +234,69 @@ def _kill_process_group(process: asyncio.subprocess.Process) -> None:
         process.kill()
 
 
+def take_result_lines(text: str, seen: int) -> tuple[int, list[dict[str, Any]]]:
+    """Return complete JSON cases and how many lines are safe to skip next time."""
+    lines = text.splitlines()
+    found: list[dict[str, Any]] = []
+    consumed = seen
+    incomplete_tail = bool(text) and not text.endswith("\n")
+    for index, line in enumerate(lines):
+        if index < seen:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            consumed = index + 1
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            if incomplete_tail and index == len(lines) - 1:
+                break
+            consumed = index + 1
+            continue
+        if isinstance(payload, dict):
+            found.append(payload)
+        consumed = index + 1
+    return consumed, found
+
+
+async def _watch_results(
+    path: Path,
+    on_case: Callable[[dict[str, Any]], Awaitable[None]],
+    stop: asyncio.Event,
+) -> None:
+    seen = 0
+    while True:
+        if path.is_file():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            seen, cases = take_result_lines(text, seen)
+            for case in cases:
+                try:
+                    await on_case(case)
+                except Exception:  # noqa: BLE001 - one case must not stop the rest of the suite
+                    continue
+        if stop.is_set():
+            return
+        with suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=0.4)
+
+
+async def _drain(
+    stream: asyncio.StreamReader | None,
+    sink: list[bytes],
+    emit: Callable[[str], Awaitable[None]] | None,
+) -> None:
+    if stream is None:
+        return
+    while True:
+        block = await stream.read(1024)
+        if not block:
+            return
+        sink.append(block)
+        if emit is not None:
+            await emit(block.decode("utf-8", "replace"))
+
+
 async def _execute(
     cmd: list[str],
     *,
@@ -188,6 +304,9 @@ async def _execute(
     env: dict[str, str],
     timeout: int,
     runner: Any | None,
+    on_output: Callable[[str], Awaitable[None]] | None = None,
+    on_case: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    results_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command. A custom runner is for tests; the real path can be killed."""
     if runner is not None:
@@ -210,23 +329,52 @@ async def _execute(
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
+    stdout_parts: list[bytes] = []
+    stderr_parts: list[bytes] = []
+    emit_lock = asyncio.Lock()
+
+    async def emit(text: str) -> None:
+        if on_output is None or not text:
+            return
+        async with emit_lock:
+            await on_output(text)
+
+    stop_results = asyncio.Event()
+    watch = (
+        asyncio.create_task(_watch_results(results_path, on_case, stop_results))
+        if results_path is not None and on_case is not None
+        else None
+    )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
-    except TimeoutError:
-        _kill_process_group(process)
-        with suppress(Exception):
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _drain(process.stdout, stdout_parts, emit),
+                    _drain(process.stderr, stderr_parts, emit),
+                ),
+                timeout,
+            )
             await process.wait()
-        raise subprocess.TimeoutExpired(cmd, timeout) from None
-    except asyncio.CancelledError:
-        _kill_process_group(process)
-        with suppress(Exception):
-            await process.wait()
-        raise
+        except TimeoutError:
+            _kill_process_group(process)
+            with suppress(Exception):
+                await process.wait()
+            raise subprocess.TimeoutExpired(cmd, timeout) from None
+        except asyncio.CancelledError:
+            _kill_process_group(process)
+            with suppress(Exception):
+                await process.wait()
+            raise
+    finally:
+        stop_results.set()
+        if watch is not None:
+            with suppress(Exception):
+                await watch
     return subprocess.CompletedProcess(
         cmd,
         int(process.returncode or 0),
-        (stdout or b"").decode("utf-8", "replace"),
-        (stderr or b"").decode("utf-8", "replace"),
+        b"".join(stdout_parts).decode("utf-8", "replace"),
+        b"".join(stderr_parts).decode("utf-8", "replace"),
     )
 
 
@@ -237,6 +385,8 @@ async def execute_suite(
     env: dict[str, str],
     timeout: int = 900,
     runner: Any | None = None,
+    on_output: Callable[[str], Awaitable[None]] | None = None,
+    on_case: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> PlaywrightProcessResult:
     node = shutil.which("node")
     npm = shutil.which("npm")
@@ -248,7 +398,11 @@ async def execute_suite(
     headed_host = os.environ.get("EXECUTION_HEADED_HOST", "").strip()
     overlay = suite_dir / _OVERLAY_NAME
     overlay.write_text(_HEADED_OVERLAY if headed_host else _LIVE_OVERLAY, encoding="utf-8")
+    (suite_dir / _PROGRESS_NAME).write_text(_PROGRESS_REPORTER, encoding="utf-8")
     (suite_dir / "test-results").mkdir(exist_ok=True)
+    results_path = suite_dir / _LIVE_RESULTS_RELATIVE
+    if results_path.is_file():
+        results_path.unlink()
     if headed_host:
         return await _run_on_headed_host(
             suite_dir,
@@ -288,6 +442,9 @@ async def execute_suite(
         env=env,
         timeout=timeout,
         runner=runner,
+        on_output=on_output,
+        on_case=on_case,
+        results_path=results_path,
     )
     report_path = suite_dir / _REPORT_RELATIVE
     report = _read_report(report_path)

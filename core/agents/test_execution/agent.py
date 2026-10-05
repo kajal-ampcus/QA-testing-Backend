@@ -31,7 +31,6 @@ from core.agents.test_execution.eligibility import (
 )
 from core.agents.test_execution.live_display import claim_live_display, release_live_display
 from core.agents.test_execution.playwright_runner import PlaywrightRunner, RawTestOutcome
-from core.agents.test_execution.result_context import explain_failure, input_fields
 from domain.enums import (
     EvidenceChannel,
     EvidenceSource,
@@ -82,7 +81,6 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             )
 
         scripts = await self.automation_repo.list_generation(request.project_id, generation_id)
-        case_context = await self._case_context(scripts)
         snapshots = [_snapshot(script, payload) for script in scripts]
         try:
             classified = classify_scripts(snapshots, requested_ids, run_destructive)
@@ -192,10 +190,10 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         payload: dict[str, Any],
         suite_dir: Path,
         classified: ClassifiedScripts,
-        case_context: dict[str, dict[str, Any]],
     ) -> Any:
         from core.agents.test_execution.playwright_runner import SuiteRunResult
 
+        summary = {"passed": 0, "failed": 0, "skipped": 0, "error": 0}
         for script, reason in classified.skipped:
             self._store_result(
                 run,
@@ -205,18 +203,29 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                     automation_script_id=script.id,
                     spec_path=script.file_path,
                     status=TestResultStatus.SKIPPED,
-                    assertion=self._assertion(
-                        case_context,
-                        script.id,
-                        status=TestResultStatus.SKIPPED,
-                        expected="skipped",
-                        actual="skipped",
-                        error=reason,
-                    ),
+                    assertion={
+                        "expected": "skipped",
+                        "actual": "skipped",
+                        "source": EvidenceSource.TEST_EXECUTION,
+                        "title": script.test_case_code,
+                    },
                     evidence={channel.value: None for channel in EvidenceChannel},
                     error_message=reason,
                 ),
             )
+            summary["skipped"] += 1
+        run.summary = dict(summary)
+        await self.execution_repo.session.commit()
+        recorded: set[str] = set()
+
+        async def on_outcome(outcome: RawTestOutcome) -> None:
+            key = f"{outcome.spec_path}::{outcome.title}"
+            if key in recorded:
+                return
+            recorded.add(key)
+            await self._persist_outcome(run, request, payload, outcome)
+            _bump_summary(run, outcome.status)
+            await self.execution_repo.session.commit()
 
         live = await self.runner.run_suite(
             suite_dir,
@@ -227,38 +236,17 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             run_destructive=bool(payload.get("run_destructive")),
             timeout=int(payload.get("timeout") or 900),
             runner=payload.get("subprocess_runner"),
+            run_id=run.id,
+            on_outcome=on_outcome,
         )
         if not isinstance(live, SuiteRunResult):
             return live
         for outcome in live.outcomes:
-            result_id = uuid.uuid4()
-            evidence = await self._upload(
-                project_id=str(request.project_id),
-                run_id=str(payload["run_id"]),
-                result_id=str(result_id),
-                outcome=outcome,
-            )
-            self._store_result(
-                run,
-                TestResult(
-                    id=result_id,
-                    test_run_id=run.id,
-                    automation_script_id=outcome.script_id,
-                    spec_path=outcome.spec_path,
-                    status=outcome.status,
-                    assertion=self._assertion(
-                        case_context,
-                        outcome.script_id,
-                        status=outcome.status,
-                        expected=outcome.expected,
-                        actual=outcome.actual,
-                        error=outcome.error_message,
-                    ),
-                    evidence=evidence,
-                    duration_ms=outcome.duration_ms,
-                    error_message=outcome.error_message,
-                ),
-            )
+            key = f"{outcome.spec_path}::{outcome.title}"
+            if key in recorded:
+                continue
+            recorded.add(key)
+            await self._persist_outcome(run, request, payload, outcome)
         if not live.outcomes and not live.process_ok:
             for script in classified.runnable:
                 self._store_result(
@@ -269,19 +257,50 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                         automation_script_id=script.id,
                         spec_path=script.file_path,
                         status=TestResultStatus.ERROR,
-                        assertion=self._assertion(
-                            case_context,
-                            script.id,
-                            status=TestResultStatus.ERROR,
-                            expected="pass",
-                            actual=live.detail or "Playwright produced no JSON report.",
-                            error=live.detail or "Playwright produced no JSON report.",
-                        ),
+                        assertion={
+                            "expected": "pass",
+                            "actual": live.detail or "Playwright produced no JSON report.",
+                            "source": EvidenceSource.TEST_EXECUTION,
+                        },
                         evidence={channel.value: None for channel in EvidenceChannel},
                         error_message=live.detail or "Playwright produced no JSON report.",
                     ),
                 )
         return live
+
+    async def _persist_outcome(
+        self,
+        run: TestRun,
+        request: AgentInputEnvelope,
+        payload: dict[str, Any],
+        outcome: RawTestOutcome,
+    ) -> None:
+        result_id = uuid.uuid4()
+        evidence = await self._upload(
+            project_id=str(request.project_id),
+            run_id=str(payload["run_id"]),
+            result_id=str(result_id),
+            outcome=outcome,
+        )
+        self._store_result(
+            run,
+            TestResult(
+                id=result_id,
+                test_run_id=run.id,
+                automation_script_id=outcome.script_id,
+                spec_path=outcome.spec_path,
+                status=outcome.status,
+                assertion={
+                    "expected": outcome.expected,
+                    "actual": outcome.actual,
+                    "source": EvidenceSource.TEST_EXECUTION,
+                    "title": outcome.title,
+                },
+                evidence=evidence,
+                duration_ms=outcome.duration_ms,
+                error_message=outcome.error_message,
+            ),
+        )
 
     async def _reload_status(self, run: TestRun) -> None:
         """Re-read status only. Refreshing the whole row drops unsaved results."""
@@ -339,6 +358,16 @@ def _snapshot(script: AutomationScript, payload: dict[str, Any]) -> ScriptSnapsh
         expected_result=expected,
         test_case_code=script.test_case_code,
     )
+
+
+def _bump_summary(run: TestRun, status: TestResultStatus) -> None:
+    summary = dict(run.summary or {})
+    for key in ("passed", "failed", "skipped", "error"):
+        summary.setdefault(key, 0)
+    name = status.value.lower()
+    bucket = name if name in summary else "error"
+    summary[bucket] = int(summary[bucket] or 0) + 1
+    run.summary = summary
 
 
 def _summary(results: list[TestResult]) -> dict[str, Any]:

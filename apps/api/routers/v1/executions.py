@@ -39,7 +39,11 @@ from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
 from infra.object_storage.s3_client import S3Client
 from infra.queue.broker import enqueue, get_arq_pool
-from core.agents.test_execution.live_display import current_live_display, release_live_display
+from core.agents.test_execution.live_display import (
+    current_live_display,
+    current_live_log,
+    release_live_display,
+)
 from schemas.execution import (
     AssertionOut,
     EvidenceOut,
@@ -255,7 +259,11 @@ async def live_execution() -> LiveExecutionOut:
     if owner is None:
         return LiveExecutionOut()
     project_id, run_id = owner
-    return LiveExecutionOut(project_id=project_id, run_id=run_id)
+    return LiveExecutionOut(
+        project_id=project_id,
+        run_id=run_id,
+        activity=await current_live_log(str(run_id)),
+    )
 
 
 @router.delete("/projects/{project_id}", response_model=ExecutionCancelResponse)

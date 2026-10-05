@@ -34,6 +34,7 @@ class ExecutionCancelResponse(BaseModel):
 class LiveExecutionOut(BaseModel):
     project_id: UUID | None = None
     run_id: UUID | None = None
+    activity: str = ""
 
 
 class AssertionOut(BaseModel):

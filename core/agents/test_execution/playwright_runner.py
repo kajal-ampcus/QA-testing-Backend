@@ -11,12 +11,14 @@ from __future__ import annotations
 import json
 import re
 import zipfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from core.agents.test_execution.eligibility import ScriptSnapshot
+from core.agents.test_execution.live_display import append_live_log
 from core.tool_gateway.playwright_client import PlaywrightClient, PlaywrightProcessResult
 from domain.enums import TestResultStatus
 
@@ -76,8 +78,22 @@ class PlaywrightRunner:
         run_destructive: bool,
         timeout: int = 900,
         runner: Any | None = None,
+        run_id: UUID | None = None,
+        on_outcome: Callable[[RawTestOutcome], Awaitable[None]] | None = None,
     ) -> SuiteRunResult:
         spec_paths = [script.file_path for script in scripts]
+
+        async def on_output(text: str) -> None:
+            if run_id is not None:
+                await append_live_log(str(run_id), text)
+
+        async def on_case(payload: dict[str, Any]) -> None:
+            if on_outcome is None:
+                return
+            outcome = outcome_from_progress(payload, suite_dir, scripts)
+            if outcome is not None:
+                await on_outcome(outcome)
+
         process = await self.client.run(
             suite_dir,
             spec_paths=spec_paths,
@@ -87,6 +103,8 @@ class PlaywrightRunner:
             run_destructive=run_destructive,
             timeout=timeout,
             runner=runner,
+            on_output=on_output if run_id is not None else None,
+            on_case=on_case if on_outcome is not None else None,
         )
         if process.report is None:
             return SuiteRunResult(
@@ -102,6 +120,45 @@ class PlaywrightRunner:
             outcomes=outcomes,
             raw=process,
         )
+
+
+def outcome_from_progress(
+    payload: dict[str, Any],
+    suite_dir: Path,
+    scripts: list[ScriptSnapshot],
+) -> RawTestOutcome | None:
+    """One finished test, recorded before the suite process exits."""
+    spec_path = _relative(str(payload.get("file") or ""), suite_dir)
+    title = str(payload.get("title") or spec_path)
+    if not spec_path and not title:
+        return None
+    raw_status = str(payload.get("status") or "")
+    status = _STATUS.get(raw_status) or _STATUS.get(raw_status.lower()) or TestResultStatus.FAILED
+    error_message = str(payload.get("error") or "").strip() or None
+    expected, actual = assertion_values(error_message, status)
+    script = _match_script(spec_path, {_norm(item.file_path): item for item in scripts})
+    if script and script.expected_result and status == TestResultStatus.PASSED:
+        expected = script.expected_result
+        actual = script.expected_result
+    elif script and script.expected_result and not expected:
+        expected = script.expected_result
+    attachments = _attachments({"attachments": payload.get("attachments") or []}, suite_dir)
+    console_log, network_log = extract_trace_logs(attachments.get("trace"))
+    return RawTestOutcome(
+        spec_path=script.file_path if script else spec_path,
+        title=title,
+        status=status,
+        duration_ms=_duration_ms({"duration": payload.get("duration")}),
+        error_message=error_message,
+        expected=expected,
+        actual=actual,
+        screenshot=_read_bytes(attachments.get("screenshot")),
+        video=_read_bytes(attachments.get("video")),
+        trace=_read_bytes(attachments.get("trace")),
+        console_log=console_log,
+        network_log=network_log,
+        script_id=script.id if script else None,
+    )
 
 
 def parse_playwright_json(
