@@ -114,7 +114,7 @@ def _route(url: str) -> str:
 def _control_label(step: str) -> str:
     match = _CONTROL_LABEL.search(step)
     if match:
-        return next(group for group in match.groups() if group)
+        return next((group for group in match.groups() if group), "")
     click = _CLICK_NAME.match(step.strip())
     return click.group(1).strip() if click else ""
 

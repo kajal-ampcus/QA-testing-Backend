@@ -6,6 +6,11 @@ from contextlib import suppress
 from typing import Any
 from urllib.parse import urldefrag
 
+_BARE_NODE = re.compile(
+    r"uid=(\S+)\s+(\S+)(?=\s*(?:$|"
+    r"(?:disabled|checked|selected|expanded|expandable|collapsed|required|"
+    r"focusable|focused|multiline|readonly)\b))"
+)
 _NODE = re.compile(
     r'uid=(\S+)\s+(\S+)\s+"(.*?)"(?=\s*(?:$|[A-Za-z][\w-]*='
     r"|(?:disabled|checked|selected|expanded|expandable|collapsed|required|focusable|focused|multiline|readonly)\b))"
@@ -25,9 +30,15 @@ def parse_elements(snapshot: object) -> list[dict[str, Any]]:
     nodes = []
     for line in snapshot_text(snapshot).splitlines():
         match = _NODE.search(line)
-        if not match:
-            continue
-        uid, role, name = match.groups()
+        if match:
+            uid, role, name = match.groups()
+        else:
+            bare = _BARE_NODE.search(line)
+            if not bare:
+                continue
+            uid, role = bare.groups()
+            name = ""
+            match = bare
         with suppress(json.JSONDecodeError):
             name = json.loads('"' + name + '"')
         node: dict[str, Any] = {"uid": uid, "role": role, "name": name}

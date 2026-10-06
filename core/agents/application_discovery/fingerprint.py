@@ -255,6 +255,39 @@ def is_gated_collection_entry(
     return bool(_GATED_COLLECTION.search(haystack))
 
 
+def unlabeled_collection_icons(nodes: list[dict]) -> list[dict]:
+    """Header icons with no accessible name that sit beside Add to Cart.
+
+    The cart button on some apps is only an icon. Its snapshot line has a
+    role and no name, so it is not a pagination control and not a checkout.
+    """
+    if not any(is_gated_reveal_action(str(node.get("name") or "")) for node in nodes):
+        return []
+    return [
+        node
+        for node in nodes
+        if node.get("role") == "button" and not str(node.get("name") or "").strip()
+    ][:2]
+
+
+def collection_count_badge(name: str, nodes: list[dict]) -> bool:
+    """A lone numeric button is the cart count revealed by add-to-cart.
+
+    Page numbers come in a group (1, 2, 3). One button whose name is only a
+    count is the collection badge, which has no other accessible name.
+    """
+    label = " ".join(str(name or "").split())
+    if not re.fullmatch(r"\d+", label):
+        return False
+    numeric = [
+        node
+        for node in nodes
+        if node.get("role") == "button"
+        and re.fullmatch(r"\d+", " ".join(str(node.get("name") or "").split()))
+    ]
+    return len(numeric) == 1
+
+
 def gated_probe_kind(
     name: str,
     description: str | None,

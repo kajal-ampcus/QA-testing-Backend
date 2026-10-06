@@ -795,6 +795,99 @@ async def test_one_add_to_cart_probe_reveals_collection_page() -> None:
     assert any("Add to Cart" in action for action in crawler.coverage["skipped_actions"])
 
 
+class CountBadgeCartBrowser(CollectionShopBrowser):
+    """The cart control's only accessible name is the item count."""
+
+    async def take_snapshot(self) -> list[TextBlock]:
+        if self.page == "cart":
+            return await super().take_snapshot()
+        cart_entry = 'uid=1_5 button "1"\n' if self.added else ""
+        text = (
+            'uid=1_0 RootWebArea "Products" url="https://shop.test/products"\n'
+            'uid=1_1 heading "Products"\n'
+            'uid=1_2 button "Add to Cart"\n'
+            'uid=1_3 button "Add to Cart"\n'
+            'uid=1_4 button "Checkout"\n'
+            f"{cart_entry}"
+        )
+        return [TextBlock(text)]
+
+
+@pytest.mark.asyncio
+async def test_cart_count_badge_opens_the_collection_page() -> None:
+    browser = CountBadgeCartBrowser()
+    states: list[dict[str, Any]] = []
+
+    async def record(state: dict[str, Any]) -> None:
+        states.append(state)
+
+    crawler = Crawler(browser, CrawlBudget(max_pages=10, max_depth=3), [])
+    status = await crawler.crawl("https://shop.test/products", record)
+
+    urls = {state["url_pattern"] for state in states}
+    assert status == "COMPLETE"
+    assert "/cart" in urls
+    assert "1_5" in browser.clicked
+    assert "2_2" not in browser.clicked
+
+    @asynccontextmanager
+    async def shop():
+        yield CountBadgeCartBrowser()
+
+    parallel = ParallelCrawler(
+        shop,
+        CrawlBudget(max_pages=10, max_depth=3),
+        [],
+        login_url=None,
+        authenticate=False,
+        worker_limit=1,
+    )
+    assert await parallel.crawl("https://shop.test/products", lambda state: _noop()) == "COMPLETE"
+    parallel_urls = {node["url_pattern"] for node in parallel.coverage["app_flow_graph"]["nodes"]}
+    assert "/cart" in parallel_urls
+
+
+class UnlabeledCartBrowser(CollectionShopBrowser):
+    """Cart and alerts are icon buttons with no accessible name."""
+
+    async def click(self, element_ref: str) -> None:
+        self.clicked.append(element_ref)
+        if element_ref in {"1_2", "1_3"}:
+            self.added = True
+        if element_ref == "1_6":
+            self.page = "cart"
+
+    async def take_snapshot(self) -> list[TextBlock]:
+        if self.page == "cart":
+            return await super().take_snapshot()
+        text = (
+            'uid=1_0 RootWebArea "Products" url="https://shop.test/products"\n'
+            'uid=1_1 heading "Products"\n'
+            'uid=1_2 button "Add to Cart"\n'
+            'uid=1_5 button\n'
+            'uid=1_6 button\n'
+            'uid=1_4 button "Checkout"\n'
+        )
+        return [TextBlock(text)]
+
+
+@pytest.mark.asyncio
+async def test_unlabeled_cart_icon_opens_the_collection_page() -> None:
+    browser = UnlabeledCartBrowser()
+    states: list[dict[str, Any]] = []
+
+    async def record(state: dict[str, Any]) -> None:
+        states.append(state)
+
+    crawler = Crawler(browser, CrawlBudget(max_pages=10, max_depth=3), [])
+    status = await crawler.crawl("https://shop.test/products", record)
+    urls = {state["url_pattern"] for state in states}
+    assert status == "COMPLETE"
+    assert "/cart" in urls
+    assert "1_6" in browser.clicked
+    assert "2_2" not in browser.clicked
+
+
 @pytest.mark.asyncio
 async def test_admin_app_without_collection_controls_does_not_probe() -> None:
     browser = AdminCrmBrowser()

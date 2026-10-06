@@ -28,7 +28,21 @@ class _EmptyResult:
         return _EmptyScalars()
 
 
+class _VersionResult:
+    def __init__(self, versions: list[object]) -> None:
+        self.versions = versions
+
+    def scalars(self) -> "_VersionResult":
+        return self
+
+    def all(self) -> list[object]:
+        return self.versions
+
+
 class FakeSession:
+    def __init__(self, versions: list[object] | None = None) -> None:
+        self.versions = versions or []
+
     async def flush(self) -> None:
         return None
 
@@ -39,11 +53,14 @@ class FakeSession:
         if attribute_names is None and hasattr(obj, "results"):
             obj.results = []
 
+    async def execute(self, _statement: object) -> _EmptyResult:
+        return _VersionResult(self.versions)
+
 
 class FakeExecutionRepo:
-    def __init__(self, run: TestRun) -> None:
+    def __init__(self, run: TestRun, versions: list[object] | None = None) -> None:
         self.run = run
-        self.session = FakeSession()
+        self.session = FakeSession(versions)
 
     async def get_run(self, run_id: uuid.UUID) -> TestRun | None:
         return self.run if self.run.id == run_id else None
@@ -169,3 +186,83 @@ async def test_execution_agent_persists_results_without_llm(
     assert envelope.token_usage is None
     keys = list(s3.objects)
     assert len(keys) == 5
+
+
+class _CaseVersion:
+    def __init__(self, script: AutomationScript) -> None:
+        self.test_case_id = script.test_case_id
+        self.version = script.test_case_version
+        self.title = "Sign in shows the dashboard"
+        self.category = "POSITIVE"
+        self.steps = [
+            {
+                "action": "fill",
+                "target": {"element_name": "Email"},
+                "value": "user@example.com",
+            }
+        ]
+        self.test_data: dict[str, object] = {}
+
+
+@pytest.mark.asyncio
+async def test_failed_result_carries_the_case_title_and_a_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _quiet(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("core.agents.test_execution.agent.claim_live_display", _quiet)
+    monkeypatch.setattr("core.agents.test_execution.agent.release_live_display", _quiet)
+    project_id = uuid.uuid4()
+    generation_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    script = _script(project_id, generation_id)
+    run = TestRun(
+        id=run_id,
+        project_id=project_id,
+        generation_id=generation_id,
+        environment="development",
+        status=TestRunStatus.QUEUED,
+        summary={},
+    )
+    run.results = []
+    outcome = RawTestOutcome(
+        spec_path=script.file_path,
+        title="logs in",
+        status=TestResultStatus.FAILED,
+        duration_ms=40,
+        error_message="locator was not found",
+        expected="Dashboard is visible",
+        actual="login page",
+        screenshot=None,
+        video=None,
+        trace=None,
+        console_log=None,
+        network_log=None,
+        script_id=script.id,
+    )
+    agent = TestExecutionAgent(
+        execution_repo=FakeExecutionRepo(run, [_CaseVersion(script)]),  # type: ignore[arg-type]
+        automation_repo=FakeAutomationRepo([script]),  # type: ignore[arg-type]
+        s3=InMemoryS3Client(),
+        runner=FakeRunner(SuiteRunResult(process_ok=True, detail="", outcomes=[outcome])),  # type: ignore[arg-type]
+    )
+    await agent.run(
+        AgentInputEnvelope(
+            agent_run_id=uuid.uuid4(),
+            project_id=project_id,
+            trigger="manual",
+            payload={
+                "run_id": str(run_id),
+                "generation_id": str(generation_id),
+                "suite_dir": str(tmp_path),
+                "run_destructive": False,
+            },
+        )
+    )
+    stored = run.results[0]
+    assert stored.assertion["title"] == "Sign in shows the dashboard"
+    assert stored.assertion["category"] == "POSITIVE"
+    assert stored.assertion["inputs"] == [{"name": "Email", "value": "user@example.com"}]
+    assert stored.assertion["cause"] == "Playwright could not find the element."
+    assert run.status == TestRunStatus.FAILED

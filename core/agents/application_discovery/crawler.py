@@ -37,7 +37,9 @@ from urllib.parse import urldefrag, urljoin, urlparse
 from core.agents.application_discovery.fingerprint import (
     canonical_route,
     compute_fingerprint,
+    collection_count_badge,
     gated_probe_kind,
+    unlabeled_collection_icons,
     is_chrome_label,
     is_collection_mutation_action,
     is_gated_reveal_action,
@@ -66,6 +68,7 @@ class ClickStep:
     name: str
     url: str | None = None
     value: str | None = None
+    occurrence: int = 0
 
 
 @dataclass
@@ -511,17 +514,15 @@ class Crawler:
                 snapshot = await self._client.take_snapshot()
                 continue
             elements = _parse_elements(snapshot)
-            match = next(
-                (
-                    el
-                    for el in elements
-                    if el["role"] == step.role
-                    and _normalized_accessible_name(el["name"] or el.get("description", ""))
-                    == _normalized_accessible_name(step.name)
-                    and (not step.url or el.get("url") == step.url)
-                ),
-                None,
-            )
+            matches = [
+                el
+                for el in elements
+                if el["role"] == step.role
+                and _normalized_accessible_name(el["name"] or el.get("description", ""))
+                == _normalized_accessible_name(step.name)
+                and (not step.url or el.get("url") == step.url)
+            ]
+            match = matches[step.occurrence] if step.occurrence < len(matches) else None
             if match is None or not match.get("uid"):
                 raise RuntimeError(f"Replay failed: {step.role!r} '{step.name}' not found")
             if step.value is not None:
@@ -731,6 +732,7 @@ class Crawler:
                 expanded.add(fingerprint)
                 root = next((e for e in nodes if e.get("role") == "RootWebArea"), {})
                 current_url = root.get("url") or base_url
+                icons = unlabeled_collection_icons(nodes)
                 for el in nodes:
                     role, name = el.get("role", ""), el.get("name", "")
                     if role not in {
@@ -765,6 +767,11 @@ class Crawler:
                     probe_kind = gated_probe_kind(
                         name, el.get("description"), destination or el.get("url"), current_url
                     )
+                    if probe_kind is None and force and collection_count_badge(name, nodes):
+                        probe_kind = "collection"
+                    if probe_kind is None and el in icons:
+                        probe_kind = "collection"
+                    occurrence = icons.index(el) if el in icons else 0
                     # Never send messages, submit forms, log out, or mutate records
                     # as an incidental discovery action. Authentication is explicit.
                     safe_link_navigation = role == "link" and bool(destination)
@@ -810,7 +817,16 @@ class Crawler:
                             self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
                             continue
                     elif probe_kind == "collection":
-                        if not force or not self._reveal_probed or self._collection_follow_queued:
+                        unlabeled = not str(name or "").strip()
+                        if unlabeled:
+                            blocked = occurrence >= 2
+                        else:
+                            blocked = (
+                                not force
+                                or not self._reveal_probed
+                                or self._collection_follow_queued
+                            )
+                        if blocked:
                             self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
                             continue
                     elif in_page or repeated:
@@ -825,13 +841,15 @@ class Crawler:
                             )
                     for value in values:
                         identity = destination or name or str(el.get("description") or "")
-                        key = (fingerprint, role, identity, str(value))
+                        key = (fingerprint, role, identity, str(value), occurrence)
                         if key in queued:
                             continue
                         queued.add(key)
                         if probe_kind == "reveal":
                             self._reveal_probed = True
-                        elif probe_kind == "collection":
+                        elif probe_kind == "collection" and (
+                            str(name or "").strip() or str(el.get("description") or "").strip()
+                        ):
                             self._collection_follow_queued = True
                         if len(path) >= self._budget.max_depth:
                             depth_limited += 1
@@ -845,6 +863,7 @@ class Crawler:
                                         name or str(el.get("description") or ""),
                                         destination,
                                         value,
+                                        occurrence,
                                     ),
                                 ],
                                 score=_relevance_score(name, self._keywords),

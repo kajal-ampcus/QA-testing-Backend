@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from core.agents.base import BaseAgent
 from core.agents.test_execution.eligibility import (
@@ -31,6 +31,7 @@ from core.agents.test_execution.eligibility import (
 )
 from core.agents.test_execution.live_display import claim_live_display, release_live_display
 from core.agents.test_execution.playwright_runner import PlaywrightRunner, RawTestOutcome
+from core.agents.test_execution.result_context import explain_failure, input_fields
 from domain.enums import (
     EvidenceChannel,
     EvidenceSource,
@@ -81,6 +82,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             )
 
         scripts = await self.automation_repo.list_generation(request.project_id, generation_id)
+        case_context = await self._case_context(scripts)
         snapshots = [_snapshot(script, payload) for script in scripts]
         try:
             classified = classify_scripts(snapshots, requested_ids, run_destructive)
@@ -102,7 +104,9 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         await claim_live_display(str(request.project_id), str(run.id))
         try:
             try:
-                live = await self._run_live(run, request, payload, suite_dir, classified)
+                live = await self._run_live(
+                    run, request, payload, suite_dir, classified, case_context
+                )
             except Exception as exc:  # noqa: BLE001 - persist the failure, then re-raise for the worker
                 await self._reload_status(run)
                 if run.status != TestRunStatus.CANCELLED:
@@ -190,6 +194,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         payload: dict[str, Any],
         suite_dir: Path,
         classified: ClassifiedScripts,
+        case_context: dict[str, dict[str, Any]],
     ) -> Any:
         from core.agents.test_execution.playwright_runner import SuiteRunResult
 
@@ -203,12 +208,14 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                     automation_script_id=script.id,
                     spec_path=script.file_path,
                     status=TestResultStatus.SKIPPED,
-                    assertion={
-                        "expected": "skipped",
-                        "actual": "skipped",
-                        "source": EvidenceSource.TEST_EXECUTION,
-                        "title": script.test_case_code,
-                    },
+                    assertion=self._assertion(
+                        case_context,
+                        script.id,
+                        status=TestResultStatus.SKIPPED,
+                        expected="skipped",
+                        actual="skipped",
+                        error=reason,
+                    ),
                     evidence={channel.value: None for channel in EvidenceChannel},
                     error_message=reason,
                 ),
@@ -223,7 +230,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             if key in recorded:
                 return
             recorded.add(key)
-            await self._persist_outcome(run, request, payload, outcome)
+            await self._persist_outcome(run, request, payload, outcome, case_context)
             _bump_summary(run, outcome.status)
             await self.execution_repo.session.commit()
 
@@ -246,7 +253,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             if key in recorded:
                 continue
             recorded.add(key)
-            await self._persist_outcome(run, request, payload, outcome)
+            await self._persist_outcome(run, request, payload, outcome, case_context)
         if not live.outcomes and not live.process_ok:
             for script in classified.runnable:
                 self._store_result(
@@ -257,16 +264,73 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                         automation_script_id=script.id,
                         spec_path=script.file_path,
                         status=TestResultStatus.ERROR,
-                        assertion={
-                            "expected": "pass",
-                            "actual": live.detail or "Playwright produced no JSON report.",
-                            "source": EvidenceSource.TEST_EXECUTION,
-                        },
+                        assertion=self._assertion(
+                            case_context,
+                            script.id,
+                            status=TestResultStatus.ERROR,
+                            expected="pass",
+                            actual=live.detail or "Playwright produced no JSON report.",
+                            error=live.detail or "Playwright produced no JSON report.",
+                        ),
                         evidence={channel.value: None for channel in EvidenceChannel},
                         error_message=live.detail or "Playwright produced no JSON report.",
                     ),
                 )
         return live
+
+    async def _case_context(self, scripts: list[AutomationScript]) -> dict[str, dict[str, Any]]:
+        """Title, category, and typed fields for each script's pinned case version."""
+        if not scripts:
+            return {}
+        pairs = {(script.test_case_id, script.test_case_version) for script in scripts}
+        result = await self.execution_repo.session.execute(
+            select(TestCaseVersion).where(
+                or_(
+                    *[
+                        and_(
+                            TestCaseVersion.test_case_id == case_id,
+                            TestCaseVersion.version == version,
+                        )
+                        for case_id, version in pairs
+                    ]
+                )
+            )
+        )
+        by_key = {(item.test_case_id, item.version): item for item in result.scalars().all()}
+        context: dict[str, dict[str, Any]] = {}
+        for script in scripts:
+            version = by_key.get((script.test_case_id, script.test_case_version))
+            steps = version.steps if version is not None and isinstance(version.steps, list) else []
+            data = version.test_data if version is not None and isinstance(version.test_data, dict) else {}
+            context[str(script.id)] = {
+                "title": version.title if version is not None else "",
+                "category": version.category if version is not None else "",
+                "inputs": input_fields(data, steps),
+            }
+        return context
+
+    def _assertion(
+        self,
+        case_context: dict[str, dict[str, Any]],
+        script_id: UUID | None,
+        *,
+        status: str,
+        expected: str,
+        actual: str,
+        error: str | None,
+    ) -> dict[str, Any]:
+        ctx = case_context.get(str(script_id) if script_id is not None else "") or {}
+        cause, recommendation = explain_failure(str(status), error, expected, actual)
+        return {
+            "expected": expected,
+            "actual": actual,
+            "source": EvidenceSource.TEST_EXECUTION,
+            "category": str(ctx.get("category") or ""),
+            "title": str(ctx.get("title") or ""),
+            "inputs": list(ctx.get("inputs") or []),
+            "cause": cause,
+            "recommendation": recommendation,
+        }
 
     async def _persist_outcome(
         self,
@@ -274,6 +338,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         request: AgentInputEnvelope,
         payload: dict[str, Any],
         outcome: RawTestOutcome,
+        case_context: dict[str, dict[str, Any]],
     ) -> None:
         result_id = uuid.uuid4()
         evidence = await self._upload(
@@ -290,12 +355,14 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                 automation_script_id=outcome.script_id,
                 spec_path=outcome.spec_path,
                 status=outcome.status,
-                assertion={
-                    "expected": outcome.expected,
-                    "actual": outcome.actual,
-                    "source": EvidenceSource.TEST_EXECUTION,
-                    "title": outcome.title,
-                },
+                assertion=self._assertion(
+                    case_context,
+                    outcome.script_id,
+                    status=outcome.status,
+                    expected=outcome.expected,
+                    actual=outcome.actual,
+                    error=outcome.error_message,
+                ),
                 evidence=evidence,
                 duration_ms=outcome.duration_ms,
                 error_message=outcome.error_message,

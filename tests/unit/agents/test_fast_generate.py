@@ -171,6 +171,45 @@ def test_theme_toggle_alone_is_not_clicked_for_an_unrelated_case() -> None:
         assert validate_case(case, states, {"AC-1"}) == []
 
 
+def test_empty_observed_control_name_does_not_stop_generation() -> None:
+    states = [
+        {
+            "state_code": "STATE-010",
+            "url_pattern": "/menu",
+            "reached_via": ["navigate(url='https://cafinity.example/menu',observed_link='Menu')"],
+            "elements": [
+                {
+                    "element_code": "EL-001",
+                    "role": "button",
+                    "name": "Add to Cart",
+                    "source": "OBSERVED_DOM",
+                }
+            ],
+        },
+        {
+            "state_code": "STATE-011",
+            "url_pattern": "/cart",
+            "reached_via": ["click(role=button,name='')"],
+            "elements": [
+                {
+                    "element_code": "EL-002",
+                    "role": "button",
+                    "name": "Continue ordering",
+                    "source": "OBSERVED_DOM",
+                }
+            ],
+        },
+    ]
+    cases = generate_cases_from_map(
+        [{"id": "AC-1", "text": "The employee can add an item from the menu"}],
+        states,
+        "Menu",
+    )
+    assert cases
+    for case in cases:
+        assert validate_case(case, states, {"AC-1"}) == []
+
+
 def test_edge_case_uses_boundary_values_not_negative_copy() -> None:
     acs = [{"id": "AC-1", "text": "User can log in"}]
     cases = generate_cases_from_map(acs, STATES, "Login", {"AC-1": {"NEGATIVE", "EDGE_CASE"}})

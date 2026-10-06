@@ -44,7 +44,8 @@ _CAPTCHA_CHALLENGE_PATTERN = re.compile(
 )
 _INCORRECT_CAPTCHA_PATTERN = re.compile(
     r"(?:incorrect|invalid|wrong|failed|empty).{0,40}captcha|"
-    r"captcha.{0,40}(?:incorrect|invalid|wrong|failed|empty|required)|"
+    r"captcha.{0,40}(?:is\s+)?(?:incorrect|invalid|wrong|failed|empty)|"
+    r"captcha(?:\s+\w+){0,3}\s+is\s+required|"
     r"please\s+(?:enter|solve|refresh).{0,20}captcha",
     re.I,
 )
@@ -544,6 +545,40 @@ def _ocr_captcha_png(png: bytes) -> str | None:
     return answer
 
 
+def _captcha_reading(
+    page_text: str,
+    widget_text: str = "",
+    image_png: bytes | None = None,
+) -> tuple[str | None, str]:
+    """Return the captcha answer and where it came from.
+
+    ``svg-math`` is an equation read from the captcha widget. ``ocr`` is a
+    painted letter image. Page arithmetic is not used once an image exists.
+    """
+    if _is_security_verification_page(page_text) or _is_security_verification_page(widget_text):
+        return None, "none"
+    if widget_text:
+        widget_math = _solve_math_captcha(widget_text)
+        if widget_math is not None:
+            return str(widget_math), "svg-math"
+    if image_png:
+        token = _text_captcha_token(widget_text)
+        if token:
+            return token, "widget-text"
+        ocr = _ocr_captcha_png(image_png)
+        return (ocr, "ocr") if ocr else (None, "ocr")
+    for sample, source in ((widget_text, "svg-math"), (page_text, "page-math")):
+        if not sample:
+            continue
+        math = _solve_math_captcha(sample)
+        if math is not None:
+            return str(math), source
+    token = _text_captcha_token(widget_text)
+    if token:
+        return token, "widget-text"
+    return None, "none"
+
+
 def _captcha_answer_from_reading(
     page_text: str,
     widget_text: str = "",
@@ -555,24 +590,8 @@ def _captcha_answer_from_reading(
     is read from that image. Arithmetic elsewhere on the page does not replace
     the image.
     """
-    if _is_security_verification_page(page_text) or _is_security_verification_page(widget_text):
-        return None
-    if widget_text:
-        widget_math = _solve_math_captcha(widget_text)
-        if widget_math is not None:
-            return str(widget_math)
-    if image_png:
-        token = _text_captcha_token(widget_text)
-        if token:
-            return token
-        return _ocr_captcha_png(image_png)
-    for sample in (widget_text, page_text):
-        if not sample:
-            continue
-        math = _solve_math_captcha(sample)
-        if math is not None:
-            return str(math)
-    return _text_captcha_token(widget_text)
+    answer, _source = _captcha_reading(page_text, widget_text, image_png)
+    return answer
 
 
 def _captcha_answer_required(text: str, captcha_uid: str | None) -> bool:
@@ -1080,13 +1099,24 @@ class ChromeDevToolsClient:
         roles: set[str],
         description: str,
     ) -> None:
-        """Fill a login field, recovering when a reactive page replaces its DOM node."""
+        """Fill a login field, recovering when a reactive page replaces its DOM node.
+
+        The native setter plus input/change events is what a React form reads.
+        The MCP fill tool is only the fallback when that setter cannot run.
+        """
         try:
-            await self.fill(element_ref, value)
+            await self._set_control_value(element_ref, value)
             return
-        except RuntimeError as error:
-            if not self._is_stale_interaction_error(error):
-                raise
+        except Exception as error:
+            stale = isinstance(error, RuntimeError) and self._is_stale_interaction_error(error)
+            if not stale:
+                try:
+                    await self.fill(element_ref, value)
+                    return
+                except RuntimeError as fill_error:
+                    if not self._is_stale_interaction_error(fill_error):
+                        raise
+                    error = fill_error
             first_error = error
 
         # A controlled input can be replaced while chrome-devtools-mcp types.
@@ -1396,7 +1426,21 @@ class ChromeDevToolsClient:
                             "input[name*='captcha' i]"
                         ].join(", "));
                         const readSvg = (svg) => {
-                            [...svg.querySelectorAll("text, tspan")]
+                            // A <text> node's text is the tspans joined together.
+                            // Reading both turns "9 x 5" plus the next glyph "9"
+                            // into the different equation "9 x 59".
+                            const texts = [...svg.querySelectorAll("text")];
+                            const nodes = texts.flatMap((text) => {
+                                const parts = [...text.querySelectorAll("tspan")].filter(
+                                    (node) => (node.textContent || "").trim()
+                                        && !node.querySelector("tspan")
+                                );
+                                return parts.length ? parts : [text];
+                            });
+                            if (!nodes.length) {
+                                svg.querySelectorAll("tspan").forEach((node) => nodes.push(node));
+                            }
+                            nodes
                                 .map((node, index) => ({
                                     x: node.hasAttribute("x")
                                         ? parseFloat(node.getAttribute("x"))
@@ -1441,6 +1485,21 @@ class ChromeDevToolsClient:
                                 image = canvas.toDataURL("image/png");
                             } catch (_) {}
                         };
+                        const decodeSvgDataUri = (src) => {
+                            if (!src || !src.startsWith("data:image/svg+xml")) return false;
+                            const separator = src.indexOf(",");
+                            if (separator < 0) return false;
+                            const encoded = src.slice(separator + 1);
+                            try {
+                                const svg = src.includes(";base64,")
+                                    ? atob(encoded)
+                                    : decodeURIComponent(encoded);
+                                readSvg(new DOMParser().parseFromString(svg, "image/svg+xml"));
+                                return true;
+                            } catch (_) {
+                                return false;
+                            }
+                        };
                         pictures.forEach((node) => {
                             if (node.tagName === "CANVAS") {
                                 try {
@@ -1449,6 +1508,9 @@ class ChromeDevToolsClient:
                                 return;
                             }
                             const src = node.currentSrc || node.src || "";
+                            // An SVG math captcha is text. Painting it and OCRing the
+                            // pixels misreads the equation and keeps discovery on login.
+                            if (decodeSvgDataUri(src)) return;
                             const inline = src.startsWith("data:image/")
                                 && !src.startsWith("data:image/svg");
                             if (inline) {
@@ -1489,19 +1551,36 @@ class ChromeDevToolsClient:
             snapshot = f"{await self._read_visible_login_text()}\n{snapshot}"
         return snapshot
 
-    async def _wait_for_captcha_answer(self) -> tuple[str | None, str]:
+    async def _wait_for_captcha_answer(self) -> tuple[str | None, str, str]:
         """Poll until a math, text, or image captcha on the login form can be read."""
         text = ""
+        source = "none"
         for _ in range(8):
             text = await self._login_text_for_captcha()
             if _is_security_verification_page(text):
-                return None, text
+                return None, text, "none"
             widget_text, image = await self._read_captcha_widget()
-            answer = _captcha_answer_from_reading(text, widget_text, image)
+            answer, source = _captcha_reading(text, widget_text, image)
             if answer is not None:
-                return answer, text
+                return answer, text, source
             await asyncio.sleep(0.4)
-        return None, text
+        return None, text, source
+
+    async def _click_captcha_refresh(self) -> bool:
+        """Ask the form for a new captcha image. Returns false when no control exists."""
+        names = ["refresh captcha", "reload captcha", "new captcha", "refresh"]
+        controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
+        refresh_uid = _find_uid(controls, names, {"button", "link"})
+        if not refresh_uid:
+            return False
+        await self._click_authentication_control(
+            refresh_uid,
+            names,
+            {"button", "link"},
+            "captcha refresh",
+        )
+        await self.wait_until_ready()
+        return True
 
     async def _wait_for_submit_uid(
         self, names: list[str], timeout_seconds: float = 8.0
@@ -1593,6 +1672,7 @@ class ChromeDevToolsClient:
 
         last_page_text = ""
         login_page_text = ""
+        submitted_answers: list[str] = []
         for attempt in range(3):
             # Always re-read the snapshot fresh — CAPTCHA changes on each attempt
             await self.wait_until_ready()
@@ -1775,7 +1855,7 @@ class ChromeDevToolsClient:
                 "answer",
                 "captcha",
             ]
-            answer, text = await self._wait_for_captcha_answer()
+            answer, text, source = await self._wait_for_captcha_answer()
             if _is_security_verification_page(text):
                 raise SecurityVerificationRequiredError(
                     "The target is showing an interactive security verification page. "
@@ -1787,22 +1867,29 @@ class ChromeDevToolsClient:
                 captcha_names,
                 {"textbox", "input", "spinbutton"},
             )
-            if _captcha_answer_required(text, captcha_uid) and not answer:
-                refresh_names = ["refresh captcha", "reload captcha", "new captcha", "refresh"]
-                for _refresh_attempt in range(3):
-                    refresh_uid = _find_uid(controls, refresh_names, {"button", "link"})
-                    if not refresh_uid:
-                        break
-                    await self.click(refresh_uid)
-                    answer, text = await self._wait_for_captcha_answer()
+            if answer and answer in submitted_answers:
+                if await self._click_captcha_refresh():
+                    answer, text, source = await self._wait_for_captcha_answer()
                     controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
                     captcha_uid = _find_uid(
                         controls,
                         captcha_names,
                         {"textbox", "input", "spinbutton"},
                     )
-                    if answer:
+            if _captcha_answer_required(text, captcha_uid) and not answer:
+                for _refresh_attempt in range(3):
+                    if not await self._click_captcha_refresh():
                         break
+                    answer, text, source = await self._wait_for_captcha_answer()
+                    controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
+                    captcha_uid = _find_uid(
+                        controls,
+                        captcha_names,
+                        {"textbox", "input", "spinbutton"},
+                    )
+                    if answer and answer not in submitted_answers:
+                        break
+                    answer = None
                 if not answer:
                     raise RuntimeError(
                         "The login CAPTCHA could not be read. Discovery can solve a math "
@@ -1817,6 +1904,30 @@ class ChromeDevToolsClient:
                     {"textbox", "input", "spinbutton"},
                     "CAPTCHA field",
                 )
+                # The image can refresh while the other fields are typed.
+                # Read it again immediately before LOGIN and submit that value.
+                fresh, fresh_text, fresh_source = await self._wait_for_captcha_answer()
+                if fresh and fresh != answer and fresh not in submitted_answers:
+                    answer, text, source = fresh, fresh_text, fresh_source
+                    controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
+                    captcha_uid = _find_uid(
+                        controls,
+                        captcha_names,
+                        {"textbox", "input", "spinbutton"},
+                    ) or captcha_uid
+                    await self._fill_authentication_field(
+                        captcha_uid,
+                        answer,
+                        captcha_names,
+                        {"textbox", "input", "spinbutton"},
+                        "CAPTCHA field",
+                    )
+                logger.info(
+                    "[DISCOVERY AUTH] Captcha source=%s answer=%s",
+                    source,
+                    answer,
+                )
+                submitted_answers.append(answer)
             elif _captcha_answer_required(text, captcha_uid):
                 raise RuntimeError(
                     "A CAPTCHA field is visible but no answer input could be detected. "
@@ -1848,6 +1959,7 @@ class ChromeDevToolsClient:
                     return
 
                 if _INCORRECT_CAPTCHA_PATTERN.search(after):
+                    await self._click_captcha_refresh()
                     await self._wait_for_submit_uid(submit_names)
                     break
 

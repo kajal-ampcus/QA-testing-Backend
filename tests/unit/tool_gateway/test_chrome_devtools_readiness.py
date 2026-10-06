@@ -3,6 +3,7 @@
 import pytest
 
 from core.tool_gateway.mcp_clients.chrome_devtools_client import (
+    _INCORRECT_CAPTCHA_PATTERN,
     ChromeDevToolsClient,
     SecurityVerificationRequiredError,
     _authenticated_session_visible,
@@ -220,6 +221,69 @@ async def test_svg_blob_challenge_is_read_in_browser():
 
 
 @pytest.mark.asyncio
+async def test_captcha_widget_reads_svg_data_uri_as_math():
+    """Cafinity paints the equation in an SVG image, not as page text."""
+    import os
+    import shutil
+    from urllib.parse import quote
+
+    from playwright.async_api import async_playwright
+
+    candidates = [
+        shutil.which("chromium"),
+        shutil.which("chrome"),
+        shutil.which("msedge"),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    ]
+    executable = next((path for path in candidates if path and os.path.isfile(path)), None)
+    if not executable:
+        pytest.skip("Requires a local browser for the SVG data-URI regression")
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="64">'
+        '<text><tspan x="1">1</tspan><tspan x="12">4</tspan><tspan x="24">+</tspan>'
+        '<tspan x="36">1</tspan><tspan x="48">3</tspan><tspan x="60">=</tspan>'
+        '<tspan x="72">?</tspan></text></svg>'
+    )
+    src = "data:image/svg+xml;utf8," + quote(svg)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(
+            executable_path=executable, args=["--no-sandbox"]
+        )
+        try:
+            page = await browser.new_page()
+            await page.set_content(
+                f'<img alt="CAPTCHA" src="{src}"><input aria-label="CAPTCHA answer">'
+            )
+            client = ChromeDevToolsClient()
+            client._page_id = 0
+
+            async def call(_name, arguments):
+                return await page.evaluate(arguments["function"])
+
+            client._call = call
+            text, image = await client._read_captcha_widget()
+            assert _solve_math_captcha(text) == 27
+            assert image is None
+            assert _captcha_answer_from_reading("Enter the answer", text, image) == "27"
+            multiplied = (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="64">'
+                '<text><tspan x="1">9</tspan><tspan x="16">x</tspan>'
+                '<tspan x="32">5</tspan><tspan x="48">=</tspan>'
+                '<tspan x="64">?</tspan></text></svg>'
+            )
+            await page.evaluate(
+                "(src) => { document.querySelector('img').src = src; }",
+                "data:image/svg+xml;utf8," + quote(multiplied),
+            )
+            text, image = await client._read_captcha_widget()
+            assert "9 x 5 9" not in text
+            assert _solve_math_captcha(text) == 45
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_visible_login_text_unwraps_fenced_evaluate_result(monkeypatch):
     client = ChromeDevToolsClient()
     client._page_id = 0
@@ -250,6 +314,11 @@ async def test_login_fill_recovers_when_reactive_input_replaces_element(monkeypa
         return 'uid=2_7 textbox "Email"'
 
     async def set_control_value(uid, value):
+        if uid == "1_5":
+            raise RuntimeError(
+                "chrome-devtools-mcp tool 'evaluate_script' failed: "
+                "element did not become interactive"
+            )
         recovered.append((uid, value))
 
     async def no_sleep(_seconds):
@@ -267,7 +336,7 @@ async def test_login_fill_recovers_when_reactive_input_replaces_element(monkeypa
         "1_5", "user@example.com", ["email"], {"textbox"}, "username field"
     )
 
-    assert attempted == [("1_5", "user@example.com")]
+    assert attempted == []
     assert recovered == [("2_7", "user@example.com")]
 
 
@@ -509,6 +578,87 @@ def test_text_captcha_token_joins_symbols_and_ignores_labels():
     assert _text_captcha_token("Ab3$") == "Ab3$"
     assert _text_captcha_token("A b 3 $") == "Ab3$"
     assert _text_captcha_token("Username\nPassword\nEnter Captcha") is None
+
+
+def test_required_captcha_field_is_not_treated_as_a_wrong_answer():
+    snapshot = 'uid=1_18 textbox "CAPTCHA answer" required\nuid=1_19 button "LOGIN"'
+    assert _INCORRECT_CAPTCHA_PATTERN.search(snapshot) is None
+    assert _INCORRECT_CAPTCHA_PATTERN.search("Incorrect captcha. Please try again.")
+    assert _INCORRECT_CAPTCHA_PATTERN.search("Captcha is required")
+
+
+@pytest.mark.asyncio
+async def test_authenticate_sets_login_fields_with_the_react_setter(monkeypatch):
+    client = ChromeDevToolsClient()
+    client._credential_ref = "cred:employee"
+    written: list[tuple[str, str]] = []
+    readings = iter(["1 + 1 = ?", "9 + 7 = ?"])
+    login = (
+        'uid=1_0 RootWebArea "Login" url="https://cafinity.example/login"\n'
+        'uid=1_1 button "Employee"\n'
+        'uid=1_3 textbox "Employee ID"\n'
+        'uid=1_4 textbox "Password"\n'
+        'uid=1_6 textbox "CAPTCHA answer"\n'
+        'uid=1_7 button "LOGIN"'
+    )
+    home = (
+        'uid=2_0 RootWebArea "Dashboard" url="https://cafinity.example/dashboard"\n'
+        'uid=2_1 button "Logout"'
+    )
+    state = {"page": "login"}
+
+    async def resolve_login(_ref, _project_id=None):
+        return {"username": "EMP001", "password": "secret", "account_role": "Employee"}
+
+    async def take_snapshot():
+        return home if state["page"] == "home" else login
+
+    async def widget():
+        return next(readings), None
+
+    async def set_value(uid, value):
+        written.append((uid, value))
+
+    async def fill(_uid, _value):
+        raise AssertionError("login fields must use the React setter")
+
+    async def click(uid):
+        if uid == "1_7":
+            state["page"] = "home"
+
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client.resolve_login",
+        resolve_login,
+    )
+    monkeypatch.setattr(client, "take_snapshot", take_snapshot)
+    monkeypatch.setattr(client, "wait_until_ready", lambda: _done())
+    monkeypatch.setattr(client, "_read_visible_login_text", take_snapshot)
+    monkeypatch.setattr(client, "_read_captcha_widget", widget)
+    monkeypatch.setattr(client, "_set_control_value", set_value)
+    monkeypatch.setattr(client, "fill", fill)
+    monkeypatch.setattr(client, "click", click)
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client.asyncio.sleep",
+        lambda _seconds: _done(),
+    )
+
+    await client.authenticate()
+
+    assert ("1_3", "EMP001") in written
+    assert ("1_4", "secret") in written
+    assert written[-1] == ("1_6", "16")
+    assert client._authenticated is True
+
+
+def test_svg_math_widget_beats_a_painted_image(monkeypatch):
+    def fail(_png):
+        raise AssertionError("ocr should not run when the svg equation is readable")
+
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client._ocr_captcha_png",
+        fail,
+    )
+    assert _captcha_answer_from_reading("Enter the answer", "1 4 + 1 3 = ?", b"png") == "27"
 
 
 def test_math_captcha_is_preferred_over_widget_text(monkeypatch):

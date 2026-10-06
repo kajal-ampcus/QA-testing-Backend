@@ -28,7 +28,9 @@ from core.agents.application_discovery.crawler import (
 from core.agents.application_discovery.fingerprint import (
     auth_flow_label,
     functional_page_key,
+    collection_count_badge,
     gated_probe_kind,
+    unlabeled_collection_icons,
     is_chrome_label,
     is_collection_mutation_action,
     is_gated_reveal_action,
@@ -164,13 +166,14 @@ class ParallelCrawler:
             "name": step.name,
             "url": step.url,
             "value": step.value,
+            "occurrence": step.occurrence,
         }
 
     @classmethod
     def _job_key(cls, job: DiscoveryJob) -> str:
         phase = "public" if job.skip_auth else "authenticated"
         path = "/".join(
-            f"{step.role}:{step.name}:{step.url or ''}:{step.value or ''}"
+            f"{step.role}:{step.name}:{step.url or ''}:{step.value or ''}:{step.occurrence}"
             for step in job.path
         )
         return f"{phase}|{path}|expand={job.force_expand}"
@@ -609,6 +612,7 @@ class ParallelCrawler:
             return False
         root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
         current_url = root.get("url") or base_url
+        icons = unlabeled_collection_icons(nodes)
         for element in nodes:
             role, name = element.get("role", ""), element.get("name", "")
             if _is_transient_widget_control(role, name):
@@ -635,6 +639,15 @@ class ParallelCrawler:
             probe_kind = gated_probe_kind(
                 name, element.get("description"), destination or element.get("url"), current_url
             )
+            if (
+                probe_kind is None
+                and allow_collection_follow
+                and collection_count_badge(name, nodes)
+            ):
+                probe_kind = "collection"
+            if probe_kind is None and element in icons:
+                probe_kind = "collection"
+            occurrence = icons.index(element) if element in icons else 0
             safe_link = role == "link" and bool(destination)
             form_action = bool(re.search(
                 r"\b(submit|send|subscribe|save|sign out|log out|logout|sign in|log in|login|register|create account)\b",
@@ -675,7 +688,7 @@ class ParallelCrawler:
             for value in values:
                 canonical = destination.rstrip("/") if destination else None
                 identity = canonical or name or str(element.get("description") or "")
-                key = (parent_fingerprint, role, identity, str(value))
+                key = (parent_fingerprint, role, identity, str(value), occurrence)
                 async with self._lock:
                     if key in self._queued_actions:
                         continue
@@ -684,13 +697,19 @@ class ParallelCrawler:
                             continue
                         self._reveal_probed = True
                     elif probe_kind == "collection":
-                        if (
-                            not allow_collection_follow
-                            or not self._reveal_probed
-                            or self._collection_follow_queued
-                        ):
+                        unlabeled = not str(name or "").strip()
+                        if unlabeled:
+                            blocked = occurrence >= 2
+                        else:
+                            blocked = (
+                                not allow_collection_follow
+                                or not self._reveal_probed
+                                or self._collection_follow_queued
+                            )
+                        if blocked:
                             continue
-                        self._collection_follow_queued = True
+                        if not unlabeled or str(element.get("description") or "").strip():
+                            self._collection_follow_queued = True
                     elif in_page or repeated:
                         continue
                     self._queued_actions.add(key)
@@ -699,6 +718,7 @@ class ParallelCrawler:
                     name or str(element.get("description") or ""),
                     destination,
                     value,
+                    occurrence,
                 )
                 child_module = module_id
                 if child_module is None:
