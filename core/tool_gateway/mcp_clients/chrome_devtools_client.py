@@ -27,6 +27,16 @@ from urllib.parse import unquote, urlparse
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from core.agents.application_discovery.form_inputs import (
+    LoginInputRequired,
+    describe_field,
+    is_captcha_field,
+    is_otp_field,
+    is_password_field,
+    login_field_names,
+    saved_field_values,
+    value_for_field,
+)
 from core.tool_gateway.secret_resolver import resolve_login
 from core.tool_gateway.snapshot import merge_dom_hrefs, parse_elements
 
@@ -657,6 +667,56 @@ def _stdio_environment() -> dict[str, str]:
     except ImportError:
         pass
     return environment
+
+
+def _login_fields_from_snapshot(text: str) -> list[dict[str, Any]]:
+    """Required login fields with no browser ids, excluding CAPTCHA widgets."""
+    fields: list[dict[str, Any]] = []
+    for element in parse_elements(text):
+        role = str(element.get("role") or "")
+        if role not in {"textbox", "searchbox", "spinbutton", "combobox", "input"}:
+            continue
+        name = str(element.get("name") or "")
+        if not name.strip() or is_captcha_field(name):
+            continue
+        if not (element.get("required") or is_password_field(element) or is_otp_field(name)):
+            continue
+        described = describe_field(element)
+        if described["role"] == "input":
+            described["role"] = "textbox"
+            described["key"] = f"textbox:{described['key'].split(':', 1)[-1]}"
+        if is_password_field(element) or is_otp_field(name):
+            described["required"] = True
+        fields.append(described)
+    return fields
+
+
+def _saved_control_value(
+    controls: list[tuple[str, str, str]],
+    uid: str,
+    secret: dict[str, Any],
+    *,
+    fallback: str,
+) -> str:
+    name = next((control_name for control_uid, _role, control_name in controls if control_uid == uid), "")
+    matched = value_for_field(
+        {"role": "textbox", "name": name}, saved_field_values(secret), secret
+    )
+    return matched or fallback
+
+
+def _submit_descriptor(
+    controls: list[tuple[str, str, str]], submit_uid: str | None
+) -> dict[str, str] | None:
+    if not submit_uid:
+        return None
+    found = next(
+        ((role, name) for uid, role, name in controls if uid == submit_uid),
+        None,
+    )
+    if found is None:
+        return None
+    return {"role": found[0], "name": found[1]}
 
 
 class ChromeDevToolsClient:
@@ -1686,6 +1746,42 @@ class ChromeDevToolsClient:
         await self.wait_until_ready()
         return _parse_controls(_snapshot_text(await self.take_snapshot()))
 
+    async def _fill_additional_login_fields(
+        self,
+        text: str,
+        secret: dict[str, Any],
+        filled_uids: set[str],
+    ) -> list[dict[str, Any]]:
+        """Fill saved extra fields. Return required fields that still have no value."""
+        saved = saved_field_values(secret)
+        unanswered: list[dict[str, Any]] = []
+        for element in parse_elements(text):
+            role = str(element.get("role") or "")
+            if role not in {"textbox", "searchbox", "spinbutton", "combobox", "input"}:
+                continue
+            name = str(element.get("name") or "")
+            uid = str(element.get("uid") or "")
+            if not name.strip() or not uid or uid in filled_uids or is_captcha_field(name):
+                continue
+            described = describe_field(element)
+            if described["role"] == "input":
+                described["role"] = "textbox"
+                described["key"] = f"textbox:{described['key'].split(':', 1)[-1]}"
+            if not described["required"]:
+                continue
+            value = value_for_field(described, saved, secret)
+            if value:
+                await self._fill_authentication_field(
+                    uid,
+                    value,
+                    [name],
+                    {role, "textbox", "input", "combobox", "searchbox"},
+                    name,
+                )
+                continue
+            unanswered.append(described)
+        return unanswered
+
     async def authenticate(self) -> None:
         """
         Fill the login form — including arithmetic CAPTCHA — and submit.
@@ -1760,6 +1856,7 @@ class ChromeDevToolsClient:
             # _find_uid uses 3-pass fuzzy matching so partial names also work.
             account_role = secret.get("account_role", "")
             username_names = [
+                *login_field_names(secret),
                 secret.get("username_selector", ""),
                 f"{account_role} id" if account_role else "",
                 f"{account_role} id number" if account_role else "",
@@ -1857,6 +1954,16 @@ class ChromeDevToolsClient:
                     for _, role, name in controls
                     if role in {"textbox", "input", "button", "link", "combobox", "radio"}
                 ]
+                page_fields = _login_fields_from_snapshot(text)
+                otp_fields = [
+                    field for field in page_fields if is_otp_field(str(field.get("name") or ""))
+                ]
+                if otp_fields and not username_uid:
+                    raise LoginInputRequired(
+                        otp_fields,
+                        otp=True,
+                        submit=_submit_descriptor(controls, submit_uid),
+                    )
                 if attempt < 2:
                     logger.warning(
                         "[DISCOVERY AUTH] Login controls missing, reloading form: %s", missing
@@ -1870,6 +1977,13 @@ class ChromeDevToolsClient:
                         await self.navigate_page(login_url)
                     await self.wait_until_ready()
                     continue
+                page_fields = _login_fields_from_snapshot(text)
+                if page_fields:
+                    raise LoginInputRequired(
+                        page_fields,
+                        otp=any(is_otp_field(str(field.get("name") or "")) for field in page_fields),
+                        submit=_submit_descriptor(controls, submit_uid),
+                    )
                 raise RuntimeError(
                     f"Login form detection failed on attempt {attempt + 1}. "
                     f"Could not find: {', '.join(missing)}. "
@@ -1879,20 +1993,35 @@ class ChromeDevToolsClient:
                 )
 
             # ── Fill credentials ────────────────────────────────────────────
+            username_value = _saved_control_value(
+                controls, username_uid, secret, fallback=secret["username"]
+            )
+            password_value = _saved_control_value(
+                controls, password_uid, secret, fallback=secret["password"]
+            )
             await self._fill_authentication_field(
                 username_uid,
-                secret["username"],
+                username_value,
                 username_names,
                 {"textbox", "input", "combobox", "searchbox"},
                 "username field",
             )
             await self._fill_authentication_field(
                 password_uid,
-                secret["password"],
+                password_value,
                 password_names,
                 {"textbox", "input"},
                 "password field",
             )
+            unanswered = await self._fill_additional_login_fields(
+                text, secret, {username_uid, password_uid}
+            )
+            if unanswered:
+                raise LoginInputRequired(
+                    unanswered,
+                    otp=any(is_otp_field(str(field.get("name") or "")) for field in unanswered),
+                    submit=_submit_descriptor(controls, submit_uid),
+                )
 
             # ── Solve the CAPTCHA shown on this login form ───────────────
             # Math is read as text. Letters, digits, and symbols are read from

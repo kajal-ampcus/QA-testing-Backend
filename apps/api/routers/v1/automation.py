@@ -632,6 +632,9 @@ def _case_payload(case: TestCase, version: TestCaseVersion, map_version: int) ->
         "test_data": version.test_data,
         "expected_result": version.expected_result,
         "credential_ref": case.credential_ref,
+        "preconditions": version.preconditions,
+        "category": version.category,
+        "objective": version.objective,
     }
 
 
@@ -651,6 +654,9 @@ def _forbidden(cases: list[dict]) -> set[str]:
             test_data=item["test_data"],
             expected_result=item["expected_result"],
             credential_ref=item.get("credential_ref"),
+            preconditions=list(item.get("preconditions") or []),
+            category=str(item.get("category") or ""),
+            objective=str(item.get("objective") or ""),
         )
         for item in cases
     ]

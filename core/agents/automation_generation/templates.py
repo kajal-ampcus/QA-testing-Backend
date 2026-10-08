@@ -25,6 +25,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 /** Observed application-map state [[ state_code ]]. */
 export class [[ class_name ]] {
   readonly page: Page;
+  expectedState = "AUTHENTICATED";
 [% for locator in locators %]
   readonly [[ locator.prop ]]: Locator;
 [% endfor %]
@@ -46,6 +47,24 @@ export class [[ class_name ]] {
 
   async expectOnPage() {
     await expect(this.page).toHaveURL([[ url_pattern ]]);
+  }
+
+  async guard(action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+    } catch (error) {
+      const heading = await this.page.getByRole("heading").first().textContent().catch(() => "");
+      const extra = [
+        `Expected starting state: ${this.expectedState}`,
+        `Current URL: ${this.page.url()}`,
+        `Visible heading: ${(heading || "").trim() || "(none)"}`,
+      ].join("\\n");
+      if (error instanceof Error) {
+        error.message = `${error.message}\\n${extra}`;
+        throw error;
+      }
+      throw error;
+    }
   }
 [% for action in actions %]
 
@@ -81,7 +100,7 @@ import { testData } from "../../data/testdata";
 test.skip(process.env.RUN_DESTRUCTIVE !== "true", "Destructive flow is skipped unless RUN_DESTRUCTIVE=true");
 [% endif %]
 
-test([[ title ]], async ({ sessionPage: page }) => {
+test([[ title ]], async ({ [[ fixture ]]: page }) => {
 [% for line in lines %]
   [[ line ]]
 [% endfor %]
@@ -117,7 +136,7 @@ import { spawnSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { expect, test as base, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test as base, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 function chooseDropdowns(page: Page): void {
   const names = ["locator", "getByRole", "getByLabel", "getByPlaceholder", "getByText", "getByTestId", "getByAltText", "getByTitle"] as const;
@@ -359,10 +378,6 @@ function sessionEndControl(page: Page) {
   return page.getByRole("button", { name }).or(page.getByRole("link", { name }));
 }
 
-async function hasSignedInSession(page: Page): Promise<boolean> {
-  return sessionEndControl(page).first().isVisible().catch(() => false);
-}
-
 async function enterApplication(page: Page): Promise<void> {
   loadSuiteEnv();
   const username = process.env.TEST_USERNAME?.trim() ?? "";
@@ -484,72 +499,72 @@ function keepSignedInSession(page: Page): void {
   };
 }
 
-export const test = base.extend<{}, { sessionContext: BrowserContext; sessionPage: Page }>({
-  sessionContext: [
-    async ({ browser }, use) => {
-      const context = await browser.newContext({
-        baseURL: suiteBaseURL(),
-        viewport: null,
-      });
-      await context.addInitScript(() => {
-        const paint = () => {
-          const cursor = document.createElement("div");
-          cursor.setAttribute("data-playwright-cursor", "true");
-          cursor.style.position = "fixed";
-          cursor.style.zIndex = "2147483647";
-          cursor.style.width = "16px";
-          cursor.style.height = "16px";
-          cursor.style.marginLeft = "-8px";
-          cursor.style.marginTop = "-8px";
-          cursor.style.borderRadius = "50%";
-          cursor.style.border = "2px solid #111";
-          cursor.style.background = "rgba(220, 38, 38, 0.9)";
-          cursor.style.pointerEvents = "none";
-          document.documentElement.appendChild(cursor);
-          const move = (event: MouseEvent) => {
-            cursor.style.left = `${event.clientX}px`;
-            cursor.style.top = `${event.clientY}px`;
-          };
-          document.addEventListener("mousemove", move, true);
-          document.addEventListener("mousedown", () => {
-            cursor.style.transform = "scale(0.75)";
-          }, true);
-          document.addEventListener("mouseup", () => {
-            cursor.style.transform = "scale(1)";
-          }, true);
-        };
-        if (document.readyState === "loading") {
-          document.addEventListener("DOMContentLoaded", paint, { once: true });
-        } else {
-          paint();
-        }
-      });
-      await use(context);
-      await context.close();
-    },
-    { scope: "worker" },
-  ],
-  sessionPage: [
-    async ({ sessionContext }, use) => {
-      const page = await sessionContext.newPage();
-      chooseDropdowns(page);
-      page.setDefaultTimeout(20_000);
-      page.setDefaultNavigationTimeout(30_000);
-      keepSignedInSession(page);
-      page.on("load", () => {
-        void page.mouse.move(480, 320).catch(() => undefined);
-      });
-      await enterApplication(page);
-      await use(page);
-    },
-    { scope: "worker" },
-  ],
-});
-
-test.beforeEach(async ({ sessionPage }) => {
-  if (!(await hasSignedInSession(sessionPage))) {
-    await enterApplication(sessionPage);
+async function openContext(
+  browser: Browser,
+  signedIn: boolean,
+): Promise<{ context: BrowserContext; page: Page }> {
+  const context = await browser.newContext({
+    baseURL: suiteBaseURL(),
+    viewport: null,
+  });
+  await context.addInitScript(() => {
+    const paint = () => {
+      const cursor = document.createElement("div");
+      cursor.setAttribute("data-playwright-cursor", "true");
+      cursor.style.position = "fixed";
+      cursor.style.zIndex = "2147483647";
+      cursor.style.width = "16px";
+      cursor.style.height = "16px";
+      cursor.style.marginLeft = "-8px";
+      cursor.style.marginTop = "-8px";
+      cursor.style.borderRadius = "50%";
+      cursor.style.border = "2px solid #111";
+      cursor.style.background = "rgba(220, 38, 38, 0.9)";
+      cursor.style.pointerEvents = "none";
+      document.documentElement.appendChild(cursor);
+      const move = (event: MouseEvent) => {
+        cursor.style.left = `${event.clientX}px`;
+        cursor.style.top = `${event.clientY}px`;
+      };
+      document.addEventListener("mousemove", move, true);
+      document.addEventListener("mousedown", () => {
+        cursor.style.transform = "scale(0.75)";
+      }, true);
+      document.addEventListener("mouseup", () => {
+        cursor.style.transform = "scale(1)";
+      }, true);
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", paint, { once: true });
+    } else {
+      paint();
+    }
+  });
+  const page = await context.newPage();
+  chooseDropdowns(page);
+  page.setDefaultTimeout(20_000);
+  page.setDefaultNavigationTimeout(30_000);
+  page.on("load", () => {
+    void page.mouse.move(480, 320).catch(() => undefined);
+  });
+  if (signedIn) {
+    keepSignedInSession(page);
+    await enterApplication(page);
   }
+  return { context, page };
+}
+
+export const test = base.extend<{ publicPage: Page; sessionPage: Page }>({
+  publicPage: async ({ browser }, use) => {
+    const opened = await openContext(browser, false);
+    await use(opened.page);
+    await opened.context.close();
+  },
+  sessionPage: async ({ browser }, use) => {
+    const opened = await openContext(browser, true);
+    await use(opened.page);
+    await opened.context.close();
+  },
 });
 
 export function envCredential(name: "TEST_USERNAME" | "TEST_PASSWORD"): string {
@@ -657,7 +672,7 @@ Static review wrote `review-report.json`. When Node is available, the
 platform also runs `tsc --noEmit` and `npx playwright test --list`. Those
 commands do not execute the tests.
 
-The suite uses one Chromium window. Tests run one after another in that same window.
+The suite runs tests one after another. Each test opens its own browser context, so a public page does not inherit a signed-in URL, form, or CAPTCHA from the previous test.
 
 ```bash
 npm install
@@ -682,6 +697,7 @@ _ENV_EXAMPLE = """\
 BASE_URL=[[ base_url ]]
 TEST_USERNAME=
 TEST_PASSWORD=
+TEST_CAPTCHA=
 RUN_DESTRUCTIVE=false
 [% for name in names %]
 [[ name ]]=

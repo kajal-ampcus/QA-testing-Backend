@@ -10,6 +10,7 @@ import hashlib
 import itertools
 import re
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass, field
@@ -28,22 +29,34 @@ from core.agents.application_discovery.crawler import (
 )
 from core.agents.application_discovery.fingerprint import (
     auth_flow_label,
-    functional_page_key,
+    canonical_route,
     collection_count_badge,
+    functional_page_key,
     gated_probe_kind,
-    unlabeled_collection_icons,
     is_chrome_label,
     is_collection_mutation_action,
     is_gated_reveal_action,
     is_in_page_content_control,
     observed_page_label,
     repeated_in_page_control,
+    unlabeled_collection_icons,
+)
+from core.agents.application_discovery.form_inputs import (
+    LoginInputRequired,
+    answers_cover,
+    blocking_form,
+    form_key_for,
+    normalize_name,
+    public_field,
 )
 from core.policy_safety.destructive_action_lexicon import classify_risk
 from core.tool_gateway.gateway import BrowserInspection, SecurityVerificationRequiredError
+from core.tool_gateway.snapshot import parse_elements
 from domain.enums import RiskLevel
+from infra.db.repositories.form_answer_repo import get_form_answers
 
 _CHECKPOINT_INTERVAL_SECONDS = 2.0
+_OTP_WAIT_SECONDS = 90.0
 
 
 ClientFactory = Callable[[], AbstractAsyncContextManager[BrowserInspection]]
@@ -130,6 +143,10 @@ class ParallelCrawler:
         self._area_roots: dict[str, str] = {}
         self._checkpoint = checkpoint or {}
         self._on_checkpoint = on_checkpoint
+        self._project_id = project_id
+        self._credential_ref = credential_ref
+        self._input_requests: dict[str, dict[str, Any]] = {}
+        self._login_input_blocked = False
         self._job_states: dict[str, dict[str, Any]] = {}
         self._seen: set[str] = set()
         self._page_keys: dict[str, str] = {}
@@ -180,7 +197,7 @@ class ParallelCrawler:
             f"{step.role}:{step.name}:{step.url or ''}:{step.value or ''}:{step.occurrence}"
             for step in job.path
         )
-        return f"{phase}|{path}|expand={job.force_expand}"
+        return f"{phase}|{path}|expand={job.force_expand}|input={job.input_request_id or ''}"
 
     @classmethod
     def _serialize_job(cls, job: DiscoveryJob, status: str) -> dict[str, Any]:
@@ -249,6 +266,15 @@ class ParallelCrawler:
         }
         self._reveal_probed = bool(self._checkpoint.get("reveal_probed"))
         self._collection_follow_queued = bool(self._checkpoint.get("collection_follow_queued"))
+        self._input_requests = {
+            item["id"]: item
+            for item in self._checkpoint.get("input_requests", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        self._login_input_blocked = any(
+            item.get("kind") == "login" and item.get("status") == "pending"
+            for item in self._input_requests.values()
+        )
 
     def _checkpoint_payload(self) -> dict[str, Any]:
         jobs = list(self._job_states.values())
@@ -290,6 +316,7 @@ class ParallelCrawler:
             "module_inventory_flows": sorted(self._module_inventory_flows),
             "reveal_probed": self._reveal_probed,
             "collection_follow_queued": self._collection_follow_queued,
+            "input_requests": list(self._input_requests.values()),
         }
 
     async def _save_checkpoint(self, *, force: bool = False) -> None:
@@ -299,6 +326,7 @@ class ParallelCrawler:
             return
         if not force and time.monotonic() - self._last_checkpoint_at < _CHECKPOINT_INTERVAL_SECONDS:
             return
+        await self._sync_input_requests()
         # State inserts and checkpoint updates share one SQLAlchemy
         # session in the worker; serialize both transaction types.
         async with self._persist_lock:
@@ -317,7 +345,281 @@ class ParallelCrawler:
             "pending_tasks": statuses.count("pending"),
             "failed_tasks": statuses.count("failed"),
             "skipped_unsafe_actions": len(self._skipped),
+            "pending_input_requests": sum(
+                1 for item in self._input_requests.values() if item.get("status") == "pending"
+            ),
         }
+
+    async def _sync_input_requests(self) -> None:
+        if self._project_id is None:
+            return
+        for request in self._input_requests.values():
+            if request.get("status") in {"submitted", "applied"}:
+                continue
+            answers = await get_form_answers(
+                self._project_id, str(request.get("page_key") or ""), str(request.get("form_key") or "")
+            )
+            if answers:
+                request["status"] = "submitted"
+
+    def _request_for(self, page_key: str, form_key: str) -> dict[str, Any] | None:
+        for request in self._input_requests.values():
+            if request.get("page_key") == page_key and request.get("form_key") == form_key:
+                return request
+        return None
+
+    def _fill_already_queued(self, request_id: str) -> bool:
+        return any(
+            job.get("input_request_id") == request_id
+            and job.get("status") in {"pending", "in_progress", "completed"}
+            for job in self._job_states.values()
+        )
+
+    def _fill_job(self, request: dict[str, Any], answers: dict[str, str]) -> DiscoveryJob:
+        path = [ClickStep(**step) for step in request.get("navigation_path") or []]
+        for field_info in request.get("fields") or []:
+            value = answers.get(str(field_info.get("key") or ""))
+            if value:
+                path.append(ClickStep(str(field_info.get("role") or "textbox"), str(field_info.get("name") or ""), value=value))
+        submit = request.get("submit") or {}
+        if submit.get("role") and submit.get("name"):
+            path.append(ClickStep(str(submit["role"]), str(submit["name"])))
+        return DiscoveryJob(
+            priority=-1,
+            sequence=next(self._sequence),
+            path=path,
+            skip_auth=bool(request.get("skip_auth")),
+            input_request_id=str(request.get("id") or ""),
+        )
+
+    async def _enqueue_answered_forms(self, queue: asyncio.PriorityQueue[DiscoveryJob], skip_auth: bool) -> None:
+        if self._project_id is None:
+            return
+        for request in list(self._input_requests.values()):
+            if request.get("kind") == "login" or request.get("status") != "submitted":
+                continue
+            if bool(request.get("skip_auth")) != skip_auth:
+                continue
+            request_id = str(request.get("id") or "")
+            if not request_id or self._fill_already_queued(request_id):
+                continue
+            answers = await get_form_answers(
+                self._project_id, str(request.get("page_key") or ""), str(request.get("form_key") or "")
+            )
+            if not answers or not answers_cover(list(request.get("fields") or []), answers):
+                continue
+            job = self._fill_job(request, answers)
+            await queue.put(job)
+            await self._set_job_status(job, "pending")
+
+    def _store_input_request(
+        self,
+        *,
+        kind: str,
+        page_url: str,
+        page_title: str,
+        page_key: str,
+        form_key: str,
+        fields: list[dict[str, Any]],
+        submit: dict[str, str] | None,
+        path: list[ClickStep],
+        skip_auth: bool,
+        screenshot_ref: str | None,
+        status: str,
+    ) -> dict[str, Any]:
+        existing = self._request_for(page_key, form_key)
+        if existing is not None:
+            if status == "submitted" and existing.get("status") == "pending":
+                existing["status"] = "submitted"
+            return existing
+        request_id = f"inp:{uuid.uuid4()}"
+        request = {
+            "id": request_id,
+            "status": status,
+            "kind": kind,
+            "page_url": page_url,
+            "page_title": page_title,
+            "page_key": page_key,
+            "form_key": form_key,
+            "screenshot_ref": screenshot_ref,
+            "navigation_path": [self._serialize_step(step) for step in path],
+            "fields": [public_field(field_info) for field_info in fields],
+            "submit": submit,
+            "skip_auth": skip_auth,
+            "credential_ref": self._credential_ref if kind == "login" else None,
+        }
+        self._input_requests[request_id] = request
+        return request
+
+    async def _consider_form(
+        self,
+        queue: asyncio.PriorityQueue[DiscoveryJob],
+        nodes: list[dict[str, Any]],
+        job: DiscoveryJob,
+        skip_auth: bool,
+        live_url: str,
+        page_key: str,
+        page_title: str,
+        screenshot_ref: str | None,
+    ) -> None:
+        if job.input_request_id:
+            return
+        form = blocking_form(nodes)
+        if form is None:
+            return
+        if form["kind"] == "login" and self._authenticate:
+            return
+        stable_page = page_key or canonical_route(live_url)
+        form_key = form_key_for(form["fields"])
+        answers = None
+        if self._project_id is not None:
+            answers = await get_form_answers(self._project_id, stable_page, form_key)
+        if answers and answers_cover(form["fields"], answers):
+            request = self._store_input_request(
+                kind=form["kind"],
+                page_url=live_url,
+                page_title=page_title,
+                page_key=stable_page,
+                form_key=form_key,
+                fields=form["fields"],
+                submit=form["submit"],
+                path=job.path,
+                skip_auth=skip_auth,
+                screenshot_ref=screenshot_ref,
+                status="submitted",
+            )
+            if not self._fill_already_queued(str(request["id"])):
+                fill_job = self._fill_job(request, answers)
+                await queue.put(fill_job)
+                await self._set_job_status(fill_job, "pending")
+            return
+        if self._request_for(stable_page, form_key) is not None:
+            return
+        self._store_input_request(
+            kind=form["kind"],
+            page_url=live_url,
+            page_title=page_title,
+            page_key=stable_page,
+            form_key=form_key,
+            fields=form["fields"],
+            submit=form["submit"],
+            path=job.path,
+            skip_auth=skip_auth,
+            screenshot_ref=screenshot_ref,
+            status="pending",
+        )
+        await self._save_checkpoint(force=True)
+
+    async def _fill_current_form(
+        self,
+        client: BrowserInspection,
+        fields: list[dict[str, Any]],
+        answers: dict[str, str],
+        submit: dict[str, str] | None,
+    ) -> object | None:
+        snapshot = await client.take_snapshot()
+        elements = parse_elements(snapshot)
+        for field_info in fields:
+            value = answers.get(str(field_info.get("key") or ""))
+            if not value:
+                continue
+            match = next(
+                (
+                    element
+                    for element in elements
+                    if element.get("role") == field_info.get("role")
+                    and normalize_name(str(element.get("name") or ""))
+                    == normalize_name(str(field_info.get("name") or ""))
+                ),
+                None,
+            )
+            if match is None or not match.get("uid"):
+                return None
+            await client.fill(str(match["uid"]), value)
+        snapshot = await client.take_snapshot()
+        elements = parse_elements(snapshot)
+        submit_match = None
+        if submit and submit.get("name"):
+            submit_match = next(
+                (
+                    element
+                    for element in elements
+                    if element.get("role") == submit.get("role")
+                    and normalize_name(str(element.get("name") or ""))
+                    == normalize_name(str(submit.get("name") or ""))
+                ),
+                None,
+            )
+        if submit_match is None or not submit_match.get("uid"):
+            submit_match = next(
+                (
+                    element
+                    for element in elements
+                    if element.get("role") == "button"
+                    and re.search(
+                        r"\b(verify|confirm|continue|submit|log in|sign in)\b",
+                        str(element.get("name") or ""),
+                        re.I,
+                    )
+                ),
+                None,
+            )
+        if submit_match is None or not submit_match.get("uid"):
+            return None
+        await client.click(str(submit_match["uid"]))
+        await client.wait_until_ready()
+        return await client.take_snapshot()
+
+    async def _resolve_login_input(
+        self,
+        client: BrowserInspection,
+        job: DiscoveryJob,
+        exc: LoginInputRequired,
+        base_url: str,
+    ) -> object | None:
+        """Ask for missing login fields. OTP stays on the open page for a short wait."""
+        self._login_input_blocked = True
+        page_url = self._login_url or base_url
+        page_key = canonical_route(page_url)
+        form_key = form_key_for(exc.fields)
+        screenshot_ref = None
+        with suppress(Exception):
+            screenshot_ref = str(await client.take_screenshot())
+        request = self._store_input_request(
+            kind="login",
+            page_url=page_url,
+            page_title="Sign in",
+            page_key=page_key,
+            form_key=form_key,
+            fields=exc.fields,
+            submit=exc.submit,
+            path=job.path,
+            skip_auth=False,
+            screenshot_ref=screenshot_ref,
+            status="pending",
+        )
+        await self._save_checkpoint(force=True)
+        if not exc.otp or self._project_id is None:
+            return None
+        deadline = time.monotonic() + _OTP_WAIT_SECONDS
+        answers: dict[str, str] | None = None
+        while time.monotonic() < deadline:
+            answers = await get_form_answers(self._project_id, page_key, form_key)
+            if answers and answers_cover(exc.fields, answers):
+                break
+            await asyncio.sleep(2)
+        else:
+            return None
+        request["status"] = "submitted"
+        try:
+            snapshot = await self._fill_current_form(client, exc.fields, answers or {}, exc.submit)
+        except Exception:
+            return None
+        if snapshot is None:
+            return None
+        self._login_input_blocked = False
+        request["status"] = "applied"
+        return snapshot
 
     async def _set_job_status(self, job: DiscoveryJob, status: str) -> None:
         self._job_states[self._job_key(job)] = self._serialize_job(job, status)
@@ -618,20 +920,7 @@ class ParallelCrawler:
             return False
         root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
         current_url = root.get("url") or base_url
-<<<<<<< Updated upstream
         icons = unlabeled_collection_icons(nodes)
-=======
-        if self._discovery_mode == "guided" and self._authenticate:
-            flow = self._detect_auth_flow(parent_fingerprint, {"url_pattern": current_url}, nodes, False)
-            if flow and flow["kind"] == "login":
-                auth_job = DiscoveryJob(
-                    0, next(self._sequence),
-                    path=[*path, ClickStep("authentication", "Sign in with selected account")],
-                    skip_auth=True, parent_fingerprint=parent_fingerprint,
-                )
-                if self._job_key(auth_job) not in self._job_states:
-                    await self._set_job_status(auth_job, "available")
->>>>>>> Stashed changes
         for element in nodes:
             role, name = element.get("role", ""), element.get("name", "")
             if _is_transient_widget_control(role, name):
@@ -810,6 +1099,16 @@ class ParallelCrawler:
                         fingerprint: str | None = None
                         try:
                             self._active_workers += 1
+                            await self._sync_input_requests()
+                            if not any(
+                                item.get("kind") == "login" and item.get("status") == "pending"
+                                for item in self._input_requests.values()
+                            ):
+                                self._login_input_blocked = False
+                            await self._enqueue_answered_forms(queue, skip_auth)
+                            if self._login_input_blocked and not skip_auth and not job.input_request_id:
+                                await self._set_job_status(job, "pending")
+                                continue
                             await self._set_job_status(job, "in_progress")
                             async with self._lock:
                                 over_pages = len(self._seen) >= self._budget.max_pages
@@ -881,7 +1180,15 @@ class ParallelCrawler:
                                         "action": "authenticate",
                                     }
                                 await self._save_checkpoint()
-                                snapshot = await crawler._replay_to(job.path, skip_auth=skip_auth)
+                                try:
+                                    snapshot = await crawler._replay_to(job.path, skip_auth=skip_auth)
+                                except LoginInputRequired as exc:
+                                    snapshot = await self._resolve_login_input(
+                                        client, job, exc, base_url
+                                    )
+                                    if snapshot is None:
+                                        await self._set_job_status(job, "pending")
+                                        continue
                             if not skip_auth and not authenticated_here:
                                 authenticated_here = True
                                 async with self._lock:
@@ -985,6 +1292,16 @@ class ParallelCrawler:
                                 # Existing repository/session is intentionally serialized.
                                 async with self._persist_lock:
                                     await on_state_discovered(state)
+                            await self._consider_form(
+                                queue,
+                                nodes,
+                                job,
+                                skip_auth,
+                                live_url,
+                                page_key,
+                                str(root.get("name") or ""),
+                                screenshot_ref,
+                            )
                             if should_expand:
                                 expansion_complete = await self._enqueue_children(
                                     queue,
@@ -1145,6 +1462,10 @@ class ParallelCrawler:
                     "SAFETY_LIMIT_REACHED"
                     if self._budget.automatic_limits else "MAX_DEPTH_REACHED"
                 )
+        if self._termination == "EXPLORATION_EXHAUSTED" and any(
+            item.get("status") == "pending" for item in self._input_requests.values()
+        ):
+            self._termination = "INPUT_REQUIRED"
         await self._save_checkpoint(force=True)
         self.termination_reason = self._termination
         self.coverage = {
@@ -1192,7 +1513,7 @@ class ParallelCrawler:
                     )
                 ),
             },
-            "scope": "Observed navigation and permitted controls; form submissions are not covered",
+            "scope": "Observed navigation and permitted controls. Safe forms are submitted when saved answers exist.",
         }
         if not self._seen:
             recoverable = any(

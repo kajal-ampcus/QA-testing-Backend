@@ -152,6 +152,38 @@ def _fill_value(element: dict[str, Any], *, category: str) -> tuple[str, str, st
     return datum.key, datum.name, datum.value
 
 
+def _credential_field(element: dict[str, Any]) -> bool:
+    blob = f"{element.get('name') or ''} {element.get('type') or ''}"
+    return bool(re.search(r"password|passphrase|e-?mail|username|user name|captcha", blob, re.I))
+
+
+def _named_in_text(element: dict[str, Any], text: str) -> bool:
+    name = str(element.get("name") or "").strip()
+    return len(name) >= 3 and name.casefold() in text.casefold()
+
+
+def _relevant_fills(
+    elements: list[dict[str, Any]],
+    text: str,
+    click: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Fill a field only when the objective or the primary action needs it."""
+    fills = [element for element in elements if _usable(element, _FILLABLE)]
+    click_name = str((click or {}).get("name") or "")
+    navigation = bool(click) and (
+        str((click or {}).get("role") or "") == "link" or bool((click or {}).get("url"))
+    ) and not _SUBMIT.search(click_name)
+    if navigation or re.search(r"forgot|refresh", click_name, re.I):
+        return [element for element in fills if _named_in_text(element, text) and not _credential_field(element)]
+    if click and _SUBMIT.search(click_name):
+        return [
+            element
+            for element in fills
+            if _credential_field(element) or _named_in_text(element, text)
+        ]
+    return [element for element in fills if _named_in_text(element, text)]
+
+
 def _build_case(
     *,
     ac: dict[str, Any],
@@ -161,10 +193,11 @@ def _build_case(
     title: str,
 ) -> TestCaseSpec | None:
     elements = _observed(start)
-    fills = [element for element in elements if _usable(element, _FILLABLE)][:3]
-    click = _best_click(elements, f"{title} {ac.get('text', '')}")
-    if category == "EDGE_CASE" and not fills:
-        return None  # nothing to vary; a copy of the NEGATIVE case adds no value
+    text = f"{title} {ac.get('text', '')}"
+    click = _best_click(elements, text)
+    fills = _relevant_fills(elements, text, click)
+    if category in {"NEGATIVE", "EDGE_CASE"} and not fills:
+        return None  # nothing to vary; repeating the positive inputs adds no value
     result, confidence = _result_state(states, start, click)
     valid = category == "POSITIVE"
     steps: list[TestStep] = [
@@ -182,7 +215,7 @@ def _build_case(
                 value=f"{{{key}}}",
             )
         )
-    if click and (fills or valid):
+    if click:
         steps.append(
             TestStep(
                 step_number=len(steps) + 1,

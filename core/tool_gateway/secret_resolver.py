@@ -7,13 +7,14 @@ literal password.
 """
 
 import uuid
+from typing import Any
 
 from infra.secrets.vault_client import get_login_secret
 
 
 async def resolve_login(
     credential_ref: str, project_id: uuid.UUID | None = None
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Resolve a credential reference only at the browser-tool boundary."""
     return await get_login_secret(credential_ref, project_id)
 

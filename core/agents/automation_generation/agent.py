@@ -76,4 +76,7 @@ def _case(item: dict[str, Any]) -> CaseInput:
         test_data=dict(item.get("test_data") or {}),
         expected_result=str(item.get("expected_result") or ""),
         credential_ref=item.get("credential_ref"),
+        preconditions=list(item.get("preconditions") or []),
+        category=str(item.get("category") or ""),
+        objective=str(item.get("objective") or ""),
     )

@@ -23,10 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.dependencies import get_db_session
 from core.policy_safety.environment_policy import DiscoveryTargetError, validate_discovery_target
 from domain.enums import RequirementStatus
+from infra.db.models.application_map import ApplicationMap
 from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
+from infra.db.repositories.form_answer_repo import save_form_answers
 from infra.queue.broker import enqueue, get_arq_pool
 from infra.queue.discovery_lock import (
     active_discovery_job,
@@ -34,6 +36,7 @@ from infra.queue.discovery_lock import (
     clear_inactive_discovery,
     release_discovery,
 )
+from infra.secrets.vault_client import merge_login_fields
 
 _REDIS_ERRORS = (RedisConnectionError, RedisTimeoutError, OSError)
 
@@ -437,3 +440,87 @@ async def get_latest_map(
         test_generation_coverage=app_map.test_generation_coverage,
         project_test_generation_coverage=project_generation_coverage,
     )
+
+
+class InputFieldAnswer(BaseModel):
+    key: str = Field(min_length=1, max_length=300)
+    value: str = Field(min_length=1, max_length=4000)
+
+
+class SubmitInputRequestBody(BaseModel):
+    fields: list[InputFieldAnswer] = Field(min_length=1, max_length=40)
+
+
+class SubmitInputRequestResponse(BaseModel):
+    id: str
+    status: str
+
+
+@router.post(
+    "/{application_map_id}/input-requests/{request_id}",
+    response_model=SubmitInputRequestResponse,
+)
+async def submit_input_request(
+    application_map_id: uuid.UUID,
+    request_id: str,
+    body: SubmitInputRequestBody,
+    session: AsyncSession = Depends(get_db_session),
+) -> SubmitInputRequestResponse:
+    """Store values for one discovered form. The checkpoint keeps field names only."""
+    app_map = await session.get(ApplicationMap, application_map_id)
+    if app_map is None or not app_map.discovery_checkpoint:
+        raise HTTPException(status_code=404, detail="Discovery input request not found")
+    checkpoint = dict(app_map.discovery_checkpoint)
+    requests = [
+        dict(item)
+        for item in checkpoint.get("input_requests") or []
+        if isinstance(item, dict)
+    ]
+    target = next((item for item in requests if item.get("id") == request_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Discovery input request not found")
+    if target.get("status") == "applied":
+        raise HTTPException(status_code=409, detail="This form was already submitted")
+    expected = {
+        str(field["key"]): field
+        for field in target.get("fields") or []
+        if isinstance(field, dict) and field.get("key")
+    }
+    provided = {item.key: item.value for item in body.fields}
+    unknown = [key for key in provided if key not in expected]
+    if unknown:
+        raise HTTPException(status_code=422, detail="One or more fields are not on this form")
+    missing = [
+        str(field.get("name") or key)
+        for key, field in expected.items()
+        if field.get("required", True) and not str(provided.get(key) or "").strip()
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Enter a value for: {', '.join(missing)}",
+        )
+    values = {
+        key: provided[key].strip()
+        for key in expected
+        if str(provided.get(key) or "").strip()
+    }
+    page_key = str(target.get("page_key") or "")
+    form_key = str(target.get("form_key") or "")
+    if not page_key or not form_key:
+        raise HTTPException(status_code=422, detail="This form cannot be saved")
+    await save_form_answers(app_map.project_id, page_key, form_key, values)
+    if target.get("kind") == "login" and target.get("credential_ref"):
+        updates = [
+            {"name": str(expected[key].get("name") or key), "value": value}
+            for key, value in values.items()
+        ]
+        try:
+            await merge_login_fields(str(target["credential_ref"]), app_map.project_id, updates)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    target["status"] = "submitted"
+    checkpoint["input_requests"] = requests
+    app_map.discovery_checkpoint = checkpoint
+    await session.commit()
+    return SubmitInputRequestResponse(id=request_id, status="submitted")

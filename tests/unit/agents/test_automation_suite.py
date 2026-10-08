@@ -128,7 +128,11 @@ def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:
     assert 'querySelectorAll("text, tspan")' not in auth
     assert r"(\d{1,2})" in auth
     assert "captcha|answer" in auth
-    assert "sessionPage: page" in spec
+    assert "publicPage: page" in spec
+    assert "sessionPage: page" not in spec
+    assert "test.beforeEach" not in auth
+    assert "openContext(browser, false)" in auth
+    assert "openContext(browser, true)" in auth
     config = (root / "playwright.config.ts").read_text(encoding="utf-8")
     assert "workers: 1" in config
     assert "headless: false" in config
@@ -193,6 +197,7 @@ def test_destructive_spec_is_skipped_by_default(tmp_path) -> None:
     assert "tests/destructive/" in spec.relative_to(plan.suite_dir).as_posix()
     text = spec.read_text(encoding="utf-8")
     assert 'test.skip(process.env.RUN_DESTRUCTIVE !== "true"' in text
+    assert "sessionPage: page" in text
     assert plan.risk_level == "DESTRUCTIVE"
     report = lint_suite(plan.suite_dir)
     assert report.destructive_not_skipped == 0

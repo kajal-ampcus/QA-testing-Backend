@@ -16,6 +16,7 @@ from uuid import UUID
 
 from core.agents.automation_generation import templates
 from core.agents.automation_generation.artifacts import list_files
+from core.agents.automation_generation.execution_plan import prepare_execution
 from core.agents.automation_generation.selector_strategy import (
     SelectorDecision,
     resolve_in_state,
@@ -84,6 +85,9 @@ class CaseInput:
     test_data: dict[str, Any]
     expected_result: str
     credential_ref: str | None = None
+    preconditions: list[str] = field(default_factory=list)
+    category: str = ""
+    objective: str = ""
 
 
 @dataclass
@@ -287,6 +291,8 @@ class _Draft:
     data_fields: list[dict[str, str]]
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)
     blocked_reason: str | None = None
+    fixture: str = "sessionPage"
+    starting_state: str = "AUTHENTICATED"
 
     @property
     def blocked(self) -> bool:
@@ -361,6 +367,11 @@ def _plan_case(
     calls: list[tuple[str, str, str | None]] = []
     data_fields: list[dict[str, str]] = []
     used_props: dict[tuple[str, str], str] = {}
+    prepared = prepare_execution(case, states)
+    case.steps = prepared.steps
+    case.test_data = prepared.test_data
+    if prepared.blocked_reason:
+        reasons.append(prepared.blocked_reason)
     leaves = _string_leaves(case.test_data)
     if not case.steps:
         reasons.append(f"{case.tc_code} has no steps.")
@@ -433,6 +444,8 @@ def _plan_case(
         data_fields=data_fields,
         calls=[] if reasons else calls,
         blocked_reason="; ".join(reasons) if reasons else None,
+        fixture=prepared.fixture,
+        starting_state=prepared.starting_state,
     )
     draft.source = _render_case(draft, generation_id)
     return draft
@@ -468,6 +481,7 @@ def _render_case(draft: _Draft, generation_id: UUID) -> str:
             seen.add(state_code)
             pages.append({"class_name": class_name, "file_name": file_name})
             lines.append(f"const {var} = new {class_name}(page);")
+            lines.append(f"{var}.expectedState = {json.dumps(draft.starting_state)};")
         if argument is None:
             lines.append(f"await {var}.{method}();")
         else:
@@ -481,6 +495,7 @@ def _render_case(draft: _Draft, generation_id: UUID) -> str:
         destructive=draft.risk == "DESTRUCTIVE",
         title=json.dumps(f"{draft.tc_code} {draft.title}"),
         lines=lines,
+        fixture=draft.fixture,
     )
 
 
@@ -536,8 +551,11 @@ def _pages_for(cases: list[_Draft], states: dict[str, StateInput]) -> dict[str, 
 def _action_for(method: str, prop: str) -> dict[str, str] | None:
     pascal = _pascal(prop)
     mapping = {
-        f"fill{pascal}": ("value: string", f"await this.{prop}.fill(value);"),
-        f"click{pascal}": ("", f"await this.{prop}.click();"),
+        f"fill{pascal}": (
+            "value: string",
+            f"await this.guard(async () => {{ await this.{prop}.fill(value); }});",
+        ),
+        f"click{pascal}": ("", f"await this.guard(async () => {{ await this.{prop}.click(); }});"),
         f"waitFor{pascal}": ("", f'await this.{prop}.waitFor({{ state: "visible" }});'),
         f"expect{pascal}": ("expected: string", f"await expect(this.{prop}).toContainText(expected);"),
         f"expect{pascal}Visible": ("", f"await expect(this.{prop}).toBeVisible();"),
@@ -586,6 +604,10 @@ def _fill_expression(
         if found:
             leaf_path = found
             field_key = found
+    if source in {"wrong", "invalid-captcha", "not-an-email"} or (
+        source == "" and (case.category or "").upper() == "NEGATIVE"
+    ):
+        return json.dumps(source), None
     sensitive = bool(
         _SENSITIVE.search(element_name)
         or _SENSITIVE.search(field_key)
@@ -765,6 +787,21 @@ _SECRET_SKIP = {"node_modules", "test-results", "playwright-report", "blob-repor
 _METHOD_BLOCK = re.compile(r"\n  async (\w+)\([^)]*\) \{.*?\n  \}\n", re.S)
 _LOCATOR_LINE = re.compile(r"^  readonly (?!page\b)(\w+): Locator;$", re.M)
 _ASSIGN_LINE = re.compile(r"^    this\.(\w+) = .*;$", re.M)
+_GUARD_METHOD = """
+  async guard(action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+    } catch (error) {
+      const heading = await this.page.getByRole("heading").first().textContent().catch(() => "");
+      const extra = `Expected starting state: ${this.expectedState}\\nCurrent URL: ${this.page.url()}\\nVisible heading: ${(heading || "").trim() || "(none)"}`;
+      if (error instanceof Error) {
+        error.message = `${error.message}\\n${extra}`;
+        throw error;
+      }
+      throw error;
+    }
+  }
+"""
 
 
 def _write(path: Path, content: str) -> None:
@@ -804,6 +841,12 @@ def _augment_page(existing: str, rendered: str) -> str:
     if "export class" not in existing or "readonly page: Page;" not in existing:
         return existing
     updated = existing
+    if "expectedState" not in updated:
+        updated = updated.replace(
+            "  readonly page: Page;\n",
+            '  readonly page: Page;\n  expectedState = "AUTHENTICATED";\n',
+            1,
+        )
     for name in _LOCATOR_LINE.findall(rendered):
         if f"readonly {name}:" in updated:
             continue
@@ -826,6 +869,8 @@ def _augment_page(existing: str, rendered: str) -> str:
         if not updated.rstrip().endswith("}"):
             continue
         updated = updated.rstrip()[:-1].rstrip() + "\n" + match.group(0).strip("\n") + "\n}\n"
+    if "async guard(" not in updated and updated.rstrip().endswith("}"):
+        updated = updated.rstrip()[:-1].rstrip() + "\n" + _GUARD_METHOD.strip("\n") + "\n}\n"
     return updated
 
 
