@@ -2,6 +2,8 @@
 
 import pytest
 
+import core.agents.application_discovery.dropdowns as dropdowns
+
 from core.agents.application_discovery.crawler import CrawlBudget
 from core.agents.application_discovery.dropdowns import (
     behavior_groups,
@@ -62,7 +64,7 @@ def test_distinct_behavior_is_not_one_case_per_option():
 
 
 @pytest.mark.asyncio
-async def test_native_dropdown_selects_visible_label_instead_of_uuid_value():
+async def test_native_dropdown_refreshes_uid_and_selects_label(monkeypatch):
     class Client:
         def __init__(self):
             self.fills = []
@@ -73,14 +75,15 @@ async def test_native_dropdown_selects_visible_label_instead_of_uuid_value():
         async def wait_until_ready(self):
             pass
 
-        async def take_snapshot(self):
-            return []
-
     client = Client()
+    async def current_nodes(_client):
+        return [{"uid": "99_7", "role": "combobox", "name": "District"}]
+
+    monkeypatch.setattr(dropdowns, "_read_nodes", current_nodes)
     await _select_option(
         client,
         {"uid": "92_32", "role": "combobox", "name": "District"},
         {"label": "Akola", "value": "c593e85f-fdd6-45ba-be33-ebba03fe8171"},
         "native",
     )
-    assert client.fills == [("92_32", "Akola")]
+    assert client.fills == [("99_7", "Akola")]

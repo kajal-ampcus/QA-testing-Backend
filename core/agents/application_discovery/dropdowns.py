@@ -279,7 +279,25 @@ async def _open_and_collect(client: Any, element: dict[str, Any], limit_scrolls:
 
 
 async def _select_option(client: Any, element: dict[str, Any], option: dict[str, Any], kind: str) -> list[dict[str, Any]]:
-    uid = str(element.get("uid") or "")
+    # Selecting an option often re-renders the form. Accessibility UIDs belong
+    # to one snapshot and become invalid after that render, so resolve the same
+    # dropdown from a fresh snapshot before every option and restore action.
+    current_nodes = await _read_nodes(client)
+    key = field_key(str(element.get("role") or ""), str(element.get("name") or ""))
+    current = next(
+        (
+            node
+            for node in current_nodes
+            if field_key(str(node.get("role") or ""), str(node.get("name") or "")) == key
+            and node.get("uid")
+        ),
+        None,
+    )
+    if current is None:
+        raise RuntimeError(
+            f"Dropdown {element.get('name') or element.get('role')!r} is no longer present"
+        )
+    uid = str(current["uid"])
     label = option["label"]
     if kind == "native" and uid:
         # chrome-devtools-mcp selects native <option>s by their visible text,
