@@ -25,7 +25,7 @@ class StepTarget(BaseModel):
     element_code: str | None = Field(
         default=None,
         description=(
-            "e.g. EL-005. REQUIRED for fill/click steps and for assert steps "
+            "e.g. EL-005. REQUIRED for fill/select/click steps and for assert steps "
             "that check one specific element. Omit ONLY for navigate steps "
             "and for assert steps that check something page-level (e.g. the "
             "current URL) rather than one element."
@@ -39,7 +39,7 @@ class StepTarget(BaseModel):
 
 class TestStep(BaseModel):
     step_number: int
-    action: Literal["navigate", "fill", "click", "assert", "wait"]
+    action: Literal["navigate", "fill", "select", "click", "assert", "wait"]
     target: StepTarget = Field(
         description="Must reference observed DOM elements only. Never invent a state_code or element_code."
     )

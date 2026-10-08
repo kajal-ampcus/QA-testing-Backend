@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 from core.agents.application_discovery.crawler import CrawlBudget
+from core.agents.application_discovery.evidence import evidence_sha256
 from core.agents.application_discovery.parallel_crawler import ParallelCrawler
 from core.agents.application_discovery.schemas import DiscoveryPayload
 from core.agents.base import BaseAgent
@@ -32,6 +33,27 @@ from schemas.envelope import (
     AgentOutputEnvelope,
     AgentRunStatus,
 )
+
+
+def _screen_index(app_map: Any) -> list[dict[str, Any]]:
+    if app_map is None:
+        return []
+    graph = (app_map.coverage or {}).get("app_flow_graph") or {}
+    nodes = {
+        node.get("fingerprint"): node
+        for node in graph.get("nodes") or []
+        if isinstance(node, dict)
+    }
+    return [
+        {
+            "fingerprint": state.fingerprint,
+            "url_pattern": state.url_pattern,
+            "page_key": (nodes.get(state.fingerprint) or {}).get("functional_key") or state.url_pattern,
+            "functional_key": (nodes.get(state.fingerprint) or {}).get("functional_key") or state.url_pattern,
+            "evidence_ref": state.evidence_ref,
+        }
+        for state in app_map.states
+    ]
 
 
 def _extract_keywords(title: str, description: str, domain_tags: list[str]) -> list[str]:
@@ -249,6 +271,13 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 app_map.termination_reason = None
         self.application_map_id = app_map.id
         await self._map_repo.session.commit()
+        fresh_version = payload.start_from_scratch or payload.discovery_scope.mode == "guided"
+        if fresh_version and app_map.version > 1:
+            baseline = await self._map_repo.get_by_version(request.project_id, app_map.version - 1)
+        else:
+            baseline = await self._map_repo.get_with_states(app_map.id)
+        previous_screens = _screen_index(baseline)
+        previous_dropdowns = list((baseline.coverage or {}).get("dropdowns") or []) if baseline is not None else []
 
         automatic_limits = payload.crawl_budget.automatic_limits
         budget = CrawlBudget(
@@ -282,6 +311,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 reached_via=state["reached_via"],
                 elements=state["elements"],
                 evidence_ref=state.get("evidence_ref"),
+                evidence_sha256=evidence_sha256(state.get("evidence_ref")),
             )
             await self._map_repo.session.commit()
 
@@ -383,6 +413,8 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                     on_checkpoint=_on_checkpoint,
                     project_id=request.project_id,
                     credential_ref=payload.target.credential_ref,
+                    previous_screens=previous_screens,
+                    previous_dropdowns=previous_dropdowns,
                 )
             status = await crawler.crawl(payload.target.url, _on_state_discovered)
             coverage = crawler.coverage

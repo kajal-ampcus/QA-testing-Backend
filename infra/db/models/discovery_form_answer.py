@@ -15,9 +15,10 @@ class DiscoveryFormAnswer(Base):
     __table_args__ = (
         UniqueConstraint(
             "project_id",
+            "credential_scope",
             "page_key",
             "form_key",
-            name="uq_discovery_form_answers_project_page_form",
+            name="uq_discovery_form_answers_scope",
         ),
     )
 
@@ -27,6 +28,8 @@ class DiscoveryFormAnswer(Base):
     )
     page_key: Mapped[str] = mapped_column(String(1000), nullable=False)
     form_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    credential_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    credential_scope: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     encrypted_values: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

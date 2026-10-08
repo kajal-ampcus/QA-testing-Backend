@@ -81,6 +81,7 @@ class ApplicationMapState(Base):
     # Each item: {"role": "button", "name": "Delete Employee", "risk": "DESTRUCTIVE", "source": "OBSERVED_DOM"}
     elements: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     evidence_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    evidence_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     application_map: Mapped["ApplicationMap"] = relationship(back_populates="states")

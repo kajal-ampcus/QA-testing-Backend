@@ -60,6 +60,9 @@ class CrawlBudget:
     max_depth: int = 6
     max_duration_seconds: int = 900
     automatic_limits: bool = False
+    max_dropdown_depth: int = 2
+    max_dropdown_options: int = 8
+    max_dropdown_seconds: float = 20.0
 
 
 @dataclass
@@ -69,6 +72,8 @@ class ClickStep:
     url: str | None = None
     value: str | None = None
     occurrence: int = 0
+    field_key: str | None = None
+    sensitive: bool = False
 
 
 @dataclass
@@ -610,6 +615,11 @@ class Crawler:
 
         console_errors, network_requests, screenshot = await self._capture_debug_signals()
         all_elements = self._build_elements(classified, console_errors, network_requests)
+        overlay = getattr(self, "_dropdown_overlay", None) or []
+        if overlay:
+            from core.agents.application_discovery.dropdowns import apply_dropdown_metadata
+
+            apply_dropdown_metadata(all_elements, overlay)
 
         logger.info(
             f"[crawler] Recorded state: {state_url} ({len(classified)} elements, path depth {len(path)})"
@@ -622,8 +632,9 @@ class Crawler:
                     (
                         f"navigate(url={s.url!r},observed_link={s.name!r})"
                         if s.role == "link" and s.url
-                        else f"{('fill' if s.value is not None else 'click')}(role={s.role},name={s.name!r}"
-                        + (f",value={s.value!r}" if s.value is not None else "")
+                        else f"{('fill' if s.value is not None and not s.sensitive else 'click')}(role={s.role},name={s.name!r}"
+                        + (f",field={s.field_key!r}" if s.sensitive and s.field_key else "")
+                        + (f",value={s.value!r}" if s.value is not None and not s.sensitive else "")
                         + ")"
                     )
                     for s in path
@@ -832,13 +843,9 @@ class Crawler:
                     elif in_page or repeated:
                         self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
                         continue
-                    values = [None]
                     if role == "combobox":
-                        values = el.get("options", [])
-                        if not values:
-                            self._skipped.add(
-                                f"{urlparse(current_url).path}: combobox {name} (options unavailable)"
-                            )
+                        continue
+                    values = [None]
                     for value in values:
                         identity = destination or name or str(el.get("description") or "")
                         key = (fingerprint, role, identity, str(value), occurrence)

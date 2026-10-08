@@ -11,6 +11,11 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from core.agents.application_discovery.dropdowns import (
+    behavior_groups,
+    option_entries,
+    representative_option,
+)
 from core.agents.test_data.agent import value_for_element
 from core.agents.test_design.schemas import StepTarget, TestCaseSpec, TestStep
 
@@ -147,6 +152,24 @@ def _result_state(
     return start, 0.5
 
 
+def _dropdown_options(element: dict[str, Any]) -> list[dict[str, Any]]:
+    validation = element.get("validation") if isinstance(element.get("validation"), dict) else {}
+    raw = validation.get("options") or element.get("options")
+    return option_entries(raw)
+
+
+def _dropdown_labels(element: dict[str, Any], text: str) -> list[str]:
+    options = _dropdown_options(element)
+    if not options:
+        return []
+    groups = behavior_groups(list(element.get("dropdown_dependencies") or []))
+    distinct = [str(group.get("option") or "") for group in groups if group.get("option")]
+    if len(distinct) >= 2:
+        return distinct[:2]
+    label = representative_option(options, text)
+    return [label] if label else []
+
+
 def _fill_value(element: dict[str, Any], *, category: str) -> tuple[str, str, str]:
     datum = value_for_element(element, category)  # type: ignore[arg-type]
     return datum.key, datum.name, datum.value
@@ -191,9 +214,16 @@ def _build_case(
     start: dict[str, Any],
     states: list[dict[str, Any]],
     title: str,
+    dropdown_variant: int = 0,
 ) -> TestCaseSpec | None:
     elements = _observed(start)
     text = f"{title} {ac.get('text', '')}"
+    if dropdown_variant and not any(
+        len(_dropdown_labels(element, text)) > dropdown_variant
+        for element in elements
+        if element.get("role") == "combobox"
+    ):
+        return None
     click = _best_click(elements, text)
     fills = _relevant_fills(elements, text, click)
     if category in {"NEGATIVE", "EDGE_CASE"} and not fills:
@@ -205,6 +235,22 @@ def _build_case(
     ]
     test_data: dict[str, str] = {}
     for element in fills:
+        labels = _dropdown_labels(element, text) if element.get("role") == "combobox" else []
+        if labels and category == "NEGATIVE":
+            continue
+        if labels:
+            chosen = labels[min(dropdown_variant, len(labels) - 1)]
+            key = f"option_{element.get('element_code') or 'dropdown'}_{dropdown_variant}"
+            test_data[key] = chosen
+            steps.append(
+                TestStep(
+                    step_number=len(steps) + 1,
+                    action="select",
+                    target=_target(start, element),
+                    value=f"{{{key}}}",
+                )
+            )
+            continue
         key, _name, value = _fill_value(element, category=category)
         test_data[key] = value
         steps.append(
@@ -248,8 +294,9 @@ def _build_case(
         return None
     label = str(ac.get("text") or ac.get("id") or "scenario")
     kind = {"POSITIVE": "succeeds", "NEGATIVE": "is rejected"}.get(category, "handles boundary input")
+    variant = f" ({dropdown_variant + 1})" if dropdown_variant else ""
     return TestCaseSpec(
-        title=f"{label[:80]} {kind}",
+        title=f"{label[:70]} {kind}{variant}",
         objective=f"Verify observed UI for {ac.get('id')} ({category.lower()}).",
         category=category,  # type: ignore[arg-type]
         preconditions=[f"Browser is on {_url_path(start)}"],
@@ -287,4 +334,15 @@ def generate_cases_from_map(
             )
             if spec is not None:
                 cases.append(spec)
+            if category == "POSITIVE":
+                alternate = _build_case(
+                    ac=ac,
+                    category=category,
+                    start=start,
+                    states=states,
+                    title=requirement_title,
+                    dropdown_variant=1,
+                )
+                if alternate is not None:
+                    cases.append(alternate)
     return cases

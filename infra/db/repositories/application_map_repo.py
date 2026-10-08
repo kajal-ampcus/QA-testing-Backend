@@ -51,6 +51,7 @@ class ApplicationMapRepository(BaseRepository):
         reached_via: list[str],
         elements: list[dict[str, Any]],
         evidence_ref: str | None = None,
+        evidence_sha256: str | None = None,
     ) -> ApplicationMapState:
         state = ApplicationMapState(
             application_map_id=application_map_id,
@@ -60,6 +61,7 @@ class ApplicationMapRepository(BaseRepository):
             reached_via=reached_via,
             elements=elements,
             evidence_ref=evidence_ref,
+            evidence_sha256=evidence_sha256,
         )
         self.session.add(state)
         await self.session.flush()
@@ -145,6 +147,14 @@ class ApplicationMapRepository(BaseRepository):
         coverage[key] = sorted(set(coverage.get(key, [])) | fingerprints)
         app_map.test_generation_coverage = coverage
         await self.session.flush()
+
+    async def get_by_version(self, project_id: uuid.UUID, version: int) -> ApplicationMap | None:
+        result = await self.session.execute(
+            select(ApplicationMap)
+            .where(ApplicationMap.project_id == project_id, ApplicationMap.version == version)
+            .options(selectinload(ApplicationMap.states))
+        )
+        return result.scalar_one_or_none()
 
     async def get_with_states(self, application_map_id: uuid.UUID) -> ApplicationMap | None:
         result = await self.session.execute(

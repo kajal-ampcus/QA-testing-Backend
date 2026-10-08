@@ -29,6 +29,18 @@ _OTP_NAME = re.compile(
     r"\b(otp|one[- ]?time(?: password| code)?|passcode|mfa|2fa|authenticator|security code|verification code)\b",
     re.I,
 )
+_SESSION_SECRET_NAME = re.compile(
+    r"\b(session token|csrf|access token|refresh token|auth token|bearer token)\b",
+    re.I,
+)
+_INVALID_CREDENTIAL = re.compile(
+    r"\b(?:invalid|incorrect).{0,40}(?:email|password|credential|employee id|username)\b",
+    re.I,
+)
+
+
+class InvalidCredentialsError(RuntimeError):
+    """The saved account was rejected. Do not submit it again in this run."""
 
 
 class LoginInputRequired(Exception):
@@ -69,6 +81,24 @@ def is_otp_field(name: str) -> bool:
     return bool(_OTP_NAME.search(name))
 
 
+def is_ephemeral_field(name: str) -> bool:
+    """CAPTCHA, OTP, and session secrets are valid only for the current sign-in."""
+    return bool(
+        _CAPTCHA_NAME.search(name) or _OTP_NAME.search(name) or _SESSION_SECRET_NAME.search(name)
+    )
+
+
+def is_credential_rejection(text: str) -> bool:
+    return bool(_INVALID_CREDENTIAL.search(text))
+
+
+def should_retry_login(page_text: str, attempt: int, max_attempts: int = 3) -> bool:
+    """Wrong credentials stop immediately. A rejected CAPTCHA may be read again."""
+    if is_credential_rejection(page_text):
+        return False
+    return attempt + 1 < max_attempts
+
+
 def is_destructive_control(name: str) -> bool:
     return bool(_DESTRUCTIVE_NAME.search(name))
 
@@ -107,7 +137,12 @@ def _fillable(element: dict[str, Any]) -> bool:
 def _needs_value(element: dict[str, Any]) -> bool:
     if not _fillable(element):
         return False
+    options = element.get("options") or element.get("option_items")
+    if isinstance(options, list) and options:
+        return False
     name = str(element.get("name") or "")
+    if is_captcha_field(name):
+        return False
     return bool(element.get("required")) or is_otp_field(name)
 
 
@@ -184,8 +219,51 @@ def missing_fields(
     return [field for field in fields if not value_for_field(field, saved, secret)]
 
 
+def challenges_ready(
+    fields: list[dict[str, Any]], durable: dict[str, str], session: dict[str, str]
+) -> bool:
+    ephemeral = [field for field in fields if is_ephemeral_field(str(field.get("name") or ""))]
+    if ephemeral and not all(str(session.get(str(field.get("key") or "")) or "").strip() for field in ephemeral):
+        return False
+    reusable = [field for field in fields if field not in ephemeral]
+    if not reusable:
+        return bool(ephemeral)
+    return answers_cover(reusable, durable)
+
+
 def answers_cover(fields: list[dict[str, Any]], answers: dict[str, str]) -> bool:
-    return all(str(answers.get(str(field.get("key") or "")) or "").strip() for field in fields)
+    durable = [field for field in fields if not is_ephemeral_field(str(field.get("name") or ""))]
+    if not durable:
+        return False
+    return all(str(answers.get(str(field.get("key") or "")) or "").strip() for field in durable)
+
+
+def split_saved_values(
+    values: dict[str, str], fields: list[dict[str, Any]] | None = None
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Separate reusable answers from values that must not be kept for a later run."""
+    names = {
+        str(field.get("key") or ""): str(field.get("name") or "")
+        for field in fields or []
+        if isinstance(field, dict)
+    }
+    durable: dict[str, str] = {}
+    session: dict[str, str] = {}
+    for key, value in values.items():
+        if not isinstance(value, str) or not value.strip():
+            continue
+        label = names.get(key, key)
+        if is_ephemeral_field(label) or is_ephemeral_field(key):
+            session[key] = value.strip()
+        else:
+            durable[key] = value.strip()
+    return durable, session
+
+
+def mask_saved_value(key: str, value: str) -> str:
+    if is_password_field({"name": key}) or is_ephemeral_field(key):
+        return "••••"
+    return value
 
 
 def public_field(field: dict[str, Any]) -> dict[str, Any]:

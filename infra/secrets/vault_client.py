@@ -11,6 +11,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from dotenv import dotenv_values
 from sqlalchemy import select
 
+from core.agents.application_discovery.form_inputs import is_ephemeral_field
 from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.session import AsyncSessionLocal
 
@@ -122,7 +123,7 @@ async def merge_login_fields(
         for item in updates:
             name = str(item.get("name") or "").strip()
             value = item.get("value")
-            if not name or not isinstance(value, str) or not value:
+            if not name or not isinstance(value, str) or not value or is_ephemeral_field(name):
                 continue
             merged[name.casefold()] = {"name": name, "value": value}
             if _PASSWORD_NAME.search(name):

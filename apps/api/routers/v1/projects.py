@@ -18,6 +18,8 @@ from infra.db.models.approval import Approval
 from infra.db.models.audit_log import AuditLog
 from infra.db.models.automation import AutomationScript, AutomationVersion
 from infra.db.models.discovery_credential import DiscoveryCredential
+from infra.db.models.discovery_evidence_review import DiscoveryEvidenceReview
+from infra.db.models.discovery_form_answer import DiscoveryFormAnswer
 from infra.db.models.execution import TestResult, TestRun
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement, RequirementVersion
@@ -139,6 +141,12 @@ async def delete_project(
     await session.execute(delete(ApplicationMap).where(ApplicationMap.project_id == project_id))
     await session.execute(
         delete(DiscoveryCredential).where(DiscoveryCredential.project_id == project_id)
+    )
+    await session.execute(
+        delete(DiscoveryFormAnswer).where(DiscoveryFormAnswer.project_id == project_id)
+    )
+    await session.execute(
+        delete(DiscoveryEvidenceReview).where(DiscoveryEvidenceReview.project_id == project_id)
     )
     await session.execute(delete(AgentRun).where(AgentRun.project_id == project_id))
     await session.execute(delete(Approval).where(Approval.project_id == project_id))

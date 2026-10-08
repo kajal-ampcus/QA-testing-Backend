@@ -17,17 +17,19 @@ from fastapi.responses import FileResponse
 from pydantic import AnyHttpUrl, BaseModel, Field
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
 from core.policy_safety.environment_policy import DiscoveryTargetError, validate_discovery_target
 from domain.enums import RequirementStatus
 from infra.db.models.application_map import ApplicationMap
+from infra.db.models.discovery_evidence_review import DiscoveryEvidenceReview
 from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
+from core.agents.application_discovery.form_inputs import split_saved_values
 from infra.db.repositories.form_answer_repo import save_form_answers
 from infra.queue.broker import enqueue, get_arq_pool
 from infra.queue.discovery_lock import (
@@ -102,6 +104,7 @@ class ApplicationMapStateResponse(BaseModel):
     reached_via: list[str]
     elements: list[dict[str, Any]]
     evidence_ref: str | None = None
+    evidence_sha256: str | None = None
 
 
 class ApplicationMapResponse(BaseModel):
@@ -117,6 +120,7 @@ class ApplicationMapResponse(BaseModel):
     discovery_checkpoint: dict[str, Any] | None = None
     test_generation_coverage: dict[str, list[str]] = Field(default_factory=dict)
     project_test_generation_coverage: dict[str, list[str]] = Field(default_factory=dict)
+    reviewed_fingerprints: list[str] = Field(default_factory=list)
 
 
 async def _check_target(url: str) -> None:
@@ -433,13 +437,114 @@ async def get_latest_map(
                 reached_via=s.reached_via,
                 elements=s.elements,
                 evidence_ref=s.evidence_ref,
+                evidence_sha256=s.evidence_sha256,
             )
             for s in app_map.states
         ],
         discovery_checkpoint=app_map.discovery_checkpoint,
         test_generation_coverage=app_map.test_generation_coverage,
         project_test_generation_coverage=project_generation_coverage,
+        reviewed_fingerprints=await _reviewed_fingerprints(session, project_id),
     )
+
+
+class MapVersionState(BaseModel):
+    fingerprint: str
+    url_pattern: str
+    evidence_ref: str | None = None
+    evidence_sha256: str | None = None
+
+
+class MapVersionSummary(BaseModel):
+    id: uuid.UUID
+    version: int
+    status: str
+    states: list[MapVersionState]
+
+
+@router.get("/projects/{project_id}/versions", response_model=list[MapVersionSummary])
+async def list_map_versions(
+    project_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)
+) -> list[MapVersionSummary]:
+    repo = ApplicationMapRepository(session)
+    rows = await session.scalars(
+        select(ApplicationMap)
+        .where(ApplicationMap.project_id == project_id)
+        .order_by(ApplicationMap.version.desc())
+    )
+    versions: list[MapVersionSummary] = []
+    for app_map in rows:
+        loaded = await repo.get_with_states(app_map.id)
+        if loaded is None:
+            continue
+        versions.append(
+            MapVersionSummary(
+                id=loaded.id,
+                version=loaded.version,
+                status=loaded.status,
+                states=[
+                    MapVersionState(
+                        fingerprint=state.fingerprint,
+                        url_pattern=state.url_pattern,
+                        evidence_ref=state.evidence_ref,
+                        evidence_sha256=state.evidence_sha256,
+                    )
+                    for state in loaded.states
+                ],
+            )
+        )
+    return versions
+
+
+class ReviewBody(BaseModel):
+    fingerprint: str = Field(min_length=8, max_length=128)
+
+
+@router.get("/projects/{project_id}/screenshot-reviews")
+async def get_screenshot_reviews(
+    project_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, list[str]]:
+    return {"fingerprints": await _reviewed_fingerprints(session, project_id)}
+
+
+@router.post("/projects/{project_id}/screenshot-reviews", status_code=204)
+async def review_screenshot(
+    project_id: uuid.UUID, body: ReviewBody, session: AsyncSession = Depends(get_db_session)
+) -> None:
+    existing = await session.scalar(
+        select(DiscoveryEvidenceReview).where(
+            DiscoveryEvidenceReview.project_id == project_id,
+            DiscoveryEvidenceReview.fingerprint == body.fingerprint,
+        )
+    )
+    if existing is None:
+        session.add(
+            DiscoveryEvidenceReview(project_id=project_id, fingerprint=body.fingerprint, status="reviewed")
+        )
+        await session.commit()
+
+
+@router.delete("/projects/{project_id}/screenshot-reviews/{fingerprint}", status_code=204)
+async def unreview_screenshot(
+    project_id: uuid.UUID, fingerprint: str, session: AsyncSession = Depends(get_db_session)
+) -> None:
+    await session.execute(
+        delete(DiscoveryEvidenceReview).where(
+            DiscoveryEvidenceReview.project_id == project_id,
+            DiscoveryEvidenceReview.fingerprint == fingerprint,
+        )
+    )
+    await session.commit()
+
+
+async def _reviewed_fingerprints(session: AsyncSession, project_id: uuid.UUID) -> list[str]:
+    rows = await session.scalars(
+        select(DiscoveryEvidenceReview.fingerprint).where(
+            DiscoveryEvidenceReview.project_id == project_id,
+            DiscoveryEvidenceReview.status == "reviewed",
+        )
+    )
+    return list(rows)
 
 
 class InputFieldAnswer(BaseModel):
@@ -509,11 +614,25 @@ async def submit_input_request(
     form_key = str(target.get("form_key") or "")
     if not page_key or not form_key:
         raise HTTPException(status_code=422, detail="This form cannot be saved")
-    await save_form_answers(app_map.project_id, page_key, form_key, values)
+    durable, session_values = split_saved_values(values, list(expected.values()))
+    labels = {
+        key: str(field.get("name") or key)
+        for key, field in expected.items()
+        if isinstance(field, dict)
+    }
+    await save_form_answers(
+        app_map.project_id,
+        page_key,
+        form_key,
+        durable,
+        credential_ref=str(target.get("credential_ref") or "") or None,
+        labels=labels,
+        session_values=session_values,
+    )
     if target.get("kind") == "login" and target.get("credential_ref"):
         updates = [
             {"name": str(expected[key].get("name") or key), "value": value}
-            for key, value in values.items()
+            for key, value in durable.items()
         ]
         try:
             await merge_login_fields(str(target["credential_ref"]), app_map.project_id, updates)

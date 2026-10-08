@@ -26,6 +26,7 @@ from infra.db.models import (  # noqa: F401
     audit_log,
     automation,
     discovery_credential,
+    discovery_evidence_review,
     discovery_form_answer,
     execution,
     project,

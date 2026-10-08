@@ -8,6 +8,7 @@ core/tool_gateway/playwright_client.py, always.
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -28,9 +29,11 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from core.agents.application_discovery.form_inputs import (
+    InvalidCredentialsError,
     LoginInputRequired,
     describe_field,
     is_captcha_field,
+    is_credential_rejection,
     is_otp_field,
     is_password_field,
     login_field_names,
@@ -1030,7 +1033,9 @@ class ChromeDevToolsClient:
         image = next((block for block in content if getattr(block, "type", None) == "image"), None)
         if image is None or not getattr(image, "data", None):
             raise RuntimeError("Discovery screenshot returned no image data")
-        target.write_bytes(base64.b64decode(image.data))
+        raw = base64.b64decode(image.data)
+        target.write_bytes(raw)
+        target.with_suffix(".sha256").write_text(hashlib.sha256(raw).hexdigest(), encoding="utf-8")
         return f"/api/v1/application-maps/evidence/{target.name}"
 
     async def inspect_elements(self, snapshot: object) -> list[dict[str, Any]]:
@@ -1059,7 +1064,8 @@ class ChromeDevToolsClient:
             disabled: !!el.disabled,
             visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
             url: el.href || null,
-            options: el.options ? [...el.options].filter(o => !o.disabled).map(o => o.value) : null
+            options: el.tagName === "SELECT" && el.options ? [...el.options].filter(o => !o.disabled).map(o => (o.label || o.text || o.value || "").trim()).filter(Boolean) : null,
+            option_items: el.tagName === "SELECT" && el.options ? [...el.options].map(o => ({label: (o.label || o.text || o.value || "").trim(), value: o.value, enabled: !o.disabled})).filter(o => o.label) : null
         }))"""
         try:
             for offset in range(0, len(controls), 30):
@@ -1137,6 +1143,26 @@ class ChromeDevToolsClient:
 
     async def fill(self, element_ref: str, value: str) -> Any:
         return await self._call("fill", self._page_args(uid=element_ref, value=value))
+
+    async def scroll_open_listbox(self) -> bool:
+        """Move a virtualized list. Returns whether the scroll position changed."""
+        function = """() => {
+            const list = document.querySelector("[role='listbox'], [role='menu'], select");
+            if (!list) return false;
+            const before = list.scrollTop;
+            list.scrollTop = before + Math.max(list.clientHeight || 0, 120);
+            return list.scrollTop !== before;
+        }"""
+        try:
+            raw = await self._call(
+                "evaluate_script",
+                self._page_args(function=function, waitForStableDom=False),
+            )
+            text = _evaluate_script_text(raw).strip().lower()
+            return text in {"true", "1"}
+        except Exception:
+            logger.debug("Could not scroll an open dropdown", exc_info=True)
+            return False
 
     @staticmethod
     def _is_stale_interaction_error(error: Exception) -> bool:
@@ -2103,11 +2129,7 @@ class ChromeDevToolsClient:
                         {"textbox", "input", "spinbutton"},
                         "CAPTCHA field",
                     )
-                logger.info(
-                    "[DISCOVERY AUTH] Captcha source=%s answer=%s",
-                    source,
-                    answer,
-                )
+                logger.info("[DISCOVERY AUTH] Captcha source=%s", source)
                 submitted_answers.append(answer)
             elif _captcha_answer_required(text, captcha_uid):
                 raise RuntimeError(
@@ -2144,14 +2166,10 @@ class ChromeDevToolsClient:
                     await self._wait_for_submit_uid(submit_names)
                     break
 
-                if _login_form_visible(after) and re.search(
-                    r"\b(?:invalid|incorrect).{0,30}(?:email|password|credential|employee id)\b",
-                    after,
-                    re.I,
-                ):
-                    raise RuntimeError(
-                        "Authentication failed: wrong email or password. "
-                        "Update the credential using scripts/store_credential.py."
+                if _login_form_visible(after) and is_credential_rejection(after):
+                    raise InvalidCredentialsError(
+                        "Authentication failed: the saved username or password was rejected. "
+                        "Update the account before running discovery again."
                     )
 
         if _INCORRECT_CAPTCHA_PATTERN.search(last_page_text):

@@ -95,6 +95,68 @@ def _states() -> dict[str, StateInput]:
     }
 
 
+def test_select_step_uses_discovered_label_for_native_and_custom_controls(tmp_path) -> None:
+    ids = _ids()
+    states = _states()
+    states["STATE-001"] = StateInput(
+        state_code="STATE-001",
+        url_pattern="https://shop.example/orders",
+        elements=[
+            {
+                "element_code": "EL-010",
+                "role": "combobox",
+                "name": "Channel",
+                "risk": "SAFE",
+                "source": "OBSERVED_DOM",
+            }
+        ],
+    )
+    plan = generate_suite(
+        suite_dir=tmp_path / "suite",
+        generation_id=uuid4(),
+        project_id=ids["project_id"],
+        application_url="https://shop.example",
+        cases=[
+            _case(
+                ids,
+                title="Choose channel",
+                test_data={"option_EL-010_0": "Retail"},
+                expected_result="Welcome back",
+                steps=[
+                    {"step_number": 1, "action": "navigate", "target": {"state_code": "STATE-001"}},
+                    {
+                        "step_number": 2,
+                        "action": "select",
+                        "target": {
+                            "state_code": "STATE-001",
+                            "element_code": "EL-010",
+                            "element_name": "Channel",
+                        },
+                        "value": "{option_EL-010_0}",
+                    },
+                    {
+                        "step_number": 3,
+                        "action": "assert",
+                        "target": {
+                            "state_code": "STATE-002",
+                            "element_code": "EL-001",
+                            "element_name": "Welcome",
+                        },
+                        "expected": "Welcome back",
+                    },
+                ],
+            )
+        ],
+        states=states,
+    )
+    page = (plan.suite_dir / "pages" / "state-001.page.ts").read_text(encoding="utf-8")
+    data = (plan.suite_dir / "data" / "testdata.ts").read_text(encoding="utf-8")
+    assert "selectOption({ label: value })" in page
+    assert 'getByRole("option", { name: value, exact: true })' in page
+    assert "optionEl0100" in data
+    assert "Retail" not in data
+
+
 def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:
     ids = _ids()
     plan = generate_suite(

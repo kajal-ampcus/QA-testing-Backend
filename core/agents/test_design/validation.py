@@ -65,7 +65,7 @@ def validate_case(
                 f"not in state '{step.target.state_code}'."
             )
 
-        if step.action in {"fill", "click"} and step.target.element_code and element is None:
+        if step.action in {"fill", "select", "click"} and step.target.element_code and element is None:
             issues.append(
                 f"Step {number}: {step.action} requires an observed element."
             )
@@ -77,7 +77,7 @@ def validate_case(
                     issues.append(
                         f"Step {number}: {field} '{value}' differs from observed '{element.get(key)}'."
                     )
-            if step.action in {"fill", "click"} and (
+            if step.action in {"fill", "select", "click"} and (
                 element.get("disabled") or element.get("visible") is False
             ):
                 issues.append(
@@ -132,7 +132,7 @@ def validate_case(
                     f"Step {number}: pre-existing page text cannot prove submission succeeded; "
                     "use an observed result state."
                 )
-        elif step.action in {"click", "fill", "navigate"}:
+        elif step.action in {"click", "fill", "select", "navigate"}:
             previous_action_state = step.target.state_code
             if step.action == "click" and element:
                 submitted = bool(

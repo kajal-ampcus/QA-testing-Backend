@@ -28,6 +28,7 @@ from apps.api.routers.v1.credentials import router as credentials_router
 from apps.api.routers.v1.executions import router as executions_router
 from apps.api.routers.v1.projects import router as projects_router
 from apps.api.routers.v1.reports import router as reports_router
+from apps.api.routers.v1.saved_inputs import router as saved_inputs_router
 from apps.api.routers.v1.requirements import router as requirements_router
 from apps.api.routers.v1.test_cases import router as test_cases_router
 from apps.api.settings import ApiSettings
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(approvals_router, prefix="/api/v1")
     app.include_router(application_maps_router, prefix="/api/v1")
     app.include_router(credentials_router, prefix="/api/v1")
+    app.include_router(saved_inputs_router, prefix="/api/v1")
     app.include_router(test_cases_router, prefix="/api/v1")
     app.include_router(automation_router, prefix="/api/v1")
     app.include_router(executions_router, prefix="/api/v1")

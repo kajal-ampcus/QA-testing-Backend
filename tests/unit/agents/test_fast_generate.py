@@ -217,3 +217,48 @@ def test_edge_case_uses_boundary_values_not_negative_copy() -> None:
     assert set(by_category) == {"NEGATIVE", "EDGE_CASE"}
     assert by_category["EDGE_CASE"].test_data != by_category["NEGATIVE"].test_data
     assert validate_case(by_category["EDGE_CASE"], STATES, {"AC-1"}) == []
+
+
+def test_dropdown_metadata_creates_one_case_unless_behavior_changes() -> None:
+    options = [f"Option {index}" for index in range(10)]
+    state = {
+        "state_code": "STATE-010",
+        "url_pattern": "/form",
+        "reached_via": [],
+        "elements": [
+            {
+                "element_code": "EL-001",
+                "role": "combobox",
+                "name": "Country",
+                "source": "OBSERVED_DOM",
+                "validation": {"options": options},
+            },
+            {
+                "element_code": "EL-002",
+                "role": "button",
+                "name": "Continue",
+                "source": "OBSERVED_DOM",
+            },
+        ],
+    }
+    cases = generate_cases_from_map([{"id": "AC-9", "text": "Choose a country"}], [state], "Form")
+    selects = [
+        step
+        for case in cases
+        if case.category == "POSITIVE"
+        for step in case.steps
+        if step.action == "select"
+    ]
+    assert len([case for case in cases if case.category == "POSITIVE"]) == 1
+    assert len(selects) == 1
+    state["elements"][0]["dropdown_dependencies"] = [
+        {"option": "India", "reveals": ["textbox:state"], "navigates_to": None},
+        {"option": "Japan", "reveals": ["textbox:prefecture"], "navigates_to": None},
+    ]
+    varied = generate_cases_from_map([{"id": "AC-9", "text": "Choose a country"}], [state], "Form")
+    positive = [case for case in varied if case.category == "POSITIVE"]
+    assert len(positive) == 2
+    assert {step.value for case in positive for step in case.steps if step.action == "select"} == {
+        "{option_EL-001_0}",
+        "{option_EL-001_1}",
+    }

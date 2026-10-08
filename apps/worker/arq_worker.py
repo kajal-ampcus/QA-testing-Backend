@@ -29,8 +29,15 @@ if os.name == "nt" and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
 
 
-def prune_discovery_evidence() -> int:
-    """Delete discovery screenshots older than DISCOVERY_EVIDENCE_RETENTION_DAYS (0 keeps all)."""
+def prune_discovery_evidence(protected: set[str] | None = None) -> int:
+    """Delete unreferenced discovery screenshots older than the retention window.
+
+    Files still cited by a map, diagnostic, input request, or execution result
+    are kept. A missing protection set means the caller could not check
+    references, so nothing is deleted.
+    """
+    if protected is None:
+        return 0
     try:
         days = float(os.environ.get("DISCOVERY_EVIDENCE_RETENTION_DAYS", "30"))
     except ValueError:
@@ -44,6 +51,8 @@ def prune_discovery_evidence() -> int:
     removed = 0
     for screenshot in directory.glob("*.png"):
         try:
+            if screenshot.name in protected:
+                continue
             if screenshot.stat().st_mtime < cutoff:
                 screenshot.unlink()
                 removed += 1
@@ -52,8 +61,34 @@ def prune_discovery_evidence() -> int:
     return removed
 
 
+async def referenced_discovery_files() -> set[str] | None:
+    from sqlalchemy import select
+
+    from core.agents.application_discovery.evidence import collect_evidence_names
+    from infra.db.models.application_map import ApplicationMap, ApplicationMapState
+    from infra.db.models.execution import TestResult
+    from infra.db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as session:
+            names: set[str] = set()
+            for ref in await session.scalars(select(ApplicationMapState.evidence_ref)):
+                names |= collect_evidence_names(ref)
+            for payload in await session.scalars(select(ApplicationMap.diagnostic_evidence)):
+                names |= collect_evidence_names(payload)
+            for payload in await session.scalars(select(ApplicationMap.discovery_checkpoint)):
+                names |= collect_evidence_names(payload)
+            for payload in await session.scalars(select(TestResult.evidence)):
+                names |= collect_evidence_names(payload)
+        return names
+    except Exception:
+        logger.exception("Skipped discovery screenshot pruning because references could not be loaded")
+        return None
+
+
 async def prune_evidence_job(ctx: dict[str, Any]) -> None:
-    removed = await asyncio.to_thread(prune_discovery_evidence)
+    protected = await referenced_discovery_files()
+    removed = await asyncio.to_thread(prune_discovery_evidence, protected)
     if removed:
         logger.info("Removed %d expired discovery screenshot(s)", removed)
 

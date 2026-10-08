@@ -82,7 +82,7 @@ def prepare_execution(case: _Case, states: dict[str, _State]) -> ExecutionPlan:
     elif kind == "validation":
         steps = [step for step in steps if not _unrelated_fill(step, states, text, keep_credentials=True)]
         steps = _ensure_click(steps, start, states, _SUBMIT)
-        if not any(step.get("action") == "fill" for step in steps):
+        if not any(step.get("action") in {"fill", "select"} for step in steps):
             return _blocked(
                 starting,
                 steps,
@@ -264,7 +264,7 @@ def _exercises_auth_surface(case: _Case, states: dict[str, _State]) -> bool:
 
 def _only_opens_entry(case: _Case) -> bool:
     actions = [str(step.get("action") or "") for step in case.steps]
-    return actions.count("click") == 0 and actions.count("fill") == 0
+    return actions.count("click") == 0 and actions.count("fill") == 0 and actions.count("select") == 0
 
 
 def _credential_language(text: str) -> bool:
@@ -331,7 +331,7 @@ def _unrelated_fill(
     *,
     keep_credentials: bool,
 ) -> bool:
-    if str(step.get("action") or "") != "fill":
+    if str(step.get("action") or "") not in {"fill", "select"}:
         return False
     name = _step_name(step, states)
     credential = bool(_USERNAME.search(name) or _PASSWORD.search(name) or _CAPTCHA.search(name))

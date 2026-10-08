@@ -60,7 +60,7 @@ _RESERVED = {
     "while",
 }
 _RISK_RANK = {"SAFE": 0, "REVIEW": 1, "DESTRUCTIVE": 2}
-_SUPPORTED = {"navigate", "fill", "click", "assert", "wait"}
+_SUPPORTED = {"navigate", "fill", "select", "click", "assert", "wait"}
 
 
 @dataclass
@@ -397,7 +397,7 @@ def _plan_case(
         if action == "wait" and not element_code:
             calls.append((state_code, "waitForReady", None))
             continue
-        if action in {"click", "fill"} and not element_code:
+        if action in {"click", "fill", "select"} and not element_code:
             reasons.append(f"Step {index}: {action} requires an observed element_code.")
             continue
         if action == "assert" and not element_code:
@@ -414,11 +414,12 @@ def _plan_case(
             continue
         prop = used_props.setdefault((state_code, element_code or ""), _prop_name(decision))
         element_name = str(target.get("element_name") or decision.evidence.get("name") or "")
-        if action == "fill":
+        if action in {"fill", "select"}:
             expression, field = _fill_expression(case, index, step, element_name, leaves, forbidden)
             if field:
                 data_fields.append(field)
-            calls.append((state_code, f"fill{_pascal(prop)}", expression))
+            verb = "select" if action == "select" else "fill"
+            calls.append((state_code, f"{verb}{_pascal(prop)}", expression))
         elif action == "click":
             calls.append((state_code, f"click{_pascal(prop)}", None))
         elif action == "wait":
@@ -554,6 +555,15 @@ def _action_for(method: str, prop: str) -> dict[str, str] | None:
         f"fill{pascal}": (
             "value: string",
             f"await this.guard(async () => {{ await this.{prop}.fill(value); }});",
+        ),
+        f"select{pascal}": (
+            "value: string",
+            "await this.guard(async () => {"
+            f" const tag = await this.{prop}.evaluate((node) => node.tagName).catch(() => \"\");"
+            f" if (tag === \"SELECT\") {{ await this.{prop}.selectOption({{ label: value }}).catch(async () => {{ await this.{prop}.selectOption(value); }}); return; }}"
+            f" await this.{prop}.click();"
+            " await this.page.getByRole(\"option\", { name: value, exact: true }).click();"
+            " });",
         ),
         f"click{pascal}": ("", f"await this.guard(async () => {{ await this.{prop}.click(); }});"),
         f"waitFor{pascal}": ("", f'await this.{prop}.waitFor({{ state: "visible" }});'),
