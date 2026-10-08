@@ -689,6 +689,26 @@ def test_captcha_reading_keeps_the_agreed_alphanumeric_case():
     assert _choose_captcha_reading(["Username", "Enter Captcha"]) is None
 
 
+def test_math_image_readings_override_letter_noise():
+    assert _choose_captcha_reading(["ese", "ese", "12 + 3 = ?", "12+3=?"]) == "15"
+
+
+def test_uncertain_math_image_is_not_submitted_as_letters():
+    assert _choose_captcha_reading(["ese", "12 + 3 = ?"]) is None
+    assert _choose_captcha_reading(["12+3=?", "12+8=?", "ese"]) is None
+    assert _choose_captcha_reading(["1449", "1449", "14 + 9 = ?", "14+9=?"]) == "23"
+    assert _choose_captcha_reading(["1449", "1449"]) is None
+    assert _choose_captcha_reading(["ese", "14 + = ?"]) is None
+
+
+def test_svg_widget_math_takes_priority_over_image_ocr(monkeypatch):
+    monkeypatch.setattr(
+        "core.tool_gateway.mcp_clients.chrome_devtools_client._ocr_captcha_png",
+        lambda _png: (_ for _ in ()).throw(AssertionError("SVG glyphs must bypass OCR")),
+    )
+    assert _captcha_answer_from_reading("Enter captcha", "14 + 9 = ?", b"png") == "23"
+
+
 def test_widget_text_captcha_does_not_need_ocr(monkeypatch):
     def fail(_png):
         raise AssertionError("ocr should not run when the widget text is readable")

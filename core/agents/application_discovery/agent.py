@@ -57,6 +57,7 @@ def _login_failure_detail(actions: list[dict[str, Any]]) -> str | None:
 def _human_termination(reason: str | None) -> str:
     return {
         "EXPLORATION_EXHAUSTED": "All reachable states were discovered.",
+        "AWAITING_BRANCH_SELECTION": "Selected pages were inspected. Choose another saved path or generate tests from the observed scope.",
         "MAX_PAGES_REACHED": "Discovery stopped at the page limit. Increase max_pages to explore more.",
         "MAX_DURATION_REACHED": "Discovery stopped at the time limit. Increase max_duration_seconds.",
         "MAX_DEPTH_REACHED": "Discovery stopped at the depth limit. Increase max_depth.",
@@ -170,7 +171,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             )
             if app_map is None or app_map.project_id != request.project_id:
                 raise ValueError("Discovery checkpoint not found")
-            if app_map.status != "PARTIAL" or not app_map.discovery_checkpoint:
+            if app_map.status not in {"PARTIAL", "COMPLETE"} or not app_map.discovery_checkpoint:
                 raise ValueError("Discovery is not resumable")
             checkpoint = app_map.discovery_checkpoint
             graph = checkpoint.setdefault("graph", {})
@@ -189,7 +190,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             graph["nodes"] = list(checkpoint_nodes.values())
             app_map.status = "RUNNING"
             app_map.termination_reason = None
-        elif payload.start_from_scratch:
+        elif payload.start_from_scratch or payload.discovery_scope.mode == "guided":
             # A user-requested scratch run creates a new canonical map version
             # with no inherited nodes, graph, catalog, or checkpoint frontier.
             # The previous version remains available as history, but it cannot
@@ -282,6 +283,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
             await self._map_repo.session.commit()
 
         async def _on_checkpoint(checkpoint_value: dict[str, Any]) -> None:
+            checkpoint_value["configuration"]["credential_ref"] = payload.target.credential_ref
             await self._map_repo.set_checkpoint(app_map.id, checkpoint_value)
             await self._map_repo.session.commit()
 
@@ -359,7 +361,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                     login_url=login_url,
                     authenticate=(
                         bool(payload.target.credential_ref)
-                        and discovery_mode in {"modules", "deep", "complete", "targeted", "full"}
+                        and discovery_mode in {"guided", "modules", "deep", "complete", "targeted", "full"}
                     ),
                     worker_limit=payload.crawl_budget.worker_limit,
                     discovery_mode=discovery_mode,
@@ -373,6 +375,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                     selected_modules=saved_config.get(
                         "selected_modules", payload.discovery_scope.selected_modules
                     ),
+                    selected_branches=payload.discovery_scope.selected_branches,
                     checkpoint=checkpoint,
                     on_checkpoint=_on_checkpoint,
                 )
@@ -388,7 +391,10 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 None,
             )
             diagnostic["auth_succeeded"] = coverage.get("authenticated_explored", False)
-            diagnostic["auth_attempted"] = bool(getattr(crawler, "_authenticate", False))
+            diagnostic["auth_attempted"] = (
+                diagnostic["auth_succeeded"] if discovery_mode == "guided"
+                else bool(getattr(crawler, "_authenticate", False))
+            )
             if diagnostic["auth_attempted"] and not diagnostic["auth_succeeded"]:
                 login_error = _login_failure_detail(diagnostic["failed_actions"])
                 if login_error and not diagnostic["login_error"]:

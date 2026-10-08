@@ -51,12 +51,13 @@ class DiscoveryTriggerRequest(BaseModel):
     automatic_limits: bool = True
     discovery_mode: str = Field(
         default="entry_points",
-        pattern="^(targeted|full|entry_points|auth_flow|modules|inventory|deep|complete)$",
+        pattern="^(guided|targeted|full|entry_points|auth_flow|modules|inventory|deep|complete)$",
     )
     selected_auth_flow: str | None = Field(default=None, max_length=200)
     selected_auth_flows: list[str] = Field(default_factory=list, max_length=20)
     selected_areas: list[str] = Field(default_factory=list)
     selected_modules: list[str] = Field(default_factory=list)
+    selected_branches: list[str] = Field(default_factory=list, max_length=50)
     resume_application_map_id: uuid.UUID | None = None
     start_from_scratch: bool = False
 
@@ -207,8 +208,18 @@ async def trigger_discovery(
         )
         if resumable is None or resumable.project_id != project_id:
             raise HTTPException(status_code=404, detail="Discovery checkpoint not found")
-        if resumable.status != "PARTIAL" or not resumable.discovery_checkpoint:
+        if resumable.status not in {"PARTIAL", "COMPLETE"} or not resumable.discovery_checkpoint:
             raise HTTPException(status_code=409, detail="Discovery is not resumable")
+        saved_mode = resumable.discovery_checkpoint.get("configuration", {}).get("mode")
+        if saved_mode == "guided" and body.discovery_mode != "guided":
+            raise HTTPException(status_code=409, detail="Continue in guided mode or start a new automatic map")
+        if body.discovery_mode == "guided":
+            checkpoint = resumable.discovery_checkpoint
+            if checkpoint.get("configuration", {}).get("mode") != "guided":
+                raise HTTPException(status_code=409, detail="Start a fresh guided discovery first")
+            available = {job["key"] for job in checkpoint.get("jobs", [])}
+            if not set(body.selected_branches) <= available:
+                raise HTTPException(status_code=422, detail="Selected branch is no longer available")
         target_url = resumable.base_url
     approved_refs: list[str] = []
     for ref in body.focus_requirements:
@@ -235,6 +246,11 @@ async def trigger_discovery(
     credential_ref = await _resolve_credential(
         session, project, body.credential_ref or project.credential_ref
     )
+    if body.selected_branches and not body.resume_application_map_id:
+        raise HTTPException(status_code=422, detail="Select branches from a saved guided map")
+    if body.resume_application_map_id and body.discovery_mode == "guided":
+        if resumable.discovery_checkpoint.get("configuration", {}).get("credential_ref") != credential_ref:
+            raise HTTPException(status_code=409, detail="Use the original account for this guided map, or start from scratch")
     payload = {
         "target": {
             "url": target_url,
@@ -254,6 +270,7 @@ async def trigger_discovery(
             "selected_auth_flows": body.selected_auth_flows,
             "selected_areas": body.selected_areas,
             "selected_modules": body.selected_modules,
+            "selected_branches": body.selected_branches,
         },
         "resume_application_map_id": (
             str(body.resume_application_map_id)

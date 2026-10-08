@@ -39,6 +39,7 @@ class GenerateTestCasesRequest(BaseModel):
     generation_scope: Literal["all", "ungenerated"] = "all"
     selected_area_ids: list[str] = Field(default_factory=list)
     selected_module_ids: list[str] = Field(default_factory=list)
+    selected_branch_keys: list[str] = Field(default_factory=list, max_length=50)
 
 
 class CreateTestCaseRequest(BaseModel):
@@ -308,6 +309,7 @@ async def generate_test_cases(
             "generation_scope": body.generation_scope,
             "selected_area_ids": body.selected_area_ids,
             "selected_module_ids": body.selected_module_ids,
+            "selected_branch_keys": body.selected_branch_keys,
             **({"credential_ref": project.credential_ref} if project.credential_ref else {}),
         },
     )

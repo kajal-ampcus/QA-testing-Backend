@@ -36,6 +36,84 @@ async def record(_state):
 
 
 @pytest.mark.asyncio
+async def test_guided_persists_siblings_and_expands_only_selected_page():
+    class BranchBrowser(FakeBrowser):
+        async def navigate_page(self, url):
+            self.page = url.rsplit("/", 1)[-1] or "root"
+
+        async def take_snapshot(self):
+            children = {"root": ["products", "about"], "products": ["phones", "clothes"]}
+            url = "https://sample.test/" + ("" if self.page == "root" else self.page)
+            return [TextBlock(f'uid=1 RootWebArea "{self.page}" url="{url}"\n' + "\n".join(
+                f'uid={i + 2} link "{child}" url="https://sample.test/{child}"'
+                for i, child in enumerate(children.get(self.page, []))
+            ))]
+
+    @asynccontextmanager
+    async def browser():
+        yield BranchBrowser()
+
+    checkpoint = None
+    observed = []
+
+    async def save(state):
+        observed.append(state["url_pattern"])
+
+    async def run(selected=()):
+        nonlocal checkpoint
+        crawler = ParallelCrawler(browser, CrawlBudget(max_pages=30, max_depth=8), [],
+            login_url=None, authenticate=False, discovery_mode="guided",
+            checkpoint=checkpoint, selected_branches=list(selected))
+        await crawler.crawl("https://sample.test/", save)
+        checkpoint = crawler._checkpoint_payload()
+        return crawler
+
+    def branch(name):
+        return next(job["key"] for job in checkpoint["jobs"]
+            if job["path"] and job["path"][-1]["name"] == name)
+
+    first = await run()
+    assert observed == ["/"]
+    assert first.termination_reason == "AWAITING_BRANCH_SELECTION"
+    await run([branch("products")])
+    assert observed == ["/", "/products"]
+    await run([branch("phones")])
+    await run([branch("about")])
+    assert "/clothes" not in observed
+    await run([branch("clothes")])
+    assert observed == ["/", "/products", "/phones", "/about", "/clothes"]
+    assert len(checkpoint["graph"]["edges"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_guided_login_requires_explicit_selection():
+    SessionBrowser.logins = 0
+    first = ParallelCrawler(factory, CrawlBudget(max_pages=30, max_depth=8), [],
+        login_url="https://sample.test/login", authenticate=True, discovery_mode="guided")
+    await first.crawl("https://sample.test/login", record)
+    assert SessionBrowser.logins == 0
+    checkpoint = first._checkpoint_payload()
+    login = next(job for job in checkpoint["jobs"]
+        if job["path"] and job["path"][-1]["role"] == "authentication")
+    second = ParallelCrawler(factory, CrawlBudget(max_pages=30, max_depth=8), [],
+        login_url="https://sample.test/login", authenticate=True, discovery_mode="guided",
+        checkpoint=checkpoint, selected_branches=[login["key"]])
+    await second.crawl("https://sample.test/login", record)
+    urls = {node["url_pattern"] for node in second.coverage["app_flow_graph"]["nodes"]}
+    assert "/dashboard" in urls
+    assert "/dashboard/users" not in urls
+    assert SessionBrowser.logins == 1
+
+
+@pytest.mark.asyncio
+async def test_guided_rejects_unknown_branch_without_opening_browser():
+    crawler = ParallelCrawler(factory, CrawlBudget(), [], login_url=None,
+        authenticate=False, discovery_mode="guided", selected_branches=["invented"])
+    with pytest.raises(ValueError, match="not found"):
+        await crawler.crawl("https://sample.test/", record)
+
+
+@pytest.mark.asyncio
 async def test_full_authenticates_once_and_merges_parallel_branches():
     SessionBrowser.logins = SessionBrowser.imports = 0
     crawler = ParallelCrawler(factory, CrawlBudget(max_pages=30, max_depth=8), [],

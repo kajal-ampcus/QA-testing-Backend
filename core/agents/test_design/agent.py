@@ -122,6 +122,31 @@ def _renumber_steps(tc: TestCaseSpec) -> TestCaseSpec:
     return tc
 
 
+def _branch_fingerprints(checkpoint: dict, branch_keys: list[str]) -> set[str]:
+    """Resolve only completed branches from this map; never widen an invalid scope."""
+    from core.agents.application_discovery.crawler import ClickStep
+    from core.agents.application_discovery.parallel_crawler import ParallelCrawler
+
+    jobs = {job["key"]: job for job in checkpoint.get("jobs", [])}
+    fingerprints: set[str] = set()
+    for key in branch_keys:
+        job = jobs.get(key)
+        if not job or job.get("status") != "completed":
+            raise ValueError("Generate tests only for a completed discovery path")
+        target = job.get("result_fingerprint")
+        if not target and job.get("path"):
+            # Older guided maps predate the explicit job-to-state reference.
+            action = ParallelCrawler._action_text(ClickStep(**job["path"][-1]))
+            targets = {edge["child_fingerprint"] for edge in checkpoint.get("graph", {}).get("edges", [])
+                if edge.get("parent_fingerprint") == job.get("parent_fingerprint") and edge.get("action") == action}
+            if len(targets) == 1:
+                target = targets.pop()
+        if not target:
+            raise ValueError("Run this path again to identify its observed state before generating tests")
+        fingerprints.add(target)
+    return fingerprints
+
+
 def _states_for_generation(
     states: list[Any],
     generation_scope: str,
@@ -490,6 +515,9 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 for node in graph_nodes
                 if node.get("area_id") in selected_area_ids
             }
+        selected_branch_keys = request.payload.get("selected_branch_keys", [])
+        if selected_branch_keys:
+            selected_fingerprints = _branch_fingerprints(app_map.discovery_checkpoint or {}, selected_branch_keys)
         previously_generated: set[str] = set()
         if generation_scope == "ungenerated":
             previously_generated = await self._map_repo.generated_fingerprints(

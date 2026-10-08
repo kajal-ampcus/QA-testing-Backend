@@ -23,6 +23,7 @@ from core.agents.application_discovery.crawler import (
     _is_chrome_navigation_control,
     _is_external,
     _is_transient_widget_control,
+    _parse_elements,
     _relevance_score,
 )
 from core.agents.application_discovery.fingerprint import (
@@ -76,6 +77,7 @@ class DiscoveryJob:
     parent_fingerprint: str | None = field(compare=False, default=None)
     module_id: str | None = field(compare=False, default=None)
     force_expand: bool = field(compare=False, default=False)
+    result_fingerprint: str | None = field(compare=False, default=None)
 
 
 class ParallelCrawler:
@@ -98,6 +100,7 @@ class ParallelCrawler:
         selected_modules: list[str] | None = None,
         checkpoint: dict[str, Any] | None = None,
         on_checkpoint: OnCheckpoint | None = None,
+        selected_branches: list[str] | None = None,
     ) -> None:
         self._client_factory = client_factory
         self._budget = budget
@@ -106,6 +109,7 @@ class ParallelCrawler:
         self._authenticate = authenticate
         self._worker_limit = max(1, min(worker_limit, 5))
         self._discovery_mode = discovery_mode
+        self._selected_branches = set(selected_branches or [])
         self._selected_auth_flow = selected_auth_flow
         self._selected_auth_flows = list(
             dict.fromkeys(
@@ -189,6 +193,7 @@ class ParallelCrawler:
             "parent_fingerprint": job.parent_fingerprint,
             "module_id": job.module_id,
             "force_expand": job.force_expand,
+            "result_fingerprint": job.result_fingerprint,
         }
 
     def _deserialize_job(self, raw: dict[str, Any]) -> DiscoveryJob:
@@ -200,6 +205,7 @@ class ParallelCrawler:
             parent_fingerprint=raw.get("parent_fingerprint"),
             module_id=raw.get("module_id"),
             force_expand=bool(raw.get("force_expand")),
+            result_fingerprint=raw.get("result_fingerprint"),
         )
 
     def _restore_checkpoint(self) -> None:
@@ -524,7 +530,7 @@ class ParallelCrawler:
     def _action_in_scope(
         self, area_id: str, element: dict[str, Any], depth: int, module_id: str | None
     ) -> bool:
-        if self._discovery_mode in {"complete", "full"}:
+        if self._discovery_mode in {"guided", "complete", "full"}:
             return True
         if self._discovery_mode in {"entry_points", "inventory"}:
             return not area_id.startswith("authenticated") and depth <= 1
@@ -612,7 +618,20 @@ class ParallelCrawler:
             return False
         root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
         current_url = root.get("url") or base_url
+<<<<<<< Updated upstream
         icons = unlabeled_collection_icons(nodes)
+=======
+        if self._discovery_mode == "guided" and self._authenticate:
+            flow = self._detect_auth_flow(parent_fingerprint, {"url_pattern": current_url}, nodes, False)
+            if flow and flow["kind"] == "login":
+                auth_job = DiscoveryJob(
+                    0, next(self._sequence),
+                    path=[*path, ClickStep("authentication", "Sign in with selected account")],
+                    skip_auth=True, parent_fingerprint=parent_fingerprint,
+                )
+                if self._job_key(auth_job) not in self._job_states:
+                    await self._set_job_status(auth_job, "available")
+>>>>>>> Stashed changes
         for element in nodes:
             role, name = element.get("role", ""), element.get("name", "")
             if _is_transient_widget_control(role, name):
@@ -736,8 +755,11 @@ class ParallelCrawler:
                 )
                 if self._job_key(child_job) in self._job_states:
                     continue
-                await queue.put(child_job)
-                await self._set_job_status(child_job, "pending")
+                if self._discovery_mode == "guided":
+                    await self._set_job_status(child_job, "available")
+                else:
+                    await queue.put(child_job)
+                    await self._set_job_status(child_job, "pending")
         return True
 
     async def _run_phase(
@@ -755,7 +777,11 @@ class ParallelCrawler:
         resumable = [
             self._deserialize_job(raw)
             for raw in phase_jobs
-            if raw.get("status") in {"pending", "failed", "in_progress"}
+            if (
+                raw["key"] in self._selected_branches
+                if self._discovery_mode == "guided"
+                else raw.get("status") in {"pending", "failed", "in_progress"}
+            )
         ]
         if resumable:
             for resumable_job in resumable:
@@ -809,9 +835,27 @@ class ParallelCrawler:
                             if skip_auth:
                                 await client.navigate_page(base_url)
                                 await client.wait_until_ready()
-                                snapshot = await crawler._apply_path(
-                                    await client.take_snapshot(), job.path
-                                )
+                                snapshot = await client.take_snapshot()
+                                for step in job.path:
+                                    if self._discovery_mode == "guided" and step.role == "authentication":
+                                        await client.authenticate()
+                                        await client.wait_until_ready()
+                                        snapshot = await client.take_snapshot()
+                                        self._authenticated_workers += 1
+                                    else:
+                                        if self._discovery_mode == "guided" and step.role == "link" and step.url:
+                                            observed = _parse_elements(snapshot)
+                                            if hasattr(client, "inspect_elements"):
+                                                observed = await client.inspect_elements(snapshot)
+                                            current = next((node.get("url") for node in observed if node.get("role") == "RootWebArea"), base_url)
+                                            if not any(
+                                                node.get("role") == "link"
+                                                and node.get("url")
+                                                and urljoin(current or base_url, node["url"]) == step.url
+                                                for node in observed
+                                            ):
+                                                raise RuntimeError("Saved navigation link has changed; inspect its parent again")
+                                        snapshot = await crawler._apply_path(snapshot, [step])
                             elif self._session_state is not None:
                                 if not authenticated_here:
                                     await client.import_authenticated_session(self._session_state)
@@ -890,7 +934,7 @@ class ParallelCrawler:
                                     continue
                                 area_id = self._catalog_state(
                                     fingerprint, state or {"url_pattern": base_url},
-                                    nodes, not skip_auth, job.module_id,
+                                    nodes, not skip_auth or any(step.role == "authentication" for step in job.path), job.module_id,
                                 )
                                 if job.parent_fingerprint:
                                     self._edges.add((job.parent_fingerprint, fingerprint, action))
@@ -958,6 +1002,7 @@ class ParallelCrawler:
                                     if expansion_complete:
                                         self._expanded.add(fingerprint)
                                 await self._save_checkpoint()
+                            job.result_fingerprint = fingerprint
                             await self._set_job_status(job, "completed")
                         except asyncio.CancelledError:
                             raise
@@ -1038,7 +1083,12 @@ class ParallelCrawler:
 
     async def crawl(self, base_url: str, on_state_discovered: OnStateDiscovered) -> str:
         self._started = time.monotonic()
-        if self._discovery_mode in {"targeted", "full"}:
+        if self._discovery_mode == "guided":
+            unknown = self._selected_branches - self._job_states.keys()
+            if unknown:
+                raise ValueError("Selected discovery branch was not found in this checkpoint")
+            phases = [(base_url, True)]
+        elif self._discovery_mode in {"targeted", "full"}:
             try:
                 await asyncio.wait_for(self._bootstrap(base_url, on_state_discovered), self._budget.max_duration_seconds)
             except Exception as exc:
@@ -1069,7 +1119,21 @@ class ParallelCrawler:
                 break
             remaining = self._budget.max_duration_seconds - (time.monotonic() - self._started)
             try:
-                await asyncio.wait_for(self._run_phase(phase_url, skip_auth, on_state_discovered), max(0.001, remaining))
+                if self._discovery_mode == "guided":
+                    # Each selected path gets a fresh browser pool so an authenticated
+                    # path cannot alter the session used to replay a public sibling.
+                    selections = set(self._selected_branches)
+                    try:
+                        for selected in sorted(selections) if selections else [None]:
+                            self._selected_branches = {selected} if selected else set()
+                            remaining = self._budget.max_duration_seconds - (time.monotonic() - self._started)
+                            await asyncio.wait_for(self._run_phase(phase_url, skip_auth, on_state_discovered), max(0.001, remaining))
+                            if self._termination != "EXPLORATION_EXHAUSTED":
+                                break
+                    finally:
+                        self._selected_branches = selections
+                else:
+                    await asyncio.wait_for(self._run_phase(phase_url, skip_auth, on_state_discovered), max(0.001, remaining))
             except TimeoutError:
                 self._termination = "MAX_DURATION_REACHED"
             await self._save_checkpoint(force=True)
@@ -1087,8 +1151,8 @@ class ParallelCrawler:
             "progress": self._progress(),
             "states_discovered": len(self._seen),
             "actions_examined": self._actions_examined,
-            "actions_remaining": self._pending_at_limit + self._depth_limited,
-            "queue_exhausted": not any(job["status"] in {"pending", "failed", "in_progress"} for job in self._job_states.values()),
+            "actions_remaining": sum(job["status"] != "completed" for job in self._job_states.values()) if self._discovery_mode == "guided" else self._pending_at_limit + self._depth_limited,
+            "queue_exhausted": not any(job["status"] in {"available", "pending", "failed", "in_progress"} for job in self._job_states.values()),
             "failed_actions": self._failures,
             "skipped_actions": sorted(self._skipped),
             "authenticated_explored": self._authenticated_workers > 0,
@@ -1136,6 +1200,12 @@ class ParallelCrawler:
                 for job in self._job_states.values()
             )
             return "PARTIAL" if recoverable else "FAILED"
+        if self._discovery_mode == "guided" and any(
+            job["status"] != "completed" for job in self._job_states.values()
+        ):
+            if self._termination == "EXPLORATION_EXHAUSTED":
+                self.termination_reason = "AWAITING_BRANCH_SELECTION"
+            return "PARTIAL"
         return "COMPLETE" if self._termination == "EXPLORATION_EXHAUSTED" else "PARTIAL"
 
     async def _bootstrap(self, base_url: str, on_state_discovered: OnStateDiscovered) -> None:

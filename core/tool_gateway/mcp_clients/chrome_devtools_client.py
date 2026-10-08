@@ -482,11 +482,29 @@ def _choose_captcha_reading(readings: list[str]) -> str | None:
     A symbol that only some readings keep, such as Ab3$, is preferred over the
     same letters with that symbol dropped. Case is kept.
     """
+    # A complete equation is stronger evidence than an alphanumeric OCR
+    # fragment. Require agreement before submitting an arithmetic result.
+    equations = [raw for raw in readings if re.fullmatch(
+        r"\s*\d{1,3}\s*[+\-*/x×÷−]\s*\d{1,3}\s*=\s*\??\s*", raw
+    )]
+    if equations:
+        answers = [_solve_math_captcha(raw) for raw in equations]
+        valid = [answer for answer in answers if answer is not None]
+        if len(valid) >= 2 and len(set(valid)) == 1:
+            return str(valid[0])
+        return None
+    if any(re.search(r"\d\s*[+*/=]\s*\d|=\s*\?", raw) for raw in readings):
+        # A damaged equation must not fall back to a digit/letter fragment.
+        return None
     counts: Counter[str] = Counter()
     first_seen: dict[str, int] = {}
     for index, raw in enumerate(readings):
         token = _captcha_ocr_token(raw)
         if token is None:
+            continue
+        if token.isdigit():
+            # Without a readable challenge type, digits may be operands with
+            # their operator lost by OCR. Do not submit them as a copy-code.
             continue
         counts[token] += 1
         first_seen.setdefault(token, index)
@@ -526,6 +544,8 @@ def _ocr_captcha_png(png: bytes) -> str | None:
             image = image.resize((image.width * 3, image.height * 3), Image.Resampling.LANCZOS)
         variants = (image, ImageOps.autocontrast(image))
         configs = (
+            "--psm 7 -c tessedit_char_whitelist=0123456789+-*/x=?",
+            "--psm 6 -c tessedit_char_whitelist=0123456789+-*/x=?",
             "--psm 8 -c tessedit_char_whitelist="
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
             "--psm 7 -c tessedit_char_whitelist="
@@ -1426,6 +1446,7 @@ class ChromeDevToolsClient:
                             "input[name*='captcha' i]"
                         ].join(", "));
                         const readSvg = (svg) => {
+<<<<<<< Updated upstream
                             // A <text> node's text is the tspans joined together.
                             // Reading both turns "9 x 5" plus the next glyph "9"
                             // into the different equation "9 x 59".
@@ -1441,6 +1462,10 @@ class ChromeDevToolsClient:
                                 svg.querySelectorAll("tspan").forEach((node) => nodes.push(node));
                             }
                             nodes
+=======
+                            [...svg.querySelectorAll("text, tspan")]
+                                .filter(node => !node.querySelector("tspan"))
+>>>>>>> Stashed changes
                                 .map((node, index) => ({
                                     x: node.hasAttribute("x")
                                         ? parseFloat(node.getAttribute("x"))
@@ -1485,6 +1510,7 @@ class ChromeDevToolsClient:
                                 image = canvas.toDataURL("image/png");
                             } catch (_) {}
                         };
+<<<<<<< Updated upstream
                         const decodeSvgDataUri = (src) => {
                             if (!src || !src.startsWith("data:image/svg+xml")) return false;
                             const separator = src.indexOf(",");
@@ -1501,28 +1527,54 @@ class ChromeDevToolsClient:
                             }
                         };
                         pictures.forEach((node) => {
+=======
+                        for (const node of pictures) {
+>>>>>>> Stashed changes
                             if (node.tagName === "CANVAS") {
                                 try {
                                     image = image || node.toDataURL("image/png");
                                 } catch (_) {}
-                                return;
+                                continue;
                             }
                             const src = node.currentSrc || node.src || "";
+<<<<<<< Updated upstream
                             // An SVG math captcha is text. Painting it and OCRing the
                             // pixels misreads the equation and keeps discovery on login.
                             if (decodeSvgDataUri(src)) return;
+=======
+                            // Read the displayed SVG's glyphs before rasterizing it.
+                            // Only inline data or the existing blob is read; never
+                            // fetch a challenge endpoint that could rotate its token.
+                            try {
+                                let svgText = "";
+                                if (src.startsWith("data:image/svg+xml")) {
+                                    const comma = src.indexOf(",");
+                                    svgText = src.slice(0, comma).includes(";base64")
+                                        ? atob(src.slice(comma + 1))
+                                        : decodeURIComponent(src.slice(comma + 1));
+                                } else if (src.startsWith("blob:")) {
+                                    const response = await fetch(src, { signal: AbortSignal.timeout(2000) });
+                                    if (response.ok && /svg/i.test(response.headers.get("content-type") || "")) {
+                                        svgText = await response.text();
+                                    }
+                                }
+                                if (svgText && node.isConnected && (node.currentSrc || node.src) === src) {
+                                    readSvg(new DOMParser().parseFromString(svgText, "image/svg+xml"));
+                                }
+                            } catch (_) {}
+>>>>>>> Stashed changes
                             const inline = src.startsWith("data:image/")
                                 && !src.startsWith("data:image/svg");
                             if (inline) {
                                 image = image || src;
-                                return;
+                                continue;
                             }
                             paint(
                                 node,
                                 node.naturalWidth || node.width,
                                 node.naturalHeight || node.height
                             );
-                        });
+                        }
                         return JSON.stringify({ text: glyphs.join(" "), image });
                     }""",
                     args=[],
@@ -1973,6 +2025,12 @@ class ChromeDevToolsClient:
                         "Update the credential using scripts/store_credential.py."
                     )
 
+        if _INCORRECT_CAPTCHA_PATTERN.search(last_page_text):
+            raise RuntimeError(
+                "Authentication blocked: the application rejected the CAPTCHA after 3 attempts. "
+                "The username and password have not been verified. Use a test-environment "
+                "CAPTCHA configuration or complete verification manually before retrying."
+            )
         raise RuntimeError(
             "Authentication failed after 3 attempts — login did not leave the "
             "sign-in page. The saved account was submitted with the captcha answer "
