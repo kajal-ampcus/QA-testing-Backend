@@ -161,7 +161,14 @@ def diff_controls(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> 
 def reuse_dropdown(previous: dict[str, Any] | None, options: list[dict[str, Any]]) -> bool:
     if not previous or previous.get("inaccessible_reason"):
         return False
-    return option_signature(option_entries(previous.get("options") or [])) == option_signature(options)
+    enabled_labels = {
+        item["label"] for item in options if item.get("enabled", True)
+    }
+    explored_labels = set(previous.get("explored_options") or [])
+    return (
+        option_signature(option_entries(previous.get("options") or [])) == option_signature(options)
+        and enabled_labels <= explored_labels
+    )
 
 
 def representative_option(options: list[dict[str, Any]], text: str = "") -> str | None:
@@ -195,7 +202,11 @@ def behavior_groups(dependencies: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def sample_options(options: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     enabled = [item for item in options if item.get("enabled", True)]
-    return enabled[: max(0, limit)]
+    return enabled if limit <= 0 else enabled[:limit]
+
+
+def _within_time_limit(started: float, seconds: float) -> bool:
+    return seconds <= 0 or time.monotonic() - started <= seconds
 
 
 def _root_url(elements: list[dict[str, Any]]) -> str:
@@ -271,7 +282,10 @@ async def _select_option(client: Any, element: dict[str, Any], option: dict[str,
     uid = str(element.get("uid") or "")
     label = option["label"]
     if kind == "native" and uid:
-        await client.fill(uid, option.get("value") or label)
+        # chrome-devtools-mcp selects native <option>s by their visible text,
+        # not by the DOM value. CEP, for example, uses UUID values for district
+        # labels such as "Akola".
+        await client.fill(uid, label)
     else:
         if uid:
             await client.click(uid)
@@ -338,7 +352,7 @@ async def explore_dropdowns(
     records: list[dict[str, Any]] = []
     started = time.monotonic()
     for element in nodes:
-        if time.monotonic() - started > budget.max_dropdown_seconds:
+        if not _within_time_limit(started, budget.max_dropdown_seconds):
             logger.info("Dropdown exploration stopped at the time limit on %s", page)
             break
         kind = classify_dropdown(element)
@@ -370,6 +384,8 @@ async def explore_dropdowns(
             "options": options,
             "option_signature": signature,
             "dependencies": [],
+            "explored_options": [],
+            "failed_options": [],
             "inaccessible_reason": None if options else "options_not_readable",
             "version_status": "changed" if prior else "new",
         }
@@ -388,7 +404,7 @@ async def explore_dropdowns(
             None,
         )
         for option in sample_options(options, budget.max_dropdown_options):
-            if time.monotonic() - started > budget.max_dropdown_seconds:
+            if not _within_time_limit(started, budget.max_dropdown_seconds):
                 break
             if is_destructive_control(option["label"]):
                 continue
@@ -396,7 +412,9 @@ async def explore_dropdowns(
                 after = await _select_option(client, element, option, kind)
             except Exception:
                 logger.info("Could not select %s", option["label"], exc_info=True)
+                record["failed_options"].append(option["label"])
                 continue
+            record["explored_options"].append(option["label"])
             after_url = _root_url(after)
             change = diff_controls(before, after)
             navigates = functional_page_key(after_url, after) if meaningful_change(before, after, before_url, after_url) else None

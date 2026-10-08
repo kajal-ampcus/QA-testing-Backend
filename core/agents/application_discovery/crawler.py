@@ -61,8 +61,10 @@ class CrawlBudget:
     max_duration_seconds: int = 900
     automatic_limits: bool = False
     max_dropdown_depth: int = 2
-    max_dropdown_options: int = 8
-    max_dropdown_seconds: float = 20.0
+    # Zero means unlimited. Dropdown exploration is still bounded by the
+    # discovery run's overall duration and the selected page scope.
+    max_dropdown_options: int = 0
+    max_dropdown_seconds: float = 0.0
 
 
 @dataclass
