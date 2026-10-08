@@ -292,9 +292,24 @@ class ParallelCrawler:
         self._module_inventory_flows = set(
             self._checkpoint.get("module_inventory_flows", [])
         )
-        self._job_states = {
-            job["key"]: job for job in self._checkpoint.get("jobs", [])
-        }
+        # Older checkpoints used keys without ClickStep.occurrence. Resuming
+        # those jobs used to write completion under a new key, leaving the
+        # selected, original entry permanently available. Normalize both the
+        # saved jobs and incoming selections before any status updates.
+        aliases: dict[str, str] = {}
+        self._job_states = {}
+        for raw in self._checkpoint.get("jobs", []):
+            normalized = self._serialize_job(self._deserialize_job(raw), raw["status"])
+            key = normalized["key"]
+            aliases[raw["key"]] = key
+            existing = self._job_states.get(key)
+            # Repair duplicate legacy/current entries without losing evidence
+            # of a completed inspection. Explicit reruns still set pending.
+            if existing is None or (
+                existing["status"] != "completed" and normalized["status"] == "completed"
+            ):
+                self._job_states[key] = normalized
+        self._selected_branches = {aliases.get(key, key) for key in self._selected_branches}
         self._reveal_probed = bool(self._checkpoint.get("reveal_probed"))
         self._collection_follow_queued = bool(self._checkpoint.get("collection_follow_queued"))
         self._input_requests = {
@@ -767,11 +782,38 @@ class ParallelCrawler:
             )
             for node in nodes
         )
+        login_submit = any(
+            node.get("role") == "button"
+            and re.search(r"\b(log\s*in|sign\s*in)\b", str(node.get("name", "")), re.I)
+            for node in nodes
+        )
+        registration_submit = any(
+            node.get("role") == "button"
+            and re.search(
+                r"\b(register|sign\s*up|create\s+account)\b",
+                str(node.get("name", "")),
+                re.I,
+            )
+            for node in nodes
+        )
+        recovery_submit = any(
+            node.get("role") == "button"
+            and re.search(r"\b(reset|recover)\b", str(node.get("name", "")), re.I)
+            for node in nodes
+        )
         if not has_password and not (has_identifier and (page_auth_words or auth_submit)):
             return None
-        if re.search(r"\b(register|sign\s*up|create\s+account|confirm\s+password)\b", primary_identity, re.I):
+        # Login pages commonly contain secondary "Forgot password?" and
+        # "Register" controls. Classify from the form's submit action first,
+        # otherwise those links hide the actual login flow from guided discovery.
+        if has_password and login_submit:
+            kind = "login"
+        elif registration_submit or re.search(r"\bconfirm\s+password\b", primary_identity, re.I):
             kind = "registration"
-        elif re.search(r"\b(forgot|reset|recover)\b", primary_identity, re.I):
+        elif recovery_submit or (
+            not has_password
+            and re.search(r"\b(forgot|reset|recover)\b", primary_identity, re.I)
+        ):
             kind = "recovery"
         elif has_password or re.search(r"\b(log\s*in|sign\s*in)\b", primary_identity, re.I):
             kind = "login"
@@ -1012,6 +1054,16 @@ class ParallelCrawler:
         root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
         current_url = root.get("url") or base_url
         icons = unlabeled_collection_icons(nodes)
+        if self._discovery_mode == "guided" and self._authenticate:
+            flow = self._detect_auth_flow(parent_fingerprint, {"url_pattern": current_url}, nodes, False)
+            if flow and flow["kind"] == "login":
+                auth_job = DiscoveryJob(
+                    0, next(self._sequence),
+                    path=[*path, ClickStep("authentication", "Sign in with selected account")],
+                    skip_auth=True, parent_fingerprint=parent_fingerprint,
+                )
+                if self._job_key(auth_job) not in self._job_states:
+                    await self._set_job_status(auth_job, "available")
         for element in nodes:
             role, name = element.get("role", ""), element.get("name", "")
             if _is_transient_widget_control(role, name):

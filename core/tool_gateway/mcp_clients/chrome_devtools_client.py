@@ -1532,7 +1532,6 @@ class ChromeDevToolsClient:
                             "input[name*='captcha' i]"
                         ].join(", "));
                         const readSvg = (svg) => {
-<<<<<<< Updated upstream
                             // A <text> node's text is the tspans joined together.
                             // Reading both turns "9 x 5" plus the next glyph "9"
                             // into the different equation "9 x 59".
@@ -1548,10 +1547,6 @@ class ChromeDevToolsClient:
                                 svg.querySelectorAll("tspan").forEach((node) => nodes.push(node));
                             }
                             nodes
-=======
-                            [...svg.querySelectorAll("text, tspan")]
-                                .filter(node => !node.querySelector("tspan"))
->>>>>>> Stashed changes
                                 .map((node, index) => ({
                                     x: node.hasAttribute("x")
                                         ? parseFloat(node.getAttribute("x"))
@@ -1596,7 +1591,6 @@ class ChromeDevToolsClient:
                                 image = canvas.toDataURL("image/png");
                             } catch (_) {}
                         };
-<<<<<<< Updated upstream
                         const decodeSvgDataUri = (src) => {
                             if (!src || !src.startsWith("data:image/svg+xml")) return false;
                             const separator = src.indexOf(",");
@@ -1612,10 +1606,7 @@ class ChromeDevToolsClient:
                                 return false;
                             }
                         };
-                        pictures.forEach((node) => {
-=======
                         for (const node of pictures) {
->>>>>>> Stashed changes
                             if (node.tagName === "CANVAS") {
                                 try {
                                     image = image || node.toDataURL("image/png");
@@ -1623,22 +1614,15 @@ class ChromeDevToolsClient:
                                 continue;
                             }
                             const src = node.currentSrc || node.src || "";
-<<<<<<< Updated upstream
                             // An SVG math captcha is text. Painting it and OCRing the
                             // pixels misreads the equation and keeps discovery on login.
-                            if (decodeSvgDataUri(src)) return;
-=======
+                            if (decodeSvgDataUri(src)) continue;
                             // Read the displayed SVG's glyphs before rasterizing it.
                             // Only inline data or the existing blob is read; never
                             // fetch a challenge endpoint that could rotate its token.
                             try {
                                 let svgText = "";
-                                if (src.startsWith("data:image/svg+xml")) {
-                                    const comma = src.indexOf(",");
-                                    svgText = src.slice(0, comma).includes(";base64")
-                                        ? atob(src.slice(comma + 1))
-                                        : decodeURIComponent(src.slice(comma + 1));
-                                } else if (src.startsWith("blob:")) {
+                                if (src.startsWith("blob:")) {
                                     const response = await fetch(src, { signal: AbortSignal.timeout(2000) });
                                     if (response.ok && /svg/i.test(response.headers.get("content-type") || "")) {
                                         svgText = await response.text();
@@ -1648,7 +1632,6 @@ class ChromeDevToolsClient:
                                     readSvg(new DOMParser().parseFromString(svgText, "image/svg+xml"));
                                 }
                             } catch (_) {}
->>>>>>> Stashed changes
                             const inline = src.startsWith("data:image/")
                                 && !src.startsWith("data:image/svg");
                             if (inline) {

@@ -36,7 +36,8 @@ async def record(_state):
 
 
 @pytest.mark.asyncio
-async def test_guided_persists_siblings_and_expands_only_selected_page():
+@pytest.mark.parametrize("legacy_keys", [False, True])
+async def test_guided_persists_siblings_and_expands_only_selected_page(legacy_keys):
     class BranchBrowser(FakeBrowser):
         async def navigate_page(self, url):
             self.page = url.rsplit("/", 1)[-1] or "root"
@@ -75,7 +76,16 @@ async def test_guided_persists_siblings_and_expands_only_selected_page():
     first = await run()
     assert observed == ["/"]
     assert first.termination_reason == "AWAITING_BRANCH_SELECTION"
+    if legacy_keys:
+        for job in checkpoint["jobs"]:
+            job["key"] = job["key"].replace(":0", "")
+            for step in job["path"]:
+                step.pop("occurrence", None)
     await run([branch("products")])
+    products = [job for job in checkpoint["jobs"]
+        if job["path"] and job["path"][-1]["name"] == "products"]
+    assert len(products) == 1
+    assert products[0]["status"] == "completed"
     assert observed == ["/", "/products"]
     await run([branch("phones")])
     await run([branch("about")])
@@ -83,6 +93,31 @@ async def test_guided_persists_siblings_and_expands_only_selected_page():
     await run([branch("clothes")])
     assert observed == ["/", "/products", "/phones", "/about", "/clothes"]
     assert len(checkpoint["graph"]["edges"]) == 4
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_checkpoint_merges_legacy_duplicates_without_merging_other_routes(reverse):
+    from copy import deepcopy
+
+    original = {"key": "public|button:Contact::|expand=False", "status": "available",
+        "path": [{"role": "button", "name": "Contact"}], "skip_auth": True}
+    completed = {**deepcopy(original), "key": "public|button:Contact:::0|expand=False",
+        "status": "completed", "result_fingerprint": "contact-state"}
+    other_route = {**deepcopy(original), "key": "other-route",
+        "path": [{"role": "link", "name": "Home"}, {"role": "button", "name": "Contact"}]}
+    other_occurrence = {**deepcopy(original), "key": "other-occurrence",
+        "path": [{"role": "button", "name": "Contact", "occurrence": 1}]}
+    jobs = [original, completed, other_route, other_occurrence]
+    crawler = ParallelCrawler(factory, CrawlBudget(), [], login_url=None,
+        authenticate=False, discovery_mode="guided",
+        checkpoint={"jobs": list(reversed(jobs)) if reverse else jobs},
+        selected_branches=[original["key"]])
+    saved = crawler._checkpoint_payload()["jobs"]
+    assert len(saved) == 3
+    done = next(job for job in saved if job["status"] == "completed")
+    assert done["result_fingerprint"] == "contact-state"
+    assert crawler._selected_branches == {done["key"]}
+    assert sum(job["status"] == "available" for job in saved) == 2
 
 
 @pytest.mark.asyncio
@@ -103,6 +138,24 @@ async def test_guided_login_requires_explicit_selection():
     assert "/dashboard" in urls
     assert "/dashboard/users" not in urls
     assert SessionBrowser.logins == 1
+
+
+def test_login_form_is_not_misclassified_by_forgot_password_button():
+    crawler = ParallelCrawler(factory, CrawlBudget(), [], login_url=None,
+        authenticate=True, discovery_mode="guided")
+    nodes = [
+        {"role": "RootWebArea", "name": "Login", "url": "https://cep.example/en/login"},
+        {"role": "textbox", "name": "Username", "input_type": "text"},
+        {"role": "textbox", "name": "Password", "input_type": "password"},
+        {"role": "textbox", "name": "Enter Captcha", "input_type": "text"},
+        {"role": "button", "name": "Forgot Password?", "input_type": "button"},
+        {"role": "button", "name": "Login", "input_type": "submit"},
+    ]
+    flow = crawler._detect_auth_flow(
+        "abcdef1234567890", {"url_pattern": "/en/login"}, nodes, False
+    )
+    assert flow is not None
+    assert flow["kind"] == "login"
 
 
 @pytest.mark.asyncio
