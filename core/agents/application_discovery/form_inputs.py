@@ -10,7 +10,7 @@ import hashlib
 import re
 from typing import Any
 
-_FILLABLE_ROLES = {"textbox", "searchbox", "spinbutton", "combobox"}
+_FILLABLE_ROLES = {"textbox", "searchbox", "spinbutton", "combobox", "checkbox", "radio"}
 _SUBMIT_NAME = re.compile(
     r"\b(submit|send|save|search|continue|next|apply|update|create|add|register|sign up|log in|login|sign in|confirm)\b",
     re.I,

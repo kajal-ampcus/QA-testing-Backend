@@ -9,6 +9,7 @@ loop and should never share a code path with the exploratory tools.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -31,6 +32,29 @@ _OVERLAY_NAME = "playwright.execution.config.ts"
 _PROGRESS_NAME = "execution-progress.cjs"
 _REPORT_RELATIVE = "test-results/playwright-report.json"
 _LIVE_RESULTS_RELATIVE = "test-results/live-results.jsonl"
+
+
+def _encoded_extra_login_fields(secret: dict[str, Any]) -> str:
+    """Serialize non-primary login fields for the generated auth fixture.
+
+    The value is injected only into the runner environment/.env, never into a
+    generated spec or an agent payload.
+    """
+    fields = {
+        str(item.get("name") or "").strip(): str(item.get("value") or "")
+        for item in (secret.get("fields") or [])
+        if isinstance(item, dict)
+        and str(item.get("name") or "").strip()
+        and str(item.get("value") or "")
+        and not re.search(
+            r"\b(?:password|passphrase|username|user name|email|login)\b",
+            str(item.get("name") or ""),
+            re.I,
+        )
+    }
+    return base64.b64encode(
+        json.dumps(fields, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
 
 # Prints the test title when it starts and appends one JSON line when it ends,
 # so the Execution page can list that case before the suite process exits.
@@ -199,6 +223,8 @@ class PlaywrightClient:
         secret = await resolve_login(credential_ref, project_id)
         env["TEST_USERNAME"] = secret["username"]
         env["TEST_PASSWORD"] = secret["password"]
+        env["TEST_LOGIN_FIELDS_B64"] = _encoded_extra_login_fields(secret)
+        env["TEST_LOGIN_URL"] = str(secret.get("login_url") or "/login")
         return env
 
 
@@ -479,7 +505,7 @@ async def _run_on_headed_host(
     """Ask the desktop process to run npx playwright test with a visible browser."""
     forwarded = {
         key: env[key]
-        for key in ("BASE_URL", "TEST_USERNAME", "TEST_PASSWORD", "RUN_DESTRUCTIVE")
+        for key in ("BASE_URL", "TEST_USERNAME", "TEST_PASSWORD", "TEST_LOGIN_FIELDS_B64", "TEST_LOGIN_URL", "RUN_DESTRUCTIVE")
         if env.get(key)
     }
     payload = {

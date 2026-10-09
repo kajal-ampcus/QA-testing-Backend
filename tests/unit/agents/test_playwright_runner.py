@@ -1,3 +1,4 @@
+import base64
 import json
 import zipfile
 from pathlib import Path
@@ -10,7 +11,7 @@ from core.agents.test_execution.playwright_runner import (
     outcome_from_progress,
     parse_playwright_json,
 )
-from core.tool_gateway.playwright_client import take_result_lines
+from core.tool_gateway.playwright_client import _encoded_extra_login_fields, take_result_lines
 from domain.enums import TestResultStatus
 
 
@@ -152,3 +153,18 @@ def test_take_result_lines_waits_for_a_partial_line() -> None:
     assert cases == [{"title": "TC-001"}]
     seen, cases = take_result_lines(first + '002"}\n', seen)
     assert cases == [{"title": "TC-002"}]
+
+
+def test_extra_login_fields_are_runtime_encoded_without_primary_credentials() -> None:
+    encoded = _encoded_extra_login_fields(
+        {
+            "fields": [
+                {"name": "Tenant code", "value": "qa-tenant"},
+                {"name": "Password", "value": "not-in-extra-fields"},
+                {"name": "Email", "value": "tester@example.test"},
+            ]
+        }
+    )
+    assert json.loads(base64.b64decode(encoded)) == {
+        "Tenant code": "qa-tenant"
+    }

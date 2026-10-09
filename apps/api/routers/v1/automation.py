@@ -5,6 +5,9 @@ After the suite is written, a tester reviews it and approves it.
 Approval queues the Test Execution Agent. The worker runs npx playwright test.
 """
 
+import base64
+import json
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -109,11 +112,28 @@ async def _write_login_env(project: Project, suite_dir: Path) -> None:
     password = str(secret.get("password") or "").replace("\n", "")
     if not username or not password:
         return
+    # Discovery can collect required account fields in addition to the usual
+    # username/password pair. Keep them encrypted in the credential store and
+    # pass them to the generated login fixture only at runtime.
+    extra_fields = {
+        str(item.get("name") or "").strip(): str(item.get("value") or "")
+        for item in (secret.get("fields") or [])
+        if isinstance(item, dict)
+        and str(item.get("name") or "").strip()
+        and str(item.get("value") or "")
+        and not re.search(r"\b(?:password|passphrase|username|user name|email|login)\b", str(item.get("name") or ""), re.I)
+    }
+    encoded_fields = base64.b64encode(
+        json.dumps(extra_fields, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
     base_url = (project.application_url or "").replace("\n", "").strip()
+    login_url = str(secret.get("login_url") or "/login").replace("\n", "").strip()
     lines = [
         f"BASE_URL={base_url}",
         f"TEST_USERNAME={username}",
         f"TEST_PASSWORD={password}",
+        f"TEST_LOGIN_FIELDS_B64={encoded_fields}",
+        f"TEST_LOGIN_URL={login_url}",
         "RUN_DESTRUCTIVE=false",
         "",
     ]

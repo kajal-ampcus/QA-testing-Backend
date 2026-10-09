@@ -33,6 +33,24 @@ def test_optional_fields_and_destructive_submits_are_not_requests():
             {"role": "button", "name": "Save"},
         ]
     ) is None
+
+
+def test_required_checkbox_is_collected_with_its_input_type():
+    form = blocking_form(
+        [
+            {"role": "checkbox", "name": "Accept terms", "required": True, "input_type": "checkbox"},
+            {"role": "button", "name": "Continue"},
+        ]
+    )
+    assert form is not None
+    assert form["fields"] == [{
+        "key": "checkbox:accept terms",
+        "role": "checkbox",
+        "name": "Accept terms",
+        "input_type": "checkbox",
+        "required": True,
+        "options": None,
+    }]
     assert blocking_form(
         [
             {"role": "textbox", "name": "Reason", "required": True},

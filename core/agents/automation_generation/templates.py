@@ -385,7 +385,8 @@ async function enterApplication(page: Page): Promise<void> {
   if (!username || !password) {
     throw new Error("The discovery login is not available. Choose or edit the account on Automation, then generate again.");
   }
-  await page.goto("/login", { waitUntil: "domcontentloaded" });
+  const loginURL = process.env.TEST_LOGIN_URL?.trim() || "/login";
+  await page.goto(loginURL, { waitUntil: "domcontentloaded" });
   await waitOutCaptchaLimit(page);
   const employee = page.getByRole("button", { name: /^employee$/i });
   if (await employee.isVisible().catch(() => false)) {
@@ -401,6 +402,29 @@ async function enterApplication(page: Page): Promise<void> {
     .or(page.getByRole("textbox", { name: /password/i }))
     .first();
   await secret.fill(password);
+  // Additional required login inputs discovered for this account (such as
+  // tenant/company code) are passed as base64 JSON at runtime. They never
+  // appear in generated source or discovery checkpoints.
+  const encodedFields = process.env.TEST_LOGIN_FIELDS_B64?.trim() ?? "";
+  let extraFields: Record<string, string> = {};
+  try {
+    const parsed = JSON.parse(Buffer.from(encodedFields, "base64").toString("utf8"));
+    if (parsed && typeof parsed === "object") {
+      extraFields = Object.fromEntries(
+        Object.entries(parsed).filter(([name, value]) => typeof name === "string" && typeof value === "string" && value),
+      );
+    }
+  } catch {
+    // A missing or malformed optional value must not prevent standard login.
+  }
+  for (const [name, value] of Object.entries(extraFields)) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const field = page
+      .getByRole("textbox", { name: new RegExp(escaped, "i") })
+      .or(page.getByPlaceholder(new RegExp(escaped, "i")))
+      .first();
+    if (await field.isVisible().catch(() => false)) await field.fill(value);
+  }
   let notice = "";
   const answerBox = page
     .getByPlaceholder(/captcha|answer/i)

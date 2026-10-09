@@ -140,6 +140,37 @@ async def test_guided_login_requires_explicit_selection():
     assert SessionBrowser.logins == 1
 
 
+@pytest.mark.asyncio
+async def test_guided_login_keeps_post_login_spa_screen_distinct_from_login_route():
+    class SameRouteSessionBrowser(SessionBrowser):
+        async def take_snapshot(self):
+            snapshot = await super().take_snapshot()
+            return [TextBlock(snapshot[0].text.replace("https://sample.test/dashboard", "https://sample.test/login"))]
+
+    @asynccontextmanager
+    async def same_route_factory():
+        yield SameRouteSessionBrowser()
+
+    initial = ParallelCrawler(
+        same_route_factory, CrawlBudget(max_pages=30, max_depth=8), [],
+        login_url="https://sample.test/login", authenticate=True, discovery_mode="guided",
+    )
+    await initial.crawl("https://sample.test/login", record)
+    checkpoint = initial._checkpoint_payload()
+    login = next(job for job in checkpoint["jobs"] if job["path"] and job["path"][-1]["role"] == "authentication")
+
+    resumed = ParallelCrawler(
+        same_route_factory, CrawlBudget(max_pages=30, max_depth=8), [],
+        login_url="https://sample.test/login", authenticate=True, discovery_mode="guided",
+        checkpoint=checkpoint, selected_branches=[login["key"]],
+    )
+    await resumed.crawl("https://sample.test/login", record)
+
+    jobs = resumed._checkpoint_payload()["jobs"]
+    assert any(job["path"] and job["path"][-1]["name"] == "Users" for job in jobs)
+    assert any(job["path"] and job["path"][-1]["name"] == "Reports" for job in jobs)
+
+
 def test_login_form_is_not_misclassified_by_forgot_password_button():
     crawler = ParallelCrawler(factory, CrawlBudget(), [], login_url=None,
         authenticate=True, discovery_mode="guided")

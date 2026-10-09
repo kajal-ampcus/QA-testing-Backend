@@ -433,11 +433,13 @@ class ParallelCrawler:
             key = str(field_info.get("key") or "")
             value = answers.get(key)
             if value:
+                input_type = str(field_info.get("input_type") or "").lower()
                 path.append(
                     ClickStep(
                         str(field_info.get("role") or "textbox"),
                         str(field_info.get("name") or ""),
-                        value=value,
+                        # Checkboxes/radios are activated by clicking, not filling.
+                        value=None if input_type in {"checkbox", "radio"} else value,
                         field_key=key,
                         sensitive=True,
                     )
@@ -481,7 +483,7 @@ class ParallelCrawler:
         if self._project_id is None:
             return
         for request in list(self._input_requests.values()):
-            if request.get("kind") == "login" or request.get("status") != "submitted":
+            if request.get("status") != "submitted":
                 continue
             if bool(request.get("skip_auth")) != skip_auth:
                 continue
@@ -493,9 +495,19 @@ class ParallelCrawler:
                 str(request.get("page_key") or ""),
                 str(request.get("form_key") or ""),
                 self._credential_ref,
-                login=False,
+                login=request.get("kind") == "login",
             )
             if not answers or not answers_cover(list(request.get("fields") or []), answers):
+                continue
+            session_values = await get_session_answers(
+                self._project_id,
+                str(request.get("page_key") or ""),
+                str(request.get("form_key") or ""),
+                self._credential_ref,
+            )
+            if not challenges_ready(
+                list(request.get("fields") or []), answers, session_values or {}
+            ):
                 continue
             job = self._fill_job(request, answers)
             await queue.put(job)
@@ -1238,11 +1250,15 @@ class ParallelCrawler:
                 else raw.get("status") in {"pending", "failed", "in_progress"}
             )
         ]
+        # Submitted forms must be scheduled before workers begin consuming the
+        # queue. On a resumed run every old navigation job can be completed,
+        # which otherwise leaves no worker alive to notice the saved values.
+        await self._enqueue_answered_forms(queue, skip_auth)
         if resumable:
             for resumable_job in resumable:
                 await queue.put(resumable_job)
                 await self._set_job_status(resumable_job, "pending")
-        elif not phase_jobs:
+        elif queue.empty() and not phase_jobs:
             root_job = DiscoveryJob(0, next(self._sequence), skip_auth=skip_auth)
             await queue.put(root_job)
             await self._set_job_status(root_job, "pending")
@@ -1371,9 +1387,18 @@ class ParallelCrawler:
                             ) -> None:
                                 sink.append(state)
 
-                            recorded_path = job.path if skip_auth else [
-                                ClickStep(role="authentication", name="Log in"), *job.path
-                            ]
+                            input_request = self._input_requests.get(job.input_request_id or "")
+                            # Dynamic credentials are an authentication action,
+                            # not a browse path made of Username/Password/Login.
+                            # This keeps guided maps identical whether access was
+                            # provided before discovery or supplied when asked.
+                            recorded_path = (
+                                [ClickStep(role="authentication", name="Sign in with provided values")]
+                                if input_request and input_request.get("kind") == "login"
+                                else job.path if skip_auth else [
+                                    ClickStep(role="authentication", name="Log in"), *job.path
+                                ]
+                            )
                             # Deduplication belongs to this pool, not to an
                             # individual browser worker. Clear the legacy
                             # crawler-local cache so alternate-parent edges are
@@ -1396,6 +1421,41 @@ class ParallelCrawler:
                             root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
                             live_url = str(root.get("url") or (captured[0]["url_pattern"] if captured else base_url))
                             page_key = functional_page_key(live_url, nodes) if nodes else ""
+                            # Some SPAs retain their login URL after a successful
+                            # sign-in.  Keep the authenticated screen distinct from
+                            # the public login screen even when their route is the
+                            # same, otherwise the post-login controls are deduped
+                            # before they can be offered as discovery paths.
+                            if page_key and any(step.role == "authentication" for step in recorded_path):
+                                page_key = f"authenticated::{page_key}"
+                            # A submitted fill job must leave the form before
+                            # its result is explored.  Otherwise an invalid
+                            # login (or a client-side validation error) was
+                            # incorrectly recorded as a successful state and
+                            # the entered values were never offered again.
+                            request = input_request
+                            remaining_form = blocking_form(nodes)
+                            if (
+                                request is not None
+                                and remaining_form is not None
+                                and form_key_for(remaining_form["fields"])
+                                == str(request.get("form_key") or "")
+                            ):
+                                request["status"] = "pending"
+                                request["validation_error"] = (
+                                    "The form is still displayed after submission. "
+                                    "Check the values and submit again."
+                                )
+                                self._termination = "WAITING_FOR_INPUT"
+                                await self._set_job_status(job, "pending")
+                                await self._save_checkpoint(force=True)
+                                continue
+                            if request is not None:
+                                request["status"] = "applied"
+                                request.pop("validation_error", None)
+                                if self._project_id is not None:
+                                    with suppress(Exception):
+                                        await clear_session_answers(self._project_id)
                             if fingerprint:
                                 self._note_screen(
                                     fingerprint,
@@ -1433,7 +1493,11 @@ class ParallelCrawler:
                                     continue
                                 area_id = self._catalog_state(
                                     fingerprint, state or {"url_pattern": base_url},
-                                    nodes, not skip_auth or any(step.role == "authentication" for step in job.path), job.module_id,
+                                    nodes,
+                                    not skip_auth
+                                    or (request is not None and request.get("kind") == "login")
+                                    or any(step.role == "authentication" for step in job.path),
+                                    job.module_id,
                                 )
                                 if job.parent_fingerprint:
                                     self._edges.add((job.parent_fingerprint, fingerprint, action))
@@ -1631,7 +1695,16 @@ class ParallelCrawler:
 
     async def crawl(self, base_url: str, on_state_discovered: OnStateDiscovered) -> str:
         self._started = time.monotonic()
-        if self._project_id is not None:
+        # A submitted input request is consumed by the resumed crawl.  Clearing
+        # session-only answers here used to discard OTP/CAPTCHA values between
+        # the user submitting the discovery form and pressing Continue.
+        # They are still cleared immediately after a successful application
+        # (see _resolve_login_input), so they cannot leak into a later run.
+        has_submitted_input = any(
+            item.get("status") == "submitted"
+            for item in self._input_requests.values()
+        )
+        if self._project_id is not None and not has_submitted_input:
             with suppress(Exception):
                 await clear_session_answers(self._project_id)
         if self._discovery_mode == "guided":
@@ -1699,7 +1772,7 @@ class ParallelCrawler:
         if self._termination == "EXPLORATION_EXHAUSTED" and any(
             item.get("status") == "pending" for item in self._input_requests.values()
         ):
-            self._termination = "INPUT_REQUIRED"
+            self._termination = "WAITING_FOR_INPUT"
         await self._save_checkpoint(force=True)
         self.termination_reason = self._termination
         self.coverage = {
@@ -1792,6 +1865,11 @@ class ParallelCrawler:
                 root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
                 live_url = str(root.get("url") or state["url_pattern"])
                 page_key = functional_page_key(live_url, nodes)
+                # A successful bootstrap authentication may stay on the same
+                # client-side route.  Namespace it so it cannot collapse into
+                # the unauthenticated login page recorded immediately before it.
+                if page_key and authenticated:
+                    page_key = f"authenticated::{page_key}"
                 if page_key:
                     self._page_keys.setdefault(page_key, fingerprint)
                 self._live_view = {

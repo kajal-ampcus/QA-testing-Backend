@@ -180,6 +180,22 @@ def _authenticated_session_visible(snapshot: object) -> bool:
         for _uid, role, name in controls
     ):
         return True
+    # Do not mistake a login form with an unlabelled password input for an
+    # authenticated SPA page. This occurs after switching roles on Cafinity:
+    # the password control can temporarily lose its accessible name, but the
+    # LOGIN button and two form inputs are still present.
+    login_button = _find_submit_uid(
+        controls, ["log in", "login", "sign in", "signin", "submit"]
+    )
+    form_inputs = [
+        name
+        for _uid, role, name in controls
+        if role in {"textbox", "input", "combobox", "searchbox"}
+        and not is_captcha_field(name)
+        and not is_otp_field(name)
+    ]
+    if login_button and len(form_inputs) >= 2:
+        return False
     if any(
         role in {"heading", "StaticText"}
         and re.search(r"\b(?:welcome back|good (?:morning|afternoon|evening))\b", name, re.I)
@@ -187,6 +203,25 @@ def _authenticated_session_visible(snapshot: object) -> bool:
     ):
         return True
     return bool(controls) and not _login_form_visible(snapshot)
+
+
+def _password_uid(
+    controls: list[tuple[str, str, str]], username_uid: str, names: list[str]
+) -> str | None:
+    """Find a password field even when a role switch briefly drops its label."""
+    found = _find_uid(controls, names, {"textbox", "input"})
+    if found:
+        return found
+    candidates = [
+        uid
+        for uid, role, name in controls
+        if role in {"textbox", "input"}
+        and uid != username_uid
+        and not is_captcha_field(name)
+        and not is_otp_field(name)
+        and not re.search(r"\b(?:answer|verification|code)\b", name, re.I)
+    ]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _term_in_label(term: str, label: str) -> bool:
@@ -1746,6 +1781,7 @@ class ChromeDevToolsClient:
         )
         if not role_uid:
             return controls
+        logger.info("[DISCOVERY AUTH] Selecting login role=%s", role_name)
         await self._click_authentication_control(
             role_uid,
             role_names,
@@ -1905,11 +1941,7 @@ class ChromeDevToolsClient:
                 "your password",
                 "current password",
             ]
-            password_uid = _find_uid(
-                controls,
-                password_names,
-                {"textbox", "input"},
-            )
+            password_uid = _password_uid(controls, username_uid or "", password_names)
             submit_names = [
                 secret.get("submit_selector", ""),
                 # Common submit button names across websites

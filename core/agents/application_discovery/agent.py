@@ -85,7 +85,7 @@ def _human_termination(reason: str | None) -> str:
         "MAX_DEPTH_REACHED": "Discovery stopped at the depth limit. Increase max_depth.",
         "ACTION_FAILURES": "Some navigation actions failed. See failed_actions in coverage for details.",
         "UNEXPLORED_ACTIONS": "Some actions were skipped (destructive or form submissions).",
-        "INPUT_REQUIRED": (
+        "WAITING_FOR_INPUT": (
             "Discovery found fields it cannot fill. Enter the requested values, then continue."
         ),
         "AUTHENTICATION_FAILED": "The crawler could not log in. Check credentials and login selectors.",
@@ -499,9 +499,9 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 )
 
         termination_reason = getattr(crawler, "termination_reason", None)
-        if termination_reason == "INPUT_REQUIRED":
+        if termination_reason == "WAITING_FOR_INPUT":
             diagnostic["login_error"] = None
-            diagnostic["termination_detail"] = _human_termination("INPUT_REQUIRED")
+            diagnostic["termination_detail"] = _human_termination("WAITING_FOR_INPUT")
         if status == "FAILED" and error_message is None and crawler is not None:
             failures = crawler.coverage.get("failed_actions", [])
             if failures:

@@ -141,7 +141,10 @@ async def _resolve_credential(
     A discover request that still carries the retired id follows the project's
     current default instead of failing.
     """
-    requested = credential_ref or project.credential_ref
+    # Discovery now collects access values from the live application.  A
+    # project default remains available to Automation, but is not silently
+    # injected into a discovery run.
+    requested = credential_ref
     if not requested:
         return None
 
@@ -559,6 +562,7 @@ class SubmitInputRequestBody(BaseModel):
 class SubmitInputRequestResponse(BaseModel):
     id: str
     status: str
+    job_id: str | None = None
 
 
 @router.post(
@@ -584,7 +588,7 @@ async def submit_input_request(
     target = next((item for item in requests if item.get("id") == request_id), None)
     if target is None:
         raise HTTPException(status_code=404, detail="Discovery input request not found")
-    if target.get("status") == "applied":
+    if target.get("status") in {"submitted", "applied"}:
         raise HTTPException(status_code=409, detail="This form was already submitted")
     expected = {
         str(field["key"]): field
@@ -642,4 +646,35 @@ async def submit_input_request(
     checkpoint["input_requests"] = requests
     app_map.discovery_checkpoint = checkpoint
     await session.commit()
-    return SubmitInputRequestResponse(id=request_id, status="submitted")
+    configuration = dict(checkpoint.get("configuration") or {})
+    payload = {
+        "target": {
+            "url": app_map.base_url,
+            "credential_ref": configuration.get("credential_ref"),
+        },
+        "focus_requirements": [],
+        "crawl_budget": {
+            "max_pages": configuration.get("max_pages", 150),
+            "max_depth": configuration.get("max_depth", 6),
+            "max_duration_seconds": configuration.get("max_duration_seconds", 900),
+            "worker_limit": configuration.get("worker_limit", 3),
+            "automatic_limits": configuration.get("automatic_limits", True),
+        },
+        "discovery_scope": {
+            "mode": configuration.get("mode", "complete"),
+            "selected_auth_flow": configuration.get("selected_auth_flow"),
+            "selected_auth_flows": configuration.get("selected_auth_flows", []),
+            "selected_areas": configuration.get("selected_areas", []),
+            "selected_modules": configuration.get("selected_modules", []),
+            "selected_branches": [],
+        },
+        "resume_application_map_id": str(app_map.id),
+        "start_from_scratch": False,
+    }
+    claimed_job_id = await _claim_discovery_slot(app_map.project_id)
+    try:
+        job_id = await enqueue("run_discovery", str(app_map.project_id), payload, job_id=claimed_job_id)
+    except (*_REDIS_ERRORS, RuntimeError) as exc:
+        await _release_discovery_slot(app_map.project_id, claimed_job_id)
+        raise HTTPException(status_code=503, detail="Discovery queue is unavailable") from exc
+    return SubmitInputRequestResponse(id=request_id, status="submitted", job_id=job_id)
