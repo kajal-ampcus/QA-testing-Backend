@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import uuid
+from copy import deepcopy
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal
@@ -22,6 +23,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
+from core.agents.application_discovery.account_scope import select_account_checkpoint
 from core.policy_safety.environment_policy import DiscoveryTargetError, validate_discovery_target
 from domain.enums import RequirementStatus
 from infra.db.models.application_map import ApplicationMap
@@ -270,9 +272,9 @@ async def trigger_discovery(
     credential_ref = await _resolve_credential(session, project, requested_ref)
     if body.selected_branches and not body.resume_application_map_id:
         raise HTTPException(status_code=422, detail="Select branches from a saved guided map")
-    if body.resume_application_map_id and body.discovery_mode == "guided":
-        if resumable.discovery_checkpoint.get("configuration", {}).get("credential_ref") != credential_ref:
-            raise HTTPException(status_code=409, detail="Use the original account for this guided map, or start from scratch")
+    switching_account = bool(body.resume_application_map_id) and (
+        resumable.discovery_checkpoint.get("configuration", {}).get("credential_ref") != credential_ref
+    )
     payload = {
         "target": {
             "url": target_url,
@@ -292,7 +294,7 @@ async def trigger_discovery(
             "selected_auth_flows": body.selected_auth_flows,
             "selected_areas": body.selected_areas,
             "selected_modules": body.selected_modules,
-            "selected_branches": body.selected_branches,
+            "selected_branches": [] if switching_account else body.selected_branches,
         },
         "resume_application_map_id": (
             str(body.resume_application_map_id)
@@ -670,18 +672,24 @@ async def submit_input_request(
         raise HTTPException(status_code=404, detail="Discovery input request not found")
     if getattr(app_map, "status", None) == "RUNNING" and target.get("kind") in {"login", "login_choice"}:
         raise HTTPException(409, "Wait for discovery to pause before submitting login input")
-    if target.get("status") in {"submitted", "applied"}:
+    if target.get("status") in {"submitted", "applied"} and target.get("kind") != "login_choice":
         raise HTTPException(status_code=409, detail="This form was already submitted")
     if target.get("kind") == "login_choice":
         choice = next((item for item in target.get("choices", []) if item["id"] == body.choice_id), None)
         if choice is None:
             raise HTTPException(422, "Select an observed login option")
+        # Reopen an observed role from a fresh public browser, retaining the
+        # authenticated account's frontier and the cumulative map evidence.
+        target = deepcopy(target)
+        checkpoint = select_account_checkpoint(checkpoint, None)
+        requests = [item for item in checkpoint.get("input_requests", []) if item.get("id") != request_id]
+        requests.append(target)
         raw = _input_navigation_job(checkpoint, [*target.get("navigation_path", []), choice["step"]])
         target.update(status="applied", selected_choice=choice, selected_path=raw["path"])
         checkpoint["input_requests"] = requests
         app_map.discovery_checkpoint = checkpoint
         await session.commit()
-        return SubmitInputRequestResponse(id=request_id, status="applied", selected_branches=[raw["key"]])
+        return SubmitInputRequestResponse(id=request_id, status="applied", selected_branches=[raw["key"]], credential_ref=None)
     expected = {
         str(field["key"]): field
         for field in target.get("fields") or []

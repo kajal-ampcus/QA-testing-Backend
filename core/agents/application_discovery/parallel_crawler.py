@@ -352,6 +352,7 @@ class ParallelCrawler:
         jobs = list(self._job_states.values())
         return {
             "version": 1,
+            "account_contexts": self._checkpoint.get("account_contexts", {}),
             "progress": self._progress(),
             "live_view": self._live_view,
             "configuration": {
@@ -1548,6 +1549,11 @@ class ParallelCrawler:
                                     self._dropdowns.extend(found)
                                     crawler._dropdown_overlay = found  # type: ignore[attr-defined]
                             fingerprint, nodes = await crawler._record_state(snapshot, recorded_path, capture)
+                            authenticated_state = any(step.role == "authentication" for step in recorded_path)
+                            if authenticated_state and fingerprint and self._credential_ref:
+                                fingerprint = hashlib.sha256(f"{self._credential_ref}:{fingerprint}".encode()).hexdigest()
+                                for state in captured:
+                                    state["fingerprint"] = fingerprint
                             browser_failure = _browser_navigation_failure(snapshot)
                             root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
                             live_url = str(root.get("url") or (captured[0]["url_pattern"] if captured else base_url))
@@ -1558,7 +1564,7 @@ class ParallelCrawler:
                             # same, otherwise the post-login controls are deduped
                             # before they can be offered as discovery paths.
                             if page_key and any(step.role == "authentication" for step in recorded_path):
-                                page_key = f"authenticated::{page_key}"
+                                page_key = f"authenticated::{self._credential_ref or 'public'}::{page_key}"
                             # A submitted fill job must leave the form before
                             # its result is explored.  Otherwise an invalid
                             # login (or a client-side validation error) was
@@ -2006,6 +2012,9 @@ class ParallelCrawler:
                 if not fingerprint or not captured:
                     raise RuntimeError("Entry page has no observable state")
                 state = captured[0]
+                if authenticated and self._credential_ref:
+                    fingerprint = hashlib.sha256(f"{self._credential_ref}:{fingerprint}".encode()).hexdigest()
+                    state["fingerprint"] = fingerprint
                 if parent:
                     history.append(action)
                 state["reached_via"] = list(history)
@@ -2017,7 +2026,7 @@ class ParallelCrawler:
                 # client-side route.  Namespace it so it cannot collapse into
                 # the unauthenticated login page recorded immediately before it.
                 if page_key and authenticated:
-                    page_key = f"authenticated::{page_key}"
+                    page_key = f"authenticated::{self._credential_ref or 'public'}::{page_key}"
                 if page_key:
                     self._page_keys.setdefault(page_key, fingerprint)
                 self._live_view = {

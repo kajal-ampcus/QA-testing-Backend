@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 from core.agents.application_discovery.crawler import CrawlBudget
+from core.agents.application_discovery.account_scope import select_account_checkpoint
 from core.agents.application_discovery.evidence import evidence_sha256
 from core.agents.application_discovery.parallel_crawler import ParallelCrawler
 from core.agents.application_discovery.schemas import DiscoveryPayload
@@ -202,7 +203,7 @@ class ApplicationDiscoveryAgent(BaseAgent[AgentOutputEnvelope]):
                 raise ValueError("Discovery checkpoint not found")
             if app_map.status not in {"PARTIAL", "COMPLETE"} or not app_map.discovery_checkpoint:
                 raise ValueError("Discovery is not resumable")
-            checkpoint = app_map.discovery_checkpoint
+            checkpoint = select_account_checkpoint(app_map.discovery_checkpoint, payload.target.credential_ref)
             graph = checkpoint.setdefault("graph", {})
             checkpoint_nodes = {
                 node["fingerprint"]: node for node in graph.setdefault("nodes", [])
