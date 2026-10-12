@@ -29,7 +29,11 @@ from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
-from core.agents.application_discovery.form_inputs import split_saved_values
+from core.agents.application_discovery.form_inputs import (
+    is_password_field,
+    is_username_field,
+    split_saved_values,
+)
 from infra.db.repositories.form_answer_repo import save_form_answers
 from infra.queue.broker import enqueue, get_arq_pool
 from infra.queue.discovery_lock import (
@@ -38,7 +42,7 @@ from infra.queue.discovery_lock import (
     clear_inactive_discovery,
     release_discovery,
 )
-from infra.secrets.vault_client import merge_login_fields
+from infra.secrets.vault_client import encrypt_login_secret, merge_login_fields
 
 _REDIS_ERRORS = (RedisConnectionError, RedisTimeoutError, OSError)
 
@@ -565,6 +569,50 @@ class SubmitInputRequestResponse(BaseModel):
     job_id: str | None = None
 
 
+def _credential_from_login_form(
+    project_id: uuid.UUID,
+    fields: dict[str, dict[str, Any]],
+    values: dict[str, str],
+    *,
+    login_url: str,
+) -> DiscoveryCredential | None:
+    """Turn live login answers into an opaque browser-only account reference.
+
+    The values have already been validated against the observed form.  Only a
+    username/password pair can become a reusable Application Access account;
+    OTP and other ephemeral answers remain in the encrypted input store only.
+    """
+    username = next(
+        (values[key] for key, field in fields.items() if key in values and is_username_field(field)),
+        None,
+    )
+    password = next(
+        (values[key] for key, field in fields.items() if key in values and is_password_field(field)),
+        None,
+    )
+    if not username or not password:
+        return None
+    named_fields = [
+        {"name": str(fields[key].get("name") or key), "value": value}
+        for key, value in values.items()
+        if key in fields
+    ]
+    return DiscoveryCredential(
+        project_id=project_id,
+        credential_ref=f"cred:{uuid.uuid4()}",
+        label="Discovery-provided account",
+        role="User",
+        encrypted_secret=encrypt_login_secret(
+            {
+                "username": username,
+                "password": password,
+                "login_url": login_url,
+                "fields": named_fields,
+            }
+        ),
+    )
+
+
 @router.post(
     "/{application_map_id}/input-requests/{request_id}",
     response_model=SubmitInputRequestResponse,
@@ -624,29 +672,59 @@ async def submit_input_request(
         for key, field in expected.items()
         if isinstance(field, dict)
     }
+    credential_ref = str(target.get("credential_ref") or "") or None
+    created_credential: DiscoveryCredential | None = None
+    if target.get("kind") == "login" and credential_ref is None:
+        try:
+            created_credential = _credential_from_login_form(
+                app_map.project_id,
+                expected,
+                durable,
+                login_url=str(target.get("page_url") or app_map.base_url),
+            )
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Credential encryption is not configured. Configure CREDENTIAL_ENCRYPTION_KEY on the backend.",
+            ) from exc
+        if created_credential is not None:
+            session.add(created_credential)
+            credential_ref = created_credential.credential_ref
+            # A project with no preconfigured account should use the account
+            # just supplied during discovery on subsequent runs as well.
+            project = await session.get(Project, app_map.project_id)
+            if project is not None and project.credential_ref is None:
+                project.credential_ref = credential_ref
+
     await save_form_answers(
         app_map.project_id,
         page_key,
         form_key,
         durable,
-        credential_ref=str(target.get("credential_ref") or "") or None,
+        credential_ref=credential_ref,
         labels=labels,
         session_values=session_values,
     )
-    if target.get("kind") == "login" and target.get("credential_ref"):
+    if target.get("kind") == "login" and credential_ref and not created_credential:
         updates = [
             {"name": str(expected[key].get("name") or key), "value": value}
             for key, value in durable.items()
         ]
         try:
-            await merge_login_fields(str(target["credential_ref"]), app_map.project_id, updates)
+            await merge_login_fields(credential_ref, app_map.project_id, updates)
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     target["status"] = "submitted"
     checkpoint["input_requests"] = requests
+    configuration = dict(checkpoint.get("configuration") or {})
+    if created_credential is not None:
+        # The crawler receives only this opaque reference.  The submitted
+        # username/password never enter its checkpoint or job payload.
+        configuration["credential_ref"] = credential_ref
+        target["credential_ref"] = credential_ref
+    checkpoint["configuration"] = configuration
     app_map.discovery_checkpoint = checkpoint
     await session.commit()
-    configuration = dict(checkpoint.get("configuration") or {})
     payload = {
         "target": {
             "url": app_map.base_url,

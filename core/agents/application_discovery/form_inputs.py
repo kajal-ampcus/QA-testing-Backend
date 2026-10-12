@@ -73,6 +73,11 @@ def is_password_field(element: dict[str, Any]) -> bool:
     return bool(_PASSWORD_NAME.search(str(element.get("name") or "")))
 
 
+def is_username_field(element: dict[str, Any]) -> bool:
+    """Whether an observed field can supply the account identifier."""
+    return bool(_USERNAME_NAME.search(str(element.get("name") or "")))
+
+
 def is_captcha_field(name: str) -> bool:
     return bool(_CAPTCHA_NAME.search(name))
 
@@ -208,7 +213,7 @@ def value_for_field(field: dict[str, Any], saved: dict[str, str], secret: dict[s
         return None
     if is_password_field(field) and isinstance(secret.get("password"), str):
         return secret["password"]
-    if _USERNAME_NAME.search(name) and isinstance(secret.get("username"), str):
+    if is_username_field(field) and isinstance(secret.get("username"), str):
         return secret["username"]
     return None
 

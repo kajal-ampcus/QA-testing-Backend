@@ -36,6 +36,70 @@ async def record(_state):
 
 
 @pytest.mark.asyncio
+async def test_guided_late_credentials_offer_same_branches_as_preconfigured(monkeypatch):
+    import uuid
+    from copy import deepcopy
+    from core.agents.application_discovery import parallel_crawler as module
+
+    class LoginBrowser(SessionBrowser):
+        async def take_snapshot(self):
+            snapshot = await super().take_snapshot()
+            if self.page == "root":
+                return [TextBlock(snapshot[0].text.replace('textbox "Username"', 'textbox "Username" required')
+                    .replace('textbox "Password"', 'textbox "Password" required')
+                    + '\nuid=1_4 link "Home" url="https://sample.test/"')]
+            return snapshot
+
+    @asynccontextmanager
+    async def browser():
+        yield LoginBrowser()
+
+    async def no_answers(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(module, "get_form_answers", no_answers)
+    monkeypatch.setattr(module, "clear_session_answers", no_answers)
+    project_id = uuid.uuid4()
+    options = dict(login_url="https://sample.test/login", discovery_mode="guided",
+        project_id=project_id, worker_limit=1)
+    budget = CrawlBudget(max_pages=30, max_depth=8)
+    early = ParallelCrawler(browser, budget, [], authenticate=True, credential_ref="cred:late", **options)
+    await early.crawl("https://sample.test/login", record)
+
+    first = ParallelCrawler(browser, budget, [], authenticate=False, **options)
+    await first.crawl("https://sample.test/login", record)
+    checkpoint = deepcopy(first._checkpoint_payload())
+    assert first.termination_reason == "WAITING_FOR_INPUT"
+    request = checkpoint["input_requests"][0]
+    request["status"] = "submitted"
+    request["credential_ref"] = "cred:late"
+    LoginBrowser.logins = 0
+    resumed = ParallelCrawler(browser, budget, [], authenticate=True, credential_ref="cred:late",
+        checkpoint=checkpoint, **options)
+    await resumed.crawl("https://sample.test/login", record)
+
+    def choices(crawler):
+        return {(job["path"][-1]["role"], job["path"][-1]["name"])
+            for job in crawler._checkpoint_payload()["jobs"]
+            if job["status"] == "available" and job["path"]}
+
+    assert choices(resumed) == choices(early)
+    assert ("authentication", "Sign in with selected account") in choices(resumed)
+    assert ("link", "Home") in choices(resumed)
+    assert LoginBrowser.logins == 0
+    assert resumed.termination_reason == "AWAITING_BRANCH_SELECTION"
+    checkpoint = resumed._checkpoint_payload()
+    sign_in = next(job for job in checkpoint["jobs"] if job["path"]
+        and job["path"][-1]["name"] == "Sign in with selected account")
+    after = ParallelCrawler(browser, budget, [], authenticate=True, credential_ref="cred:late",
+        checkpoint=checkpoint, selected_branches=[sign_in["key"]], **options)
+    await after.crawl("https://sample.test/login", record)
+    assert LoginBrowser.logins == 1
+    assert "/dashboard" in {node["url_pattern"] for node in after.coverage["app_flow_graph"]["nodes"]}
+    assert not any(step.get("sensitive") for job in checkpoint["jobs"] for step in job["path"])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("legacy_keys", [False, True])
 async def test_guided_persists_siblings_and_expands_only_selected_page(legacy_keys):
     class BranchBrowser(FakeBrowser):

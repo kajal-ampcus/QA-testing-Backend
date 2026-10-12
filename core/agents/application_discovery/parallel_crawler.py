@@ -488,6 +488,49 @@ class ParallelCrawler:
             if bool(request.get("skip_auth")) != skip_auth:
                 continue
             request_id = str(request.get("id") or "")
+            if (
+                request_id
+                and self._discovery_mode == "guided"
+                and self._authenticate
+                and self._credential_ref
+                and request.get("kind") == "login"
+                and skip_auth
+                and not any(step.get("role") == "authentication" for step in request.get("navigation_path") or [])
+            ):
+                # An account supplied on a public login page must expose the
+                # same choices as a preconfigured account. Reinspect that page
+                # without submitting it; authentication remains user-selected.
+                navigation = list(request.get("navigation_path") or [])
+                submit = request.get("submit") or {}
+                parent_fingerprint = None
+                for key, raw in list(self._job_states.items()):
+                    path = raw.get("path") or []
+                    if path == navigation and bool(raw.get("skip_auth")) == skip_auth:
+                        parent_fingerprint = raw.get("parent_fingerprint") or parent_fingerprint
+                        self._job_states.pop(key)
+                        self._selected_branches.discard(key)
+                        continue
+                    suffix = path[len(navigation):] if path[:len(navigation)] == navigation else []
+                    obsolete = raw.get("input_request_id") == request_id or (
+                        suffix and (
+                            any(step.get("sensitive") for step in suffix)
+                            or (len(suffix) == 1 and suffix[0].get("role") == submit.get("role")
+                                and suffix[0].get("name") == submit.get("name"))
+                        )
+                    )
+                    if obsolete:
+                        self._job_states.pop(key)
+                        self._selected_branches.discard(key)
+                job = DiscoveryJob(
+                    -1, next(self._sequence),
+                    path=[ClickStep(**step) for step in navigation],
+                    skip_auth=True, force_expand=True, parent_fingerprint=parent_fingerprint,
+                )
+                request["status"] = "applied"
+                request.pop("validation_error", None)
+                await queue.put(job)
+                await self._set_job_status(job, "pending")
+                continue
             if not request_id or self._fill_already_queued(request_id):
                 continue
             answers = await get_form_answers(
@@ -1236,6 +1279,9 @@ class ParallelCrawler:
         on_state_discovered: OnStateDiscovered,
     ) -> None:
         queue: asyncio.PriorityQueue[DiscoveryJob] = asyncio.PriorityQueue()
+        # Prepare submitted forms first: promoting a login account can replace
+        # obsolete fill jobs and refresh the available public-page branches.
+        await self._enqueue_answered_forms(queue, skip_auth)
         phase_jobs = [
             raw
             for raw in self._job_states.values()
@@ -1253,7 +1299,6 @@ class ParallelCrawler:
         # Submitted forms must be scheduled before workers begin consuming the
         # queue. On a resumed run every old navigation job can be completed,
         # which otherwise leaves no worker alive to notice the saved values.
-        await self._enqueue_answered_forms(queue, skip_auth)
         if resumable:
             for resumable_job in resumable:
                 await queue.put(resumable_job)
@@ -1533,7 +1578,7 @@ class ParallelCrawler:
                                     job.path and is_gated_reveal_action(job.path[-1].name)
                                 )
                                 should_expand = fingerprint not in self._expanding and (
-                                    fingerprint not in self._expanded or reveal_replay
+                                    fingerprint not in self._expanded or reveal_replay or job.force_expand
                                 )
                                 if should_expand:
                                     self._expanding.add(fingerprint)
