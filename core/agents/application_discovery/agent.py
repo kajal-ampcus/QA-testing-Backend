@@ -90,6 +90,10 @@ def _human_termination(reason: str | None) -> str:
         ),
         "AUTHENTICATION_FAILED": "The crawler could not log in. Check credentials and login selectors.",
         "AUTHENTICATION_OR_CRAWL_ERROR": "An error occurred during authentication or crawling.",
+        "SITE_UNREACHABLE": (
+            "The browser could not open the application. Review the TLS certificate or "
+            "network error in Failed navigation actions; credentials were not attempted."
+        ),
         "CANCELLED_BY_USER": "Discovery was stopped by the user.",
         "SAFETY_LIMIT_REACHED": "Automatic discovery reached an internal safety circuit breaker.",
         "WORKER_FAILURE": "The discovery worker stopped unexpectedly. Continue from the saved checkpoint.",

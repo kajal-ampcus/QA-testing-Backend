@@ -24,6 +24,16 @@ _CLICKABLE = {"button", "link", "checkbox", "radio"}
 _SUBMIT = re.compile(r"\b(submit|send|save|log.?in|sign.?in|continue|next)\b", re.I)
 _CONTROL_LABEL = re.compile(r"observed_link='([^']*)'|name='([^']*)'", re.I)
 _CLICK_NAME = re.compile(r"^click\s+([^()]+)$", re.I)
+_NEGATIVE_INTENT = re.compile(
+    r"\b(invalid|incorrect|missing|required|reject|prevent|deny|denied|unauthori[sz]ed|"
+    r"must not|cannot|can't|does not|do not|without|error|fail|closed|expired|cancelled)\b",
+    re.I,
+)
+_EDGE_INTENT = re.compile(
+    r"\b(boundary|minimum|maximum|limit|zero|empty|special characters?|length|"
+    r"first|last|cutoff|month end|leap|overflow|negative amount|negative count)\b",
+    re.I,
+)
 
 
 def _observed(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -106,6 +116,30 @@ def _best_click(elements: list[dict[str, Any]], text: str) -> dict[str, Any] | N
         return ranked[0]
     submits = [element for element in pool if _SUBMIT.search(str(element.get("name") or ""))]
     return submits[0] if submits else None
+
+
+def _best_observed_element(
+    elements: list[dict[str, Any]], text: str, *, exclude: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    terms = {word.lower() for word in re.findall(r"[a-zA-Z0-9]{3,}", text)}
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for element in elements:
+        if element is exclude:
+            continue
+        name = str(element.get("name") or element.get("text") or "").lower()
+        score = sum(term in name for term in terms)
+        if score:
+            ranked.append((score, element))
+    return max(ranked, key=lambda item: item[0])[1] if ranked else None
+
+
+def _default_categories(ac: dict[str, Any]) -> list[str]:
+    text = str(ac.get("text") or "")
+    if _EDGE_INTENT.search(text):
+        return ["EDGE_CASE"]
+    if _NEGATIVE_INTENT.search(text):
+        return ["NEGATIVE"]
+    return ["POSITIVE"]
 
 
 def _route(url: str) -> str:
@@ -270,30 +304,39 @@ def _build_case(
             )
         )
 
-    if valid and result["state_code"] != start["state_code"]:
+    assertion_element = _best_observed_element(elements, text, exclude=click)
+    result_text = " ".join(
+        [str(result.get("url_pattern") or "")]
+        + [str(element.get("name") or "") for element in _observed(result)]
+    )
+    observed_negative_result = bool(_NEGATIVE_INTENT.search(result_text))
+    if result["state_code"] != start["state_code"] and (
+        valid or (category == "NEGATIVE" and observed_negative_result)
+    ):
         assert_state = result
         expected = f"The current URL includes {_url_path(result)}"
-    elif category == "EDGE_CASE":
+        assertion_target = _target(assert_state)
+    elif not click and assertion_element:
         assert_state = start
-        expected = (
-            f"The input is handled without an error page and the URL still includes "
-            f"{_url_path(start)} or the observed result state"
-        )
+        expected = f"{assertion_element.get('name') or assertion_element.get('text')} is visible"
+        assertion_target = _target(assert_state, assertion_element)
     else:
-        assert_state = start
-        expected = f"The current URL includes {_url_path(start)}"
+        return None
     steps.append(
         TestStep(
             step_number=len(steps) + 1,
             action="assert",
-            target=_target(assert_state),
+            target=assertion_target,
             expected=expected,
         )
     )
     if len(steps) < 2:
         return None
     label = str(ac.get("text") or ac.get("id") or "scenario")
-    kind = {"POSITIVE": "succeeds", "NEGATIVE": "is rejected"}.get(category, "handles boundary input")
+    kind = {
+        "POSITIVE": "works as expected",
+        "NEGATIVE": "is prevented as required",
+    }.get(category, "handles the stated boundary")
     variant = f" ({dropdown_variant + 1})" if dropdown_variant else ""
     return TestCaseSpec(
         title=f"{label[:70]} {kind}{variant}",
@@ -314,24 +357,30 @@ def generate_cases_from_map(
     requirement_title: str,
     requested_categories: dict[str, set[str]] | None = None,
 ) -> list[TestCaseSpec]:
-    """Return one POSITIVE and one NEGATIVE draft per AC from observed map data."""
+    """Return only evidence-supported drafts; never manufacture category pairs."""
     if not states:
         return []
     cases: list[TestCaseSpec] = []
     for ac in acceptance_criteria:
-        start = _rank_states(states, ac, requirement_title)[0]
+        ranked_states = _rank_states(states, ac, requirement_title)
         wanted = requested_categories.get(ac["id"]) if requested_categories else None
-        categories = sorted(wanted) if wanted else ["POSITIVE", "NEGATIVE"]
+        categories = sorted(wanted) if wanted else _default_categories(ac)
         for category in categories:
             if category not in {"POSITIVE", "NEGATIVE", "EDGE_CASE"}:
                 continue
-            spec = _build_case(
-                ac=ac,
-                category=category,
-                start=start,
-                states=states,
-                title=requirement_title,
-            )
+            start = ranked_states[0]
+            spec = None
+            for candidate in ranked_states:
+                spec = _build_case(
+                    ac=ac,
+                    category=category,
+                    start=candidate,
+                    states=states,
+                    title=requirement_title,
+                )
+                if spec is not None:
+                    start = candidate
+                    break
             if spec is not None:
                 cases.append(spec)
             if category == "POSITIVE":

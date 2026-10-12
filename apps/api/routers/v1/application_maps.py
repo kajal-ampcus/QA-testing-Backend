@@ -5,11 +5,12 @@ crawl can take minutes) and surfaces the resulting map.
 """
 
 import asyncio
+import json
 import os
 import uuid
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from arq.jobs import Job, JobStatus
 from fastapi import APIRouter, Depends, HTTPException
@@ -34,7 +35,7 @@ from core.agents.application_discovery.form_inputs import (
     is_username_field,
     split_saved_values,
 )
-from infra.db.repositories.form_answer_repo import save_form_answers
+from infra.db.repositories.form_answer_repo import save_form_answers, get_form_answers
 from infra.queue.broker import enqueue, get_arq_pool
 from infra.queue.discovery_lock import (
     active_discovery_job,
@@ -42,7 +43,7 @@ from infra.queue.discovery_lock import (
     clear_inactive_discovery,
     release_discovery,
 )
-from infra.secrets.vault_client import encrypt_login_secret, merge_login_fields
+from infra.secrets.vault_client import encrypt_login_secret, merge_login_fields, get_login_secret
 
 _REDIS_ERRORS = (RedisConnectionError, RedisTimeoutError, OSError)
 
@@ -151,6 +152,12 @@ async def _resolve_credential(
     requested = credential_ref
     if not requested:
         return None
+    if requested.startswith("session-login:"):
+        try:
+            await get_login_secret(requested, project.id)
+        except RuntimeError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return requested
 
     async def active(ref: str) -> bool:
         owned = await session.scalar(
@@ -257,9 +264,10 @@ async def trigger_discovery(
             )
         approved_refs.append(f"{requirement.id}@v{requirement.current_version}")
     await _check_target(target_url)
-    credential_ref = await _resolve_credential(
-        session, project, body.credential_ref or project.credential_ref
-    )
+    requested_ref = body.credential_ref if "credential_ref" in body.model_fields_set else project.credential_ref
+    if body.resume_application_map_id and "credential_ref" not in body.model_fields_set:
+        requested_ref = resumable.discovery_checkpoint.get("configuration", {}).get("credential_ref")
+    credential_ref = await _resolve_credential(session, project, requested_ref)
     if body.selected_branches and not body.resume_application_map_id:
         raise HTTPException(status_code=422, detail="Select branches from a saved guided map")
     if body.resume_application_map_id and body.discovery_mode == "guided":
@@ -560,13 +568,19 @@ class InputFieldAnswer(BaseModel):
 
 
 class SubmitInputRequestBody(BaseModel):
-    fields: list[InputFieldAnswer] = Field(min_length=1, max_length=40)
+    fields: list[InputFieldAnswer] = Field(default_factory=list, max_length=40)
+    approve_submission: Literal[True]
+    choice_id: str | None = Field(default=None, max_length=200)
+    save_account: bool = False
+    credential_ref: str | None = Field(default=None, max_length=200)
 
 
 class SubmitInputRequestResponse(BaseModel):
     id: str
     status: str
     job_id: str | None = None
+    selected_branches: list[str] = Field(default_factory=list)
+    credential_ref: str | None = None
 
 
 def _credential_from_login_form(
@@ -575,6 +589,10 @@ def _credential_from_login_form(
     values: dict[str, str],
     *,
     login_url: str,
+    login_label: str = "User",
+    login_group: str | None = None,
+    login_choice: dict | None = None,
+    login_prelude: list[dict] | None = None,
 ) -> DiscoveryCredential | None:
     """Turn live login answers into an opaque browser-only account reference.
 
@@ -600,17 +618,31 @@ def _credential_from_login_form(
     return DiscoveryCredential(
         project_id=project_id,
         credential_ref=f"cred:{uuid.uuid4()}",
-        label="Discovery-provided account",
-        role="User",
+        label=f"{login_label} account",
+        role=login_label,
+        login_group=login_group,
+        login_route=login_url,
         encrypted_secret=encrypt_login_secret(
             {
                 "username": username,
                 "password": password,
                 "login_url": login_url,
+                "account_role": login_label,
+                "login_choice": json.dumps(login_choice) if login_choice else "",
+                "login_prelude": json.dumps(login_prelude or []),
                 "fields": named_fields,
             }
         ),
     )
+
+
+def _input_navigation_job(checkpoint: dict, path: list[dict], request_id: str | None = None) -> dict:
+    from core.agents.application_discovery.crawler import ClickStep
+    from core.agents.application_discovery.parallel_crawler import DiscoveryJob, ParallelCrawler
+    job = DiscoveryJob(-1, 0, path=[ClickStep(**step) for step in path], skip_auth=True, force_expand=True, input_request_id=request_id)
+    raw = ParallelCrawler._serialize_job(job, "pending")
+    checkpoint["jobs"] = [item for item in checkpoint.get("jobs", []) if item.get("key") != raw["key"]] + [raw]
+    return raw
 
 
 @router.post(
@@ -623,7 +655,7 @@ async def submit_input_request(
     body: SubmitInputRequestBody,
     session: AsyncSession = Depends(get_db_session),
 ) -> SubmitInputRequestResponse:
-    """Store values for one discovered form. The checkpoint keeps field names only."""
+    """Store values and the user's explicit approval to submit the live form."""
     app_map = await session.get(ApplicationMap, application_map_id)
     if app_map is None or not app_map.discovery_checkpoint:
         raise HTTPException(status_code=404, detail="Discovery input request not found")
@@ -636,8 +668,20 @@ async def submit_input_request(
     target = next((item for item in requests if item.get("id") == request_id), None)
     if target is None:
         raise HTTPException(status_code=404, detail="Discovery input request not found")
+    if getattr(app_map, "status", None) == "RUNNING" and target.get("kind") in {"login", "login_choice"}:
+        raise HTTPException(409, "Wait for discovery to pause before submitting login input")
     if target.get("status") in {"submitted", "applied"}:
         raise HTTPException(status_code=409, detail="This form was already submitted")
+    if target.get("kind") == "login_choice":
+        choice = next((item for item in target.get("choices", []) if item["id"] == body.choice_id), None)
+        if choice is None:
+            raise HTTPException(422, "Select an observed login option")
+        raw = _input_navigation_job(checkpoint, [*target.get("navigation_path", []), choice["step"]])
+        target.update(status="applied", selected_choice=choice, selected_path=raw["path"])
+        checkpoint["input_requests"] = requests
+        app_map.discovery_checkpoint = checkpoint
+        await session.commit()
+        return SubmitInputRequestResponse(id=request_id, status="applied", selected_branches=[raw["key"]])
     expected = {
         str(field["key"]): field
         for field in target.get("fields") or []
@@ -647,18 +691,30 @@ async def submit_input_request(
     unknown = [key for key in provided if key not in expected]
     if unknown:
         raise HTTPException(status_code=422, detail="One or more fields are not on this form")
+    chosen_account = None
+    if body.credential_ref:
+        if target.get("kind") != "login":
+            raise HTTPException(422, "Accounts can only be selected for login requests")
+        chosen_account = await session.scalar(select(DiscoveryCredential).where(
+            DiscoveryCredential.project_id == app_map.project_id,
+            DiscoveryCredential.credential_ref == body.credential_ref,
+            DiscoveryCredential.active.is_(True),
+            DiscoveryCredential.login_group == target.get("login_group"),
+        ))
+        if chosen_account is None:
+            raise HTTPException(422, "Choose an active account from this login group")
     missing = [
         str(field.get("name") or key)
         for key, field in expected.items()
         if field.get("required", True) and not str(provided.get(key) or "").strip()
     ]
-    if missing:
+    if missing and chosen_account is None:
         raise HTTPException(
             status_code=422,
             detail=f"Enter a value for: {', '.join(missing)}",
         )
     values = {
-        key: provided[key].strip()
+        key: provided[key]
         for key in expected
         if str(provided.get(key) or "").strip()
     }
@@ -672,15 +728,28 @@ async def submit_input_request(
         for key, field in expected.items()
         if isinstance(field, dict)
     }
-    credential_ref = str(target.get("credential_ref") or "") or None
+    credential_ref = chosen_account.credential_ref if chosen_account else str(target.get("credential_ref") or "") or None
     created_credential: DiscoveryCredential | None = None
     if target.get("kind") == "login" and credential_ref is None:
+        account_fields, account_values = dict(expected), dict(durable)
+        login_url = str(target.get("page_url") or app_map.base_url)
+        for earlier in requests:
+            if earlier is target or earlier.get("kind") != "login" or earlier.get("status") != "applied" or not target.get("login_group") or earlier.get("login_group") != target.get("login_group"):
+                continue
+            prior_values = await get_form_answers(app_map.project_id, earlier["page_key"], earlier["form_key"], earlier.get("credential_ref"), login=True)
+            account_fields = {**{field["key"]: field for field in earlier.get("fields", [])}, **account_fields}
+            account_values = {**(prior_values or {}), **account_values}
+            login_url = str(earlier.get("page_url") or login_url)
         try:
             created_credential = _credential_from_login_form(
                 app_map.project_id,
-                expected,
-                durable,
-                login_url=str(target.get("page_url") or app_map.base_url),
+                account_fields,
+                account_values,
+                login_url=login_url,
+                login_label=str(target.get("login_label") or "User"),
+                login_group=target.get("login_group"),
+                login_choice=target.get("login_choice"),
+                login_prelude=target.get("navigation_path"),
             )
         except RuntimeError as exc:
             raise HTTPException(
@@ -688,13 +757,27 @@ async def submit_input_request(
                 detail="Credential encryption is not configured. Configure CREDENTIAL_ENCRYPTION_KEY on the backend.",
             ) from exc
         if created_credential is not None:
-            session.add(created_credential)
-            credential_ref = created_credential.credential_ref
-            # A project with no preconfigured account should use the account
-            # just supplied during discovery on subsequent runs as well.
-            project = await session.get(Project, app_map.project_id)
-            if project is not None and project.credential_ref is None:
-                project.credential_ref = credential_ref
+            if body.save_account:
+                session.add(created_credential)
+                credential_ref = created_credential.credential_ref
+            else:
+                credential_ref = f"session-login:{uuid.uuid4()}"
+                await (await get_arq_pool()).set(
+                    f"login:{app_map.project_id}:{credential_ref}",
+                    created_credential.encrypted_secret, ex=86400,
+                )
+
+    if target.get("kind") == "login" and (created_credential is not None or chosen_account is not None):
+        target.update(status="approved", submission_approved=True, credential_ref=credential_ref)
+        checkpoint["input_requests"] = requests
+        configuration = dict(checkpoint.get("configuration") or {})
+        configuration["credential_ref"] = credential_ref
+        checkpoint["configuration"] = configuration
+        raw = _input_navigation_job(checkpoint, [*target.get("navigation_path", []),
+            {"role": "authentication", "name": "Sign in with selected account"}])
+        app_map.discovery_checkpoint = checkpoint
+        await session.commit()
+        return SubmitInputRequestResponse(id=request_id, status="approved", selected_branches=[raw["key"]], credential_ref=credential_ref)
 
     await save_form_answers(
         app_map.project_id,
@@ -714,7 +797,8 @@ async def submit_input_request(
             await merge_login_fields(credential_ref, app_map.project_id, updates)
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    target["status"] = "submitted"
+    target["submission_approved"] = body.approve_submission
+    target["status"] = "approved"
     checkpoint["input_requests"] = requests
     configuration = dict(checkpoint.get("configuration") or {})
     if created_credential is not None:
@@ -725,34 +809,14 @@ async def submit_input_request(
     checkpoint["configuration"] = configuration
     app_map.discovery_checkpoint = checkpoint
     await session.commit()
-    payload = {
-        "target": {
-            "url": app_map.base_url,
-            "credential_ref": configuration.get("credential_ref"),
-        },
-        "focus_requirements": [],
-        "crawl_budget": {
-            "max_pages": configuration.get("max_pages", 150),
-            "max_depth": configuration.get("max_depth", 6),
-            "max_duration_seconds": configuration.get("max_duration_seconds", 900),
-            "worker_limit": configuration.get("worker_limit", 3),
-            "automatic_limits": configuration.get("automatic_limits", True),
-        },
-        "discovery_scope": {
-            "mode": configuration.get("mode", "complete"),
-            "selected_auth_flow": configuration.get("selected_auth_flow"),
-            "selected_auth_flows": configuration.get("selected_auth_flows", []),
-            "selected_areas": configuration.get("selected_areas", []),
-            "selected_modules": configuration.get("selected_modules", []),
-            "selected_branches": [],
-        },
-        "resume_application_map_id": str(app_map.id),
-        "start_from_scratch": False,
-    }
-    claimed_job_id = await _claim_discovery_slot(app_map.project_id)
-    try:
-        job_id = await enqueue("run_discovery", str(app_map.project_id), payload, job_id=claimed_job_id)
-    except (*_REDIS_ERRORS, RuntimeError) as exc:
-        await _release_discovery_slot(app_map.project_id, claimed_job_id)
-        raise HTTPException(status_code=503, detail="Discovery queue is unavailable") from exc
-    return SubmitInputRequestResponse(id=request_id, status="submitted", job_id=job_id)
+    if target.get("kind") == "login":
+        path = list(target.get("navigation_path") or [])
+        path.extend({"role": field.get("role") or "textbox", "name": field["name"],
+            "sensitive": True, "field_key": key} for key, field in expected.items() if key in values)
+        if target.get("submit"):
+            path.append(target["submit"])
+        raw = _input_navigation_job(checkpoint, path, request_id)
+        app_map.discovery_checkpoint = dict(checkpoint)
+        await session.commit()
+        return SubmitInputRequestResponse(id=request_id, status="approved", selected_branches=[raw["key"]], credential_ref=credential_ref)
+    return SubmitInputRequestResponse(id=request_id, status="approved")

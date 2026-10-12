@@ -63,19 +63,9 @@ def _pairing_gaps(
     acceptance_criteria: list[dict[str, Any]],
     test_cases: list[TestCaseSpec],
 ) -> list[dict[str, Any]]:
-    categories_by_ac: dict[str, set[str]] = {}
-    for tc in test_cases:
-        for ac_id in tc.traceability:
-            categories_by_ac.setdefault(ac_id, set()).add(tc.category)
-    gaps: list[dict[str, Any]] = []
-    for ac in acceptance_criteria:
-        ac_id = ac["id"]
-        if ac_id not in categories_by_ac:
-            continue  # already in uncovered list
-        missing = [c for c in ("POSITIVE", "NEGATIVE") if c not in categories_by_ac[ac_id]]
-        if missing:
-            gaps.append({"ac_id": ac_id, "missing": missing})
-    return gaps
+    # Category symmetry is not evidence of coverage. An AC needs only the
+    # category its wording and observed behavior actually support.
+    return []
 
 
 def _check_positive_negative_pairing(
@@ -108,6 +98,26 @@ def _low_confidence(test_cases: list[TestCaseSpec], threshold: float = 0.6) -> l
         for tc in test_cases
         if tc.confidence < threshold
     ]
+
+
+def _generation_gap(ac: dict[str, Any]) -> dict[str, str]:
+    text = str(ac.get("text") or "")
+    if re.search(r"\b(delete|remove all|purchase|place order|submit|pay|cancel)\b", text, re.I):
+        status = "NEEDS_APPROVAL"
+        reason = "The scenario can change live data and needs explicit execution approval."
+    elif re.search(r"\b(another employee|multiple users?|existing orders?|known data|history exists)\b", text, re.I):
+        status = "NEEDS_TEST_DATA"
+        reason = "The required account or seeded records were not available in discovery evidence."
+    elif re.search(r"\b(api failure|network|unavailable resource|broken image|service failure|mock)\b", text, re.I):
+        status = "NEEDS_ENVIRONMENT_SUPPORT"
+        reason = "The scenario requires controlled network, service, or browser fault injection."
+    elif re.search(r"\b(according to|as applicable|defined business rule|appropriate message)\b", text, re.I):
+        status = "NEEDS_CLARIFICATION"
+        reason = "The expected business rule or exact observable result is not defined."
+    else:
+        status = "NOT_AUTOMATABLE_FROM_CURRENT_EVIDENCE"
+        reason = "No observed action and measurable result support this scenario yet."
+    return {"ac_id": str(ac.get("id") or ""), "status": status, "reason": reason}
 
 
 def _renumber_steps(tc: TestCaseSpec) -> TestCaseSpec:
@@ -291,9 +301,8 @@ def _generation_jobs(
             for chunk in _chunked(scoped, batch_size):
                 jobs.append((chunk, {ac["id"]: [category] for ac in chunk}))
         return jobs
-    for category in ("POSITIVE", "NEGATIVE"):
-        for chunk in _chunked(pending_acs, batch_size):
-            jobs.append((chunk, {ac["id"]: [category] for ac in chunk}))
+    for chunk in _chunked(pending_acs, batch_size):
+        jobs.append((chunk, {}))
     return jobs
 
 
@@ -566,7 +575,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         known_signatures = await self._test_case_repo.existing_signatures(
             requirement_id, app_map.id
         )
-        credential_ref = request.payload.get("credential_ref")
+        credential_ref = (getattr(app_map, "discovery_checkpoint", None) or {}).get("configuration", {}).get("credential_ref") or request.payload.get("credential_ref")
         duplicates_skipped = 0
 
         heuristic_cases = generate_cases_from_map(
@@ -721,6 +730,12 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 except ValidationError:
                     continue  # rows saved before the current step schema
         uncovered = _check_ac_coverage(req_version.acceptance_criteria, coverage_cases)
+        uncovered_set = set(uncovered)
+        generation_gaps = [
+            _generation_gap(ac)
+            for ac in req_version.acceptance_criteria
+            if ac.get("id") in uncovered_set
+        ]
         pairing_gaps = _pairing_gaps(req_version.acceptance_criteria, coverage_cases)
         partial_pairing = _check_positive_negative_pairing(req_version.acceptance_criteria, coverage_cases)
         needs_review = _low_confidence(valid_cases)
@@ -845,5 +860,6 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             partial_pairing_acs=partial_pairing,
             pairing_gaps=pairing_gaps,
             needs_review_test_cases=needs_review,
+            generation_gaps=generation_gaps,
             duplicates_skipped=duplicates_skipped,
         )

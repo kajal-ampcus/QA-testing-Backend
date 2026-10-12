@@ -9,6 +9,7 @@ from core.tool_gateway.mcp_clients.chrome_devtools_client import (
     _authenticated_session_visible,
     _authentication_completed,
     _find_submit_uid,
+    _find_password_uid,
     _find_uid,
     _is_hosting_cold_start_page,
     _is_security_verification_page,
@@ -105,6 +106,25 @@ uid=1_20 button "LOGIN"
     assert _find_uid(without_login, names, {"button", "link"}) is None
 
 
+def test_login_route_without_exposed_password_is_not_authenticated():
+    partial_login = (
+        'uid=1_0 RootWebArea "Login" url="https://cafe.example/login"\n'
+        'uid=1_9 textbox "Employee ID"\n'
+        'uid=1_20 button "LOGIN"'
+    )
+    assert not _authenticated_session_visible(partial_login)
+
+
+def test_password_fallback_uses_unlabelled_textbox_but_not_captcha():
+    controls = [
+        ("1_9", "textbox", "Employee ID"),
+        ("1_11", "textbox", ""),
+        ("1_18", "textbox", "Enter the answer"),
+        ("1_20", "button", "LOGIN"),
+    ]
+    assert _find_password_uid(controls, ["password"], "1_9") == "1_11"
+
+
 def test_generic_captcha_ui_is_detected_without_hardcoded_site_names():
     text = (
         "Username\nPassword\nCaptcha\nEnter Captcha\nRefresh Captcha\n"
@@ -177,6 +197,30 @@ async def test_visible_login_text_extracts_inline_svg_captcha(monkeypatch):
     assert "data:image/svg+xml" in function
     assert "querySelectorAll(\"svg\")" in function or "querySelectorAll('svg')" in function
     assert "DOMParser" in function
+
+
+@pytest.mark.asyncio
+async def test_inspect_elements_captures_observed_xpath(monkeypatch):
+    client = ChromeDevToolsClient()
+    client._page_id = 0
+    functions: list[str] = []
+
+    async def call(tool_name, arguments):
+        assert tool_name == "evaluate_script"
+        functions.append(arguments["function"])
+        if "xpathOf" in arguments["function"]:
+            return '[{"dom_id":"submit","xpath":"//button[@id=\\"submit\\"]"}]'
+        return "[]"
+
+    monkeypatch.setattr(client, "_call", call)
+
+    elements = await client.inspect_elements(
+        {'elements': [{'uid': '1_1', 'role': 'button', 'name': 'Submit'}]}
+    )
+
+    assert elements[0]["xpath"] == '//button[@id="submit"]'
+    assert "data-testid" in functions[0]
+    assert "XPathResult.ORDERED_NODE_SNAPSHOT_TYPE" in functions[0]
 
 
 @pytest.mark.asyncio

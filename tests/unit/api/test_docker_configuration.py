@@ -57,6 +57,14 @@ def test_local_mcp_install_is_noninteractive_without_disabling_sandbox(monkeypat
     assert "--chromeArg=--no-sandbox" not in params.args
 
 
+def test_certificate_bypass_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.setenv("CHROME_DEVTOOLS_MCP_COMMAND", "chrome-devtools-mcp")
+    monkeypatch.delenv("CHROME_IGNORE_CERTIFICATE_ERRORS", raising=False)
+    assert "--chromeArg=--ignore-certificate-errors" not in ChromeDevToolsClient()._server_params().args
+    monkeypatch.setenv("CHROME_IGNORE_CERTIFICATE_ERRORS", "true")
+    assert "--chromeArg=--ignore-certificate-errors" in ChromeDevToolsClient()._server_params().args
+
+
 def test_windows_npx_goes_through_cmd():
     command, args = ChromeDevToolsClient._npx_command(["--headless"], windows=True)
     assert command == "cmd"

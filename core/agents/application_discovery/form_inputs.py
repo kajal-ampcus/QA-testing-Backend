@@ -10,7 +10,7 @@ import hashlib
 import re
 from typing import Any
 
-_FILLABLE_ROLES = {"textbox", "searchbox", "spinbutton", "combobox", "checkbox", "radio"}
+_FILLABLE_ROLES = {"textbox", "input", "searchbox", "spinbutton", "combobox", "checkbox", "radio"}
 _SUBMIT_NAME = re.compile(
     r"\b(submit|send|save|search|continue|next|apply|update|create|add|register|sign up|log in|login|sign in|confirm)\b",
     re.I,
@@ -21,7 +21,7 @@ _DESTRUCTIVE_NAME = re.compile(
 )
 _PASSWORD_NAME = re.compile(r"\b(password|passphrase)\b", re.I)
 _USERNAME_NAME = re.compile(
-    r"\b(email|e-mail|username|user name|user id|userid|login|employee id|staff id)\b",
+    r"\b(email|e-mail|username|user name|user id|userid|login|id|phone|mobile)\b",
     re.I,
 )
 _CAPTCHA_NAME = re.compile(r"\bcaptcha\b", re.I)
@@ -168,7 +168,15 @@ def _safe_submit(elements: list[dict[str, Any]]) -> dict[str, str] | None:
 
 def blocking_form(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
     """A form blocks exploration when required fields and a safe submit are both visible."""
-    fields = [describe_field(element) for element in elements if _needs_value(element)]
+    login_submit = any(n.get("role") in {"button", "link"} and re.search(
+        r"\b(log\s*in|sign\s*in)\b", str(n.get("name") or ""), re.I) for n in elements)
+    password_present = any(is_password_field(n) for n in elements if _fillable(n))
+    login_context = login_submit or password_present or any(n.get("role") in {"RootWebArea", "heading"}
+        and re.search(r"\b(log\s*in|sign\s*in)\b", str(n.get("name") or "") + " " + str(n.get("url") or ""), re.I)
+        for n in elements)
+    fields = [describe_field(element) for element in elements if _needs_value(element)
+        or (login_context and _fillable(element)
+            and (is_username_field(element) or is_password_field(element)))]
     if not fields:
         return None
     submit = _safe_submit(elements)
@@ -176,7 +184,7 @@ def blocking_form(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
         return None
     kind = (
         "login"
-        if any(is_password_field(field) or is_otp_field(str(field.get("name") or "")) for field in fields)
+        if login_context or any(is_password_field(field) or is_otp_field(str(field.get("name") or "")) for field in fields)
         else "form"
     )
     return {"kind": kind, "fields": fields, "submit": submit}

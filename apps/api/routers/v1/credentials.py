@@ -11,6 +11,7 @@ from apps.api.dependencies import get_db_session
 from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.project import Project
 from infra.secrets.vault_client import encrypt_login_secret
+from core.agents.application_discovery.login_choices import login_group_key
 
 router = APIRouter(prefix='/projects/{project_id}/credentials', tags=['credentials'])
 
@@ -56,10 +57,12 @@ class CredentialCreateResponse(BaseModel):
     role: str
     is_default: bool
     created_at: datetime
+    login_group: str | None = None
+    login_route: str | None = None
 
 
 def response(row,project):
-    return CredentialCreateResponse(credential_ref=row.credential_ref,label=row.label,role=row.role,is_default=project.credential_ref==row.credential_ref,created_at=row.created_at)
+    return CredentialCreateResponse(credential_ref=row.credential_ref,label=row.label,role=row.role,is_default=project.credential_ref==row.credential_ref,created_at=row.created_at,login_group=row.login_group,login_route=row.login_route)
 
 async def project_for(session,project_id):
     project=await session.get(Project,project_id)
@@ -90,6 +93,8 @@ async def list_credentials(project_id:uuid.UUID,session:AsyncSession=Depends(get
 async def create_credential(project_id:uuid.UUID,body:CredentialCreateRequest,session:AsyncSession=Depends(get_db_session)):
     project=await project_for(session,project_id)
     row=DiscoveryCredential(project_id=project_id,credential_ref=f'cred:{uuid.uuid4()}',label=body.label,role=body.role,encrypted_secret=secret_for(body))
+    row.login_route = str(body.login_url or project.application_url or "")
+    row.login_group = login_group_key(row.login_route, body.role)
     session.add(row)
     if body.set_as_project_default:
         project.credential_ref=row.credential_ref
@@ -102,6 +107,8 @@ async def revise_credential(project_id:uuid.UUID,credential_ref:str,body:Credent
     project=await project_for(session,project_id)
     old=await account_for(session,project_id,credential_ref)
     row=DiscoveryCredential(project_id=project_id,credential_ref=f'cred:{uuid.uuid4()}',label=body.label,role=body.role,encrypted_secret=secret_for(body) if body.username is not None else old.encrypted_secret)
+    row.login_route = str(body.login_url or old.login_route or project.application_url or "")
+    row.login_group = login_group_key(row.login_route, body.role)
     old.active=False
     session.add(row)
     if project.credential_ref==old.credential_ref or body.set_as_project_default:

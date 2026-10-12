@@ -66,7 +66,8 @@ def test_prompt_asks_for_compact_batches() -> None:
     )
     lowered = prompt.lower()
     assert "for each acceptance criterion" in lowered
-    assert "2 acs → 4 cases" in lowered
+    assert "at most one case" in lowered
+    assert "do not invent an opposite category" in lowered
     targeted = build_user_prompt(
         requirement_title="Login",
         requirement_description="Users can sign in",
@@ -79,15 +80,10 @@ def test_prompt_asks_for_compact_batches() -> None:
     assert "exactly 1 compact test case" in targeted.lower()
 
 
-def test_generation_jobs_split_positive_then_negative() -> None:
+def test_generation_jobs_do_not_force_category_pairs() -> None:
     acs = [{"id": "AC-1"}, {"id": "AC-2"}, {"id": "AC-3"}]
     jobs = _generation_jobs(acs, {}, 2)
-    assert [list(targeted.values())[0] for _chunk, targeted in jobs] == [
-        ["POSITIVE"],
-        ["POSITIVE"],
-        ["NEGATIVE"],
-        ["NEGATIVE"],
-    ]
+    assert [targeted for _chunk, targeted in jobs] == [{}, {}]
     assert [ac["id"] for ac in jobs[0][0]] == ["AC-1", "AC-2"]
     assert [ac["id"] for ac in jobs[1][0]] == ["AC-3"]
 

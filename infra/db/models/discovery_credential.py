@@ -21,5 +21,7 @@ class DiscoveryCredential(Base):
     label: Mapped[str] = mapped_column(String(120), nullable=False, default="Test account")
     role: Mapped[str] = mapped_column(String(120), nullable=False, default="User")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    login_group: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    login_route: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

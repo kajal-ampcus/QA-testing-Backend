@@ -225,6 +225,9 @@ class PlaywrightClient:
         env["TEST_PASSWORD"] = secret["password"]
         env["TEST_LOGIN_FIELDS_B64"] = _encoded_extra_login_fields(secret)
         env["TEST_LOGIN_URL"] = str(secret.get("login_url") or "/login")
+        env["TEST_ACCOUNT_ROLE"] = str(secret.get("account_role") or "")
+        env["TEST_LOGIN_PRELUDE_B64"] = base64.b64encode(str(secret.get("login_prelude") or "[]").encode()).decode()
+        env["TEST_LOGIN_CHOICE_B64"] = base64.b64encode(str(secret.get("login_choice") or "null").encode()).decode()
         return env
 
 
@@ -505,7 +508,7 @@ async def _run_on_headed_host(
     """Ask the desktop process to run npx playwright test with a visible browser."""
     forwarded = {
         key: env[key]
-        for key in ("BASE_URL", "TEST_USERNAME", "TEST_PASSWORD", "TEST_LOGIN_FIELDS_B64", "TEST_LOGIN_URL", "RUN_DESTRUCTIVE")
+        for key in ("BASE_URL", "TEST_USERNAME", "TEST_PASSWORD", "TEST_LOGIN_FIELDS_B64", "TEST_LOGIN_URL", "TEST_ACCOUNT_ROLE", "TEST_LOGIN_PRELUDE_B64", "TEST_LOGIN_CHOICE_B64", "RUN_DESTRUCTIVE")
         if env.get(key)
     }
     payload = {

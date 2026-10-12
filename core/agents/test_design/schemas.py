@@ -107,7 +107,7 @@ class TestCaseBatch(BaseModel):
         min_length=1,
         max_length=4,
         description=(
-            "Compact batch: at most 2 ACs × one category (POSITIVE or NEGATIVE)."
+            "Compact batch of evidence-supported cases; categories are not paired automatically."
         ),
     )
 
@@ -122,14 +122,18 @@ class TestDesignResult(BaseModel):
     uncovered_acs: list[str] = Field(default_factory=list)
     partial_pairing_acs: list[str] = Field(
         default_factory=list,
-        description="ACs that have at least one test case but are missing a POSITIVE or NEGATIVE counterpart (RULE 2).",
+        description="Deprecated compatibility field; category symmetry is no longer required.",
     )
     pairing_gaps: list[dict[str, Any]] = Field(
         default_factory=list,
-        description='Structured form of partial_pairing_acs: [{"ac_id": "AC-1", "missing": ["NEGATIVE"]}].',
+        description="Deprecated compatibility field; always empty.",
     )
     needs_review_test_cases: list[str] = Field(
         default_factory=list,
         description="Test case titles below the confidence threshold, usually referencing UI not yet in the application map.",
+    )
+    generation_gaps: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Why uncovered scenarios could not safely become executable cases.",
     )
     duplicates_skipped: int = 0

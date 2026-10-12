@@ -381,22 +381,49 @@ function sessionEndControl(page: Page) {
 async function enterApplication(page: Page): Promise<void> {
   loadSuiteEnv();
   const username = process.env.TEST_USERNAME?.trim() ?? "";
-  const password = process.env.TEST_PASSWORD?.trim() ?? "";
+  const password = process.env.TEST_PASSWORD ?? "";
   if (!username || !password) {
     throw new Error("The discovery login is not available. Choose or edit the account on Automation, then generate again.");
   }
   const loginURL = process.env.TEST_LOGIN_URL?.trim() || "/login";
   await page.goto(loginURL, { waitUntil: "domcontentloaded" });
   await waitOutCaptchaLimit(page);
-  const employee = page.getByRole("button", { name: /^employee$/i });
-  if (await employee.isVisible().catch(() => false)) {
-    await employee.click();
+  const accountRole = process.env.TEST_ACCOUNT_ROLE || "";
+  const decodeLogin = (key: string, fallback: unknown): any => {
+    try { return JSON.parse(Buffer.from(process.env[key] || "", "base64").toString("utf8")); }
+    catch { return fallback; }
+  };
+  const choice = decodeLogin("TEST_LOGIN_CHOICE_B64", null);
+  if (choice?.role === "combobox") {
+    await page.getByRole("combobox", { name: choice.name, exact: true }).selectOption({ label: choice.value });
+  }
+  if (accountRole && !/^(user|default|test account|sign in)$/i.test(accountRole)) {
+    const roleControl = page.getByRole("tab", { name: accountRole, exact: true })
+      .or(page.getByRole("button", { name: accountRole, exact: true }))
+      .or(page.getByRole("radio", { name: accountRole, exact: true })).first();
+    if (await roleControl.isVisible().catch(() => false)) await roleControl.click();
+  }
+  const prelude = decodeLogin("TEST_LOGIN_PRELUDE_B64", []);
+  if (!(await page.locator('input[type="password"]').isVisible().catch(() => false))) {
+    const fields = decodeLogin("TEST_LOGIN_FIELDS_B64", {});
+    for (const step of prelude) {
+      if (step.role === "authentication") continue;
+      const control = page.getByRole(step.role, { name: step.name, exact: true }).first();
+      if (!(await control.isVisible().catch(() => false))) continue;
+      if (step.sensitive) {
+        const value = fields[step.name] ?? (/password/i.test(step.name) ? password : username);
+        await control.fill(value);
+      } else if (step.value != null) {
+        if (step.role === "combobox") await control.selectOption({ label: step.value });
+        else await control.fill(step.value);
+      } else await control.click();
+    }
   }
   const identifier = page
-    .getByPlaceholder(/employee id|email|username/i)
-    .or(page.getByRole("textbox", { name: /employee id|email|username/i }))
+    .getByPlaceholder(/\bid\b|email|username|phone|mobile/i)
+    .or(page.getByRole("textbox", { name: /\bid\b|email|username|phone|mobile/i }))
     .first();
-  await identifier.fill(username);
+  if (await identifier.isVisible().catch(() => false)) await identifier.fill(username);
   const secret = page
     .getByPlaceholder(/password/i)
     .or(page.getByRole("textbox", { name: /password/i }))

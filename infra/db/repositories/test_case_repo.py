@@ -28,9 +28,12 @@ _VERSION_FIELDS = (
 
 
 def case_signature(version_data: dict[str, Any]) -> tuple[Any, ...]:
-    """Identity of a case's content, used to avoid saving the same draft twice."""
+    """Semantic identity used to avoid saving relabelled copies.
+
+    Category is deliberately excluded: identical actions and assertions are
+    still duplicates when one title says positive and another says negative.
+    """
     return (
-        str(version_data.get("category", "")),
         tuple(sorted(str(item) for item in version_data.get("traceability", []))),
         tuple(
             (

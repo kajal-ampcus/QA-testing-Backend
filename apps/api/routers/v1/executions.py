@@ -16,6 +16,7 @@ from fastapi.responses import Response
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from apps.api.dependencies import get_db_session
 from apps.api.routers.v1.automation import artifact_root
@@ -35,6 +36,7 @@ from core.agents.test_execution.eligibility import (
 from domain.enums import EvidenceChannel, TestRunStatus
 from infra.db.models.execution import TestResult, TestRun
 from infra.db.models.project import Project
+from infra.db.models.test_case import TestCase
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
 from infra.object_storage.s3_client import S3Client
@@ -157,6 +159,15 @@ async def start_execution_run(
         "credential_ref": project.credential_ref,
         "base_url": project.application_url,
         "environment": settings.environment,
+    }
+    cases = await session.scalars(select(TestCase).where(
+        TestCase.project_id == project.id,
+        TestCase.id.in_([script.test_case_id for script in scripts]),
+    ))
+    account_by_case = {case.id: case.credential_ref for case in cases}
+    payload["script_credential_refs"] = {
+        str(script.id): account_by_case.get(script.test_case_id) or project.credential_ref
+        for script in scripts
     }
     try:
         await enqueue("run_execution", str(project.id), payload, job_id=job_id)
