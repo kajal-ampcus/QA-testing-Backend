@@ -42,6 +42,10 @@ class SourceFileOut(BaseModel):
     content: str
 
 
+class UpdateSourcesRequest(BaseModel):
+    files: list[SourceFileOut] = Field(min_length=1, max_length=100)
+
+
 class LintOut(BaseModel):
     hardcoded_sleep: int = 0
     literal_credentials: int = 0

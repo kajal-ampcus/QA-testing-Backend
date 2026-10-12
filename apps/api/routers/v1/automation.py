@@ -67,6 +67,7 @@ from schemas.automation import (
     LintOut,
     ScriptOut,
     SourceFileOut,
+    UpdateSourcesRequest,
     VerificationOut,
 )
 from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunStatus
@@ -466,6 +467,29 @@ async def get_generation(
         project_id, generation_id
     )
     return _detail(rows, summary, approvals, ApiSettings(), include_sources=True, executed=executed)
+
+
+@router.patch("/projects/{project_id}/generations/{generation_id}/sources", status_code=204)
+async def update_generation_sources(
+    project_id: uuid.UUID,
+    generation_id: uuid.UUID,
+    body: UpdateSourcesRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    await _require_generation(session, project_id, generation_id)
+    suite = generation_dir(artifact_root(), project_id, generation_id).resolve()
+    editable = {item["path"] for item in read_sources(suite)}
+    targets = []
+    for source in body.files:
+        target = (suite / source.path).resolve()
+        if not target.is_relative_to(suite) or source.path not in editable:
+            raise HTTPException(status_code=400, detail="Select an existing suite source file.")
+        if len(source.content) > 200_000 or target.stat().st_size > 200_000:
+            raise HTTPException(status_code=400, detail="This source file is too large to edit.")
+        targets.append((target, source.content))
+    for target, content in targets:
+        target.write_text(content, encoding="utf-8")
+    return Response(status_code=204)
 
 
 @router.get("/projects/{project_id}/generations/{generation_id}/download")
