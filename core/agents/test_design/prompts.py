@@ -26,10 +26,15 @@ RULE 1 — ONLY reference elements that exist in the application map.
   element) — omit it for navigate steps and for page-level asserts (e.g.
   asserting the current URL) that don't reference a single element.
 
-RULE 2 — Cover every AC with at least one test case.
+RULE 2 — Cover each AC only with meaningful, evidence-supported cases.
   - Every AC id must appear in at least one test case's traceability list.
-  - For each AC in this request, generate exactly one POSITIVE and one NEGATIVE.
-  - Skip EDGE_CASE unless TARGETED COVERAGE asks for it.
+  - Do NOT automatically create positive/negative pairs.
+  - Generate POSITIVE only for a successful user outcome stated by the AC.
+  - Generate NEGATIVE only when the AC or requirement supplies a concrete
+    invalid input, forbidden action, error, or rejection condition.
+  - Generate EDGE_CASE only for an explicit measurable boundary or limit.
+  - If no measurable assertion is observed, omit the case instead of using a
+    generic "page remains open" or current-URL assertion.
   - The `category` field is the TEST TYPE, always exactly POSITIVE, NEGATIVE,
     or EDGE_CASE. Never put a feature/domain name there (not "Authentication",
     not "Chat Interaction") — describe the feature in the title instead,
@@ -80,7 +85,7 @@ RULE 8 - Use observed hrefs and target states, never guess destination paths.
 
 RULE 9 — Keep the tool payload small so generation stays fast:
   - If TARGETED COVERAGE is present, generate ONLY those categories.
-  - Otherwise, for EACH listed AC return one POSITIVE and one NEGATIVE.
+  - Otherwise, choose only the category supported by each AC's wording.
   - Each case traces exactly one AC id.
   - At most 6 steps per case. Short title. One-sentence objective.
   - Do not emit extra categories, long preconditions, or commentary.
@@ -159,7 +164,7 @@ def build_user_prompt(
     elif required_categories:
         expected_cases = len(acceptance_criteria) * len(required_categories)
     else:
-        expected_cases = max(2, len(acceptance_criteria) * 2)
+        expected_cases = len(acceptance_criteria)
     if targeted_by_ac or required_categories:
         generate_line = (
             f"Generate exactly {expected_cases} compact test case(s) matching TARGETED "
@@ -167,8 +172,8 @@ def build_user_prompt(
         )
     else:
         generate_line = (
-            f"For EACH acceptance criterion above, generate exactly 1 POSITIVE and 1 "
-            f"NEGATIVE test case ({len(acceptance_criteria)} ACs → {expected_cases} cases)."
+            "For each acceptance criterion, generate at most one case in the category "
+            "supported by its wording. Do not invent an opposite category."
         )
     return f"""REQUIREMENT
 ===========

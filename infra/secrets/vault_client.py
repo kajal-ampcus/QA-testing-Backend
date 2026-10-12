@@ -74,6 +74,14 @@ async def get_login_secret(ref: str, project_id: uuid.UUID | None = None) -> dic
 
     When project_id is given, a reference owned by another project does not resolve.
     """
+    if ref.startswith("session-login:"):
+        from infra.queue.broker import get_arq_pool
+        if project_id is None:
+            raise RuntimeError("Temporary login requires a project")
+        raw = await (await get_arq_pool()).get(f"login:{project_id}:{ref}")
+        if not raw:
+            raise RuntimeError("Temporary login expired. Enter the account again.")
+        return decrypt_json_secret(raw.decode() if isinstance(raw, bytes) else raw)
     query = select(DiscoveryCredential).where(
         DiscoveryCredential.credential_ref == ref,
         DiscoveryCredential.active.is_(True),
@@ -107,6 +115,24 @@ async def merge_login_fields(
     ref: str, project_id: uuid.UUID, updates: list[dict[str, str]]
 ) -> None:
     """Add named field values to an account secret. Checkpoints never receive them."""
+    if not updates:
+        return
+    if ref.startswith("session-login:"):
+        from infra.queue.broker import get_arq_pool
+        secret = await get_login_secret(ref, project_id)
+        merged = {item["name"].casefold(): item for item in _login_fields(secret)}
+        for item in updates:
+            name, value = str(item.get("name") or ""), item.get("value")
+            if name and isinstance(value, str) and value and not is_ephemeral_field(name):
+                merged[name.casefold()] = {"name": name, "value": value}
+        secret["fields"] = list(merged.values())
+        pool = await get_arq_pool()
+        key = f"login:{project_id}:{ref}"
+        ttl = await pool.ttl(key)
+        if ttl <= 0:
+            raise RuntimeError("Temporary login expired. Enter the account again.")
+        await pool.set(key, encrypt_login_secret(secret), ex=ttl)
+        return
     query = select(DiscoveryCredential).where(
         DiscoveryCredential.credential_ref == ref,
         DiscoveryCredential.project_id == project_id,

@@ -136,6 +136,7 @@ class GenerateTestCasesResponse(BaseModel):
     partial_pairing_acs: list[str] = []
     pairing_gaps: list[dict[str, Any]] = []
     needs_review_test_cases: list[str] = []
+    generation_gaps: list[dict[str, str]] = []
     duplicates_skipped: int = 0
     token_usage: dict | None = None
 
@@ -362,6 +363,7 @@ async def generate_test_cases(
         partial_pairing_acs=result.partial_pairing_acs,
         pairing_gaps=result.pairing_gaps,
         needs_review_test_cases=result.needs_review_test_cases,
+        generation_gaps=result.generation_gaps,
         duplicates_skipped=result.duplicates_skipped,
         token_usage=result.envelope.token_usage,
     )

@@ -1,6 +1,7 @@
 """Read and write encrypted form answers without exposing them to checkpoints."""
 
 import uuid
+import hashlib
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -111,6 +112,8 @@ async def get_form_answers(
     *,
     login: bool = False,
 ) -> dict[str, str] | None:
+    if form_key.startswith("session:"):
+        return _durable_fields(await _temporary_answers(project_id, page_key, form_key, credential_ref)) or None
     row = _pick(await _load_rows(project_id, page_key, form_key), credential_ref, login=login)
     if row is None:
         return None
@@ -123,6 +126,8 @@ async def get_session_answers(
     form_key: str,
     credential_ref: str | None = None,
 ) -> dict[str, str] | None:
+    if form_key.startswith("session:"):
+        return _session_fields(await _temporary_answers(project_id, page_key, form_key, credential_ref)) or None
     row = _pick(
         await _load_rows(project_id, page_key, form_key), credential_ref, login=True
     )
@@ -146,6 +151,11 @@ async def save_form_answers(
         {"key": key, "name": (labels or {}).get(key, key)} for key in values
     ])
     scope = credential_scope(credential_ref)
+    if form_key.startswith("session:"):
+        from infra.queue.broker import get_arq_pool
+        payload = {"fields": durable, "session_fields": session_values or discovered_session, "labels": labels or {}}
+        await (await get_arq_pool()).set(_temporary_key(project_id, page_key, form_key, credential_ref), encrypt_json_secret(payload), ex=86400)
+        return
     async with AsyncSessionLocal() as session:
         row = (
             await session.execute(
@@ -186,6 +196,17 @@ async def save_form_answers(
             row.encrypted_values = encrypted
             row.credential_ref = credential_ref
         await session.commit()
+
+
+def _temporary_key(project_id, page_key, form_key, credential_ref):
+    identity = hashlib.sha256(f"{page_key}|{form_key}|{credential_ref or ''}".encode()).hexdigest()
+    return f"login-input:{project_id}:{identity}"
+
+
+async def _temporary_answers(project_id, page_key, form_key, credential_ref):
+    from infra.queue.broker import get_arq_pool
+    raw = await (await get_arq_pool()).get(_temporary_key(project_id, page_key, form_key, credential_ref))
+    return decrypt_json_secret(raw.decode() if isinstance(raw, bytes) else raw) if raw else {}
 
 
 async def clear_session_answers(project_id: uuid.UUID) -> None:

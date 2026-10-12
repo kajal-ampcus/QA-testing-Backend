@@ -44,6 +44,7 @@ def validate_case(
 
     previous_action_state = None
     submitted = False
+    interactive_action_seen = False
     for number, step in enumerate(case.steps, 1):
         state = by_code.get(step.target.state_code)
         if state is None:
@@ -109,6 +110,15 @@ def validate_case(
                 issues.append(
                     f"Step {number}: keep explanations out of assert expected value."
                 )
+            if (
+                interactive_action_seen
+                and re.search(r"\bcurrent URL includes\b", expected_text, re.I)
+                and previous_action_state == step.target.state_code
+            ):
+                issues.append(
+                    f"Step {number}: the unchanged page URL does not prove the preceding "
+                    "interaction succeeded or was rejected. Assert an observed result instead."
+                )
             if "url" in expected_text.lower() and state:
                 paths = re.findall(
                     r"https?://[^\s'\"<>]+|(?<![\w/])/[\w/-]+", expected_text
@@ -134,6 +144,8 @@ def validate_case(
                 )
         elif step.action in {"click", "fill", "select", "navigate"}:
             previous_action_state = step.target.state_code
+            if step.action in {"click", "fill", "select"}:
+                interactive_action_seen = True
             if step.action == "click" and element:
                 submitted = bool(
                     re.search(

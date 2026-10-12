@@ -243,7 +243,8 @@ async def generate_automation(
         raise HTTPException(status_code=422, detail=exc.message) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await _write_login_env(project, suite_dir)
+    # Account secrets are resolved by the execution gateway, never exported
+    # into generated suites. Each test retains its opaque account binding.
     _record_run(session, gen_request, AutomationGenerationAgent.name, AgentRunStatus.SUCCESS)
 
     review_request = AgentInputEnvelope(

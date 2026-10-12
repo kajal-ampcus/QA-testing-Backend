@@ -64,7 +64,7 @@ def test_rejects_unresolvable_data_and_preexisting_success_text():
     assert any("pre-existing page text" in issue for issue in issues)
 
 
-def test_negative_case_may_remain_on_the_page_when_the_control_has_an_href():
+def test_unchanged_url_alone_does_not_prove_a_negative_result():
     states = [
         {
             "state_code": "STATE-001",
@@ -99,7 +99,8 @@ def test_negative_case_may_remain_on_the_page_when_the_control_has_an_href():
         traceability=["AC-1"],
         confidence=0.6,
     )
-    assert validate_case(rejected, states, {"AC-1"}) == []
+    issues = validate_case(rejected, states, {"AC-1"})
+    assert any("unchanged page URL" in issue for issue in issues)
 
     navigated = CaseSpec(
         title="Login opens admin",

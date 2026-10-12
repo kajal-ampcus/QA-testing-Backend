@@ -234,18 +234,34 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             _bump_summary(run, outcome.status)
             await self.execution_repo.session.commit()
 
-        live = await self.runner.run_suite(
-            suite_dir,
-            scripts=classified.runnable,
-            project_id=request.project_id,
-            base_url=payload.get("base_url"),
-            credential_ref=payload.get("credential_ref"),
-            run_destructive=bool(payload.get("run_destructive")),
-            timeout=int(payload.get("timeout") or 900),
-            runner=payload.get("subprocess_runner"),
-            run_id=run.id,
-            on_outcome=on_outcome,
-        )
+        groups: dict[str | None, list] = {}
+        bindings = payload.get("script_credential_refs") or {}
+        for script in classified.runnable:
+            ref = bindings.get(str(script.id), payload.get("credential_ref"))
+            groups.setdefault(ref, []).append(script)
+        live = SuiteRunResult(process_ok=True, detail="")
+        for ref, scripts in groups.items():
+            result = await self.runner.run_suite(
+                suite_dir, scripts=scripts, project_id=request.project_id,
+                base_url=payload.get("base_url"), credential_ref=ref,
+                run_destructive=bool(payload.get("run_destructive")),
+                timeout=int(payload.get("timeout") or 900),
+                runner=payload.get("subprocess_runner"), run_id=run.id, on_outcome=on_outcome,
+            )
+            if not isinstance(result, SuiteRunResult):
+                return result
+            live.process_ok = live.process_ok and result.process_ok
+            live.detail = "\n".join(filter(None, [live.detail, result.detail]))
+            live.raw = result.raw
+            live.outcomes.extend(result.outcomes)
+            if not result.process_ok and not result.outcomes:
+                for script in scripts:
+                    live.outcomes.append(RawTestOutcome(
+                        spec_path=script.file_path, title=script.test_case_code,
+                        status=TestResultStatus.ERROR, duration_ms=None,
+                        error_message=result.detail, expected="pass", actual=result.detail,
+                        script_id=script.id,
+                    ))
         if not isinstance(live, SuiteRunResult):
             return live
         for outcome in live.outcomes:

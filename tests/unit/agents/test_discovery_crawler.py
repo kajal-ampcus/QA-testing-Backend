@@ -6,7 +6,10 @@ from typing import Any
 import pytest
 
 from core.agents.application_discovery.crawler import CrawlBudget, Crawler
-from core.agents.application_discovery.parallel_crawler import ParallelCrawler
+from core.agents.application_discovery.parallel_crawler import (
+    ParallelCrawler,
+    _browser_navigation_failure,
+)
 from core.tool_gateway.mcp_clients.chrome_devtools_client import (
     SecurityVerificationRequiredError,
 )
@@ -15,6 +18,19 @@ from core.tool_gateway.mcp_clients.chrome_devtools_client import (
 class TextBlock:
     def __init__(self, text: str) -> None:
         self.text = text
+
+
+def test_certificate_interstitial_is_reported_as_navigation_failure() -> None:
+    failure = _browser_navigation_failure(
+        [TextBlock(
+            'uid=1_0 RootWebArea "Privacy error" url="chrome-error://chromewebdata/"\n'
+            'uid=1_1 StaticText "Your connection is not private"\n'
+            'uid=1_2 StaticText "NET::ERR_CERT_AUTHORITY_INVALID"'
+        )]
+    )
+    assert failure is not None
+    assert failure["error"] == "TLSCertificateError"
+    assert "certificate" in failure["detail"].lower()
 
 
 class FakeBrowser:

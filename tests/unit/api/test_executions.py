@@ -29,6 +29,9 @@ class FakeSession:
     async def commit(self) -> None:
         self.committed = True
 
+    async def scalars(self, statement):
+        return []
+
 
 class FakeAutomationRepo:
     def __init__(self, scripts: list[AutomationScript]) -> None:

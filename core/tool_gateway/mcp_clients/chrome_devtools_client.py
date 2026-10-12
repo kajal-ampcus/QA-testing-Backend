@@ -173,8 +173,13 @@ def _login_form_visible(snapshot: object) -> bool:
 
 
 def _authenticated_session_visible(snapshot: object) -> bool:
-    """Detect that login left the form, including SPAs that keep the word Password in copy."""
-    controls = _parse_controls(_snapshot_text(snapshot))
+    """Detect positive evidence that the browser is past authentication.
+
+    A partially exposed login form may omit its password field from the
+    accessibility tree. Absence of that control is not authentication proof.
+    """
+    text = _snapshot_text(snapshot)
+    controls = _parse_controls(text)
     if any(
         role == "button" and re.search(r"\b(?:log\s*out|sign\s*out)\b", name, re.I)
         for _uid, role, name in controls
@@ -202,6 +207,13 @@ def _authenticated_session_visible(snapshot: object) -> bool:
         for _uid, role, name in controls
     ):
         return True
+    page_url = re.search(r'RootWebArea[^\n]*url="([^"]+)"', text)
+    if page_url and re.search(
+        r"/(?:login|log-in|signin|sign-in)(?:[/?#]|$)", page_url[1], re.I
+    ):
+        return False
+    if _find_submit_uid(controls, ["log in", "login", "sign in", "signin"]):
+        return False
     return bool(controls) and not _login_form_visible(snapshot)
 
 
@@ -235,7 +247,6 @@ def _term_in_label(term: str, label: str) -> bool:
     return term in label
 
 
-_LOGIN_ROLE_BUTTONS = ("employee", "kitchen", "admin", "staff", "manager")
 _SUBMIT_EXCLUDE = re.compile(
     r"\b(?:forgot|reset|recover|refresh|show password|hide password|remember)\b",
     re.I,
@@ -338,6 +349,30 @@ def _find_uid(
         None,
     )
     return reverse
+
+
+def _find_password_uid(
+    controls: list[tuple[str, str, str]],
+    names: list[str],
+    username_uid: str | None,
+) -> str | None:
+    """Find a password control, including an unlabeled accessibility node."""
+    matched = _find_uid(controls, names, {"textbox", "input"})
+    if matched or not username_uid:
+        return matched
+    excluded = re.compile(
+        r"captcha|verification|one[ -]?time|otp|answer|search|email|user(?:name)?|"
+        r"employee|staff|mobile|phone|identifier|\bid\b",
+        re.I,
+    )
+    candidates = [
+        uid
+        for uid, role, name in controls
+        if role in {"textbox", "input"}
+        and uid != username_uid
+        and not excluded.search(name)
+    ]
+    return candidates[0] if candidates else None
 
 
 _SVG_DATA_URI = re.compile(r"data:image/svg\+xml[^\"'\s>]*", re.I)
@@ -1091,17 +1126,60 @@ class ChromeDevToolsClient:
                 "spinbutton",
             }
         ]
-        function = """(...els) => els.map(el => ({
-            dom_id: el.id || null,
-            locator: el.id ? '#' + CSS.escape(el.id) : null,
-            input_type: el.getAttribute('type'),
-            required: !!el.required,
-            disabled: !!el.disabled,
-            visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
-            url: el.href || null,
-            options: el.tagName === "SELECT" && el.options ? [...el.options].filter(o => !o.disabled).map(o => (o.label || o.text || o.value || "").trim()).filter(Boolean) : null,
-            option_items: el.tagName === "SELECT" && el.options ? [...el.options].map(o => ({label: (o.label || o.text || o.value || "").trim(), value: o.value, enabled: !o.disabled})).filter(o => o.label) : null
-        }))"""
+        function = """(...els) => {
+            const literal = (value) => {
+                if (!value.includes('"')) return `"${value}"`;
+                if (!value.includes("'")) return `'${value}'`;
+                return "concat(" + value.split('"').map((part, index) =>
+                    (index ? "'\\\"'," : "") + `"${part}"`
+                ).join(",") + ")";
+            };
+            const unique = (xpath) => {
+                try {
+                    return document.evaluate(xpath, document, null,
+                        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null).snapshotLength === 1;
+                } catch { return false; }
+            };
+            const xpathOf = (el) => {
+                if (!(el instanceof Element)) return null;
+                const attributes = [
+                    ["id", el.id],
+                    ["data-testid", el.getAttribute("data-testid")],
+                    ["name", el.getAttribute("name")],
+                    ["aria-label", el.getAttribute("aria-label")],
+                ];
+                for (const [name, value] of attributes) {
+                    if (!value) continue;
+                    const candidate = `//${el.localName}[@${name}=${literal(value)}]`;
+                    if (unique(candidate)) return candidate;
+                }
+                const parts = [];
+                for (let node = el; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
+                    const tag = node.localName;
+                    if (!tag) break;
+                    const siblings = node.parentElement
+                        ? [...node.parentElement.children].filter(child => child.localName === tag)
+                        : [];
+                    const position = siblings.length > 1 ? `[${siblings.indexOf(node) + 1}]` : "";
+                    parts.unshift(`${tag}${position}`);
+                    if (tag === "html") break;
+                }
+                return parts.length ? `/${parts.join("/")}` : null;
+            };
+            return els.map(el => ({
+                dom_id: el.id || null,
+                locator: el.id ? '#' + CSS.escape(el.id) : null,
+                xpath: xpathOf(el),
+                input_type: el.getAttribute('type'),
+                control_group: el.parentElement ? xpathOf(el.parentElement) : null,
+                required: !!el.required,
+                disabled: !!el.disabled,
+                visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
+                url: el.href || null,
+                options: el.tagName === "SELECT" && el.options ? [...el.options].filter(o => !o.disabled).map(o => (o.label || o.text || o.value || "").trim()).filter(Boolean) : null,
+                option_items: el.tagName === "SELECT" && el.options ? [...el.options].map(o => ({label: (o.label || o.text || o.value || "").trim(), value: o.value, enabled: !o.disabled})).filter(o => o.label) : null
+            }));
+        }"""
         try:
             for offset in range(0, len(controls), 30):
                 batch = controls[offset : offset + 30]
@@ -1758,27 +1836,27 @@ class ChromeDevToolsClient:
     ) -> list[tuple[str, str, str]]:
         """Click Employee/Admin (or similar) before filling the matching ID field."""
         role_name = (secret.get("account_role") or "").strip()
-        available_roles = [
-            name
-            for _uid, role, name in controls
-            if role in {"radio", "tab", "button"} and name.lower() in _LOGIN_ROLE_BUTTONS
-        ]
-        if role_name.lower() in {"", "user", "default", "test account"}:
-            if any(name.lower() == "employee" for name in available_roles):
-                role_name = "Employee"
-            elif available_roles:
-                role_name = available_roles[0]
-            else:
-                return controls
+        choice = json.loads(secret.get("login_choice") or "null")
+        if choice and choice.get("role") == "combobox":
+            uid = next((uid for uid, role, name in controls
+                if role == "combobox" and name == choice.get("name")), None)
+            if uid:
+                await self.fill(uid, choice["value"])
+                await self.wait_until_ready()
+                return _parse_controls(_snapshot_text(await self.take_snapshot()))
+        if choice and choice.get("role") == "link":
+            return controls  # The saved login URL already identifies this route.
+        if role_name.lower() in {"", "user", "default", "test account", "sign in"}:
+            return controls
         role_names = [
             role_name,
             f"{role_name} login",
             f"login as {role_name}",
             f"{role_name} portal",
         ]
-        role_uid = _find_uid(
-            controls, role_names, {"radio", "tab", "button", "option", "menuitem"}
-        )
+        role_uid = next((uid for uid, role, name in controls
+            if role in {"radio", "tab", "button", "option", "menuitem"}
+            and name.casefold() in {value.casefold() for value in role_names}), None)
         if not role_uid:
             return controls
         logger.info("[DISCOVERY AUTH] Selecting login role=%s", role_name)
@@ -1854,14 +1932,35 @@ class ChromeDevToolsClient:
         if self._credential_ref is None:
             return
         logger.info("[DISCOVERY AUTH] Starting authentication credential_ref=%s", self._credential_ref)
-        current = _parse_controls(_snapshot_text(await self.take_snapshot()))
-        if self._authenticated and not any(
-            role in {"textbox", "input"} and name.lower() == "password" for _, role, name in current
-        ):
+        current_snapshot = await self.take_snapshot()
+        if self._authenticated and _authenticated_session_visible(current_snapshot):
             return
         self._authenticated = False
 
         secret = await resolve_login(self._credential_ref, self._project_id)
+        # Replay observed identifier-first login steps for a saved account.
+        # Prelude descriptors contain no values; secrets are resolved here.
+        prelude = json.loads(secret.get("login_prelude") or "[]")
+        if prelude and not _login_form_visible(await self.take_snapshot()):
+            fields = saved_field_values(secret)
+            for step in prelude:
+                if step.get("role") == "authentication":
+                    continue
+                controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
+                uid = next((uid for uid, role, name in controls
+                    if role == step.get("role") and name == step.get("name")), None)
+                if not uid:
+                    continue
+                if step.get("sensitive"):
+                    value = fields.get(re.sub(r"\s+", " ", step.get("name", "")).strip().casefold())
+                    if not value:
+                        raise RuntimeError("Saved login is missing a required step value")
+                    await self.fill(uid, value)
+                elif step.get("value") is not None:
+                    await self.fill(uid, step["value"])
+                else:
+                    await self.click(uid)
+                await self.wait_until_ready()
 
         last_page_text = ""
         login_page_text = ""
@@ -1941,7 +2040,11 @@ class ChromeDevToolsClient:
                 "your password",
                 "current password",
             ]
-            password_uid = _password_uid(controls, username_uid or "", password_names)
+            password_uid = _find_password_uid(
+                controls,
+                password_names,
+                username_uid,
+            )
             submit_names = [
                 secret.get("submit_selector", ""),
                 # Common submit button names across websites
