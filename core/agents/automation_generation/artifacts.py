@@ -7,8 +7,8 @@ import zipfile
 from pathlib import Path
 from uuid import UUID
 
-_SKIP_DIRS = {"node_modules", "test-results", "playwright-report", "blob-report"}
-_SKIP_FILES = {".env"}
+_SKIP_DIRS = {"node_modules", "test-results", "playwright-report", "blob-report", ".execution-inputs"}
+_SKIP_FILES = {".env", "execution-inputs.json"}
 
 
 class ArtifactPathError(ValueError):

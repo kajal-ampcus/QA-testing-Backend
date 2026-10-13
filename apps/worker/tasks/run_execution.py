@@ -1,16 +1,19 @@
 """
 Worker task wrapping core/agents/test_execution — runs the compiled Playwright
-suite (Section 14). Zero LLM-in-the-loop; this task's job is to invoke the
-agent and persist test_runs/test_results/evidence, not to make any judgment
-calls itself.
+suite (Section 14). The deterministic execution agent checks assertions;
+a separate input coordinator supplies unresolved values without making
+pass/fail judgments.
 """
 
 import asyncio
 import os
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
+from core.agents.input_resolution.coordinator import coordinate_inputs
 from domain.enums import TestRunStatus
 from infra.db.models import (
     application_map,  # noqa: F401 — FK target of automation_scripts / test_cases
@@ -24,6 +27,7 @@ from infra.db.models.agent_run import AgentRun
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
 from infra.db.session import AsyncSessionLocal
+from infra.execution_inputs import prepare_run_inputs
 from infra.object_storage.s3_client import S3Client
 from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunStatus
 
@@ -35,7 +39,9 @@ def _job_timeout_seconds() -> int:
         return 1200
 
 
-async def run_execution(ctx: dict[str, Any], project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+async def run_execution(
+    ctx: dict[str, Any], project_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     """arq task: run the Test Execution Agent and persist results."""
     from core.agents.test_execution.agent import TestExecutionAgent
 
@@ -56,7 +62,17 @@ async def run_execution(ctx: dict[str, Any], project_id: str, payload: dict[str,
             payload=payload,
         )
         try:
-            result = await agent.run(input_envelope)
+            directory = prepare_run_inputs(
+                Path(payload["suite_dir"]), uuid.UUID(str(payload["run_id"]))
+            )
+            input_envelope.payload["input_dir"] = str(directory)
+            coordinator = asyncio.create_task(coordinate_inputs(directory))
+            try:
+                result = await agent.run(input_envelope)
+            finally:
+                coordinator.cancel()
+                with suppress(asyncio.CancelledError):
+                    await coordinator
         except asyncio.CancelledError:
             await session.rollback()
             run_id = payload.get("run_id")

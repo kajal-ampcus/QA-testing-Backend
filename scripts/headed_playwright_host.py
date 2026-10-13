@@ -82,7 +82,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         suite = _suite_dir(str(payload.get("suite_dir", "")))
         if suite is None:
-            self._send(403, {"detail": "Suite folder is outside the automation artifacts directory"})
+            self._send(
+                403, {"detail": "Suite folder is outside the automation artifacts directory"}
+            )
             return
         if not _LOCK.acquire(blocking=False):
             self._send(409, {"detail": "A browser run is already in progress"})
@@ -132,7 +134,9 @@ def _playwright_cli(suite: Path) -> Path:
     return suite / "node_modules" / ".bin" / name
 
 
-def _execute(command: list[str], suite: Path, env: dict[str, str], timeout: int) -> subprocess.CompletedProcess[str]:
+def _execute(
+    command: list[str], suite: Path, env: dict[str, str], timeout: int
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         cwd=suite,
@@ -172,7 +176,9 @@ def _prepare_suite(suite: Path, env: dict[str, str], npm: str, npx: str) -> str 
     except subprocess.TimeoutExpired:
         return "Downloading Chromium timed out on this computer."
     if browsers.returncode != 0:
-        detail = (browsers.stderr or browsers.stdout or "playwright install chromium failed").strip()
+        detail = (
+            browsers.stderr or browsers.stdout or "playwright install chromium failed"
+        ).strip()
         return detail[-4000:]
     return None
 
@@ -190,9 +196,26 @@ def _run_suite(suite: Path, payload: dict) -> dict:
     env.pop("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", None)
     extra = payload.get("env") or {}
     if isinstance(extra, dict):
-        for key in ("BASE_URL", "TEST_USERNAME", "TEST_PASSWORD", "RUN_DESTRUCTIVE"):
+        for key in (
+            "BASE_URL",
+            "TEST_USERNAME",
+            "TEST_PASSWORD",
+            "RUN_DESTRUCTIVE",
+            "EXECUTION_INPUT_DIR",
+        ):
             value = extra.get(key)
             if isinstance(value, str) and value:
+                if key == "EXECUTION_INPUT_DIR":
+                    target = Path(value).resolve()
+                    if (
+                        suite.resolve() not in target.parents
+                        or ".execution-inputs" not in target.parts
+                    ):
+                        return {
+                            "returncode": 1,
+                            "stdout": "",
+                            "stderr": "Invalid execution input directory",
+                        }
                 env[key] = value
     prepare_error = _prepare_suite(suite, env, npm, npx)
     if prepare_error:

@@ -20,11 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.dependencies import get_db_session
 from apps.api.settings import ApiSettings
 from core.agents.automation_generation.agent import AutomationGenerationAgent
-from core.agents.automation_generation.registry import (
-    StackChoiceError,
-    execution_available,
-    normalize_stack,
-)
 from core.agents.automation_generation.artifacts import (
     build_zip,
     generation_dir,
@@ -38,6 +33,11 @@ from core.agents.automation_generation.eligibility import (
     MapSnapshot,
     RequirementSnapshot,
     select_eligible,
+)
+from core.agents.automation_generation.registry import (
+    StackChoiceError,
+    execution_available,
+    normalize_stack,
 )
 from core.agents.automation_generation.suite import (
     CaseInput,
@@ -195,6 +195,14 @@ async def generate_automation(
     stored_versions = (
         {row.test_case_id: row.test_case_version for row in existing_rows} if folder_ready else {}
     )
+    if folder_ready and language == "typescript" and framework == "playwright":
+        manifest = json.loads((suite_dir / "manifest.json").read_text(encoding="utf-8"))
+        if manifest.get("input_runtime_version") != 1:
+            # Regenerate selected legacy specs once to add execution checkpoints.
+            stored_versions = {}
+        else:
+            upgraded = {item["test_case_id"] for item in manifest.get("cases", []) if item.get("input_runtime_version") == 1}
+            stored_versions = {key: version for key, version in stored_versions.items() if str(key) in upgraded}
     needed = set(
         case_ids_to_write(
             [(case.id, version.version) for case, version in selected],

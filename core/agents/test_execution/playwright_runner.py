@@ -80,6 +80,7 @@ class PlaywrightRunner:
         runner: Any | None = None,
         run_id: UUID | None = None,
         on_outcome: Callable[[RawTestOutcome], Awaitable[None]] | None = None,
+        input_dir: str | None = None,
     ) -> SuiteRunResult:
         spec_paths = [script.file_path for script in scripts]
 
@@ -94,6 +95,7 @@ class PlaywrightRunner:
             if outcome is not None:
                 await on_outcome(outcome)
 
+        input_options = {"input_dir": input_dir} if input_dir else {}
         process = await self.client.run(
             suite_dir,
             spec_paths=spec_paths,
@@ -105,11 +107,14 @@ class PlaywrightRunner:
             runner=runner,
             on_output=on_output if run_id is not None else None,
             on_case=on_case if on_outcome is not None else None,
+            **input_options,
         )
         if process.report is None:
             return SuiteRunResult(
                 process_ok=False,
-                detail=process.stderr.strip() or process.stdout.strip() or "Playwright produced no JSON report.",
+                detail=process.stderr.strip()
+                or process.stdout.strip()
+                or "Playwright produced no JSON report.",
                 outcomes=[],
                 raw=process,
             )
@@ -241,7 +246,10 @@ def extract_trace_logs(trace_path: Path | None) -> tuple[bytes | None, bytes | N
                     lowered = method.lower()
                     if "console" in lowered:
                         console.append(params or {"type": method})
-                    if lowered in {"request", "response", "requestfinished", "requestfailed"} or "network" in lowered:
+                    if (
+                        lowered in {"request", "response", "requestfinished", "requestfailed"}
+                        or "network" in lowered
+                    ):
                         network.append(params or {"type": method})
     except (OSError, zipfile.BadZipFile):
         return _json_bytes([]), _json_bytes([])

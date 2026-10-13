@@ -39,10 +39,11 @@ from domain.enums import (
     TestRunStatus,
 )
 from infra.db.models.automation import AutomationScript
-from infra.db.models.test_case import TestCaseVersion
 from infra.db.models.execution import TestResult, TestRun
+from infra.db.models.test_case import TestCaseVersion
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
+from infra.execution_inputs import actual_inputs
 from infra.object_storage.s3_client import InMemoryS3Client, S3Client
 from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunStatus
 
@@ -167,7 +168,8 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             decisions=[
                 {
                     "decision": f"{outcome.status}:{outcome.spec_path}",
-                    "reason": outcome.error_message or f"Assertion compared {outcome.expected!r} with {outcome.actual!r}",
+                    "reason": outcome.error_message
+                    or f"Assertion compared {outcome.expected!r} with {outcome.actual!r}",
                     "evidence": [f"assertion:{outcome.expected}->{outcome.actual}"],
                     "confidence": 1.0,
                     "source": EvidenceSource.TEST_EXECUTION,
@@ -241,12 +243,19 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             groups.setdefault(ref, []).append(script)
         live = SuiteRunResult(process_ok=True, detail="")
         for ref, scripts in groups.items():
+            input_options = {"input_dir": payload["input_dir"]} if payload.get("input_dir") else {}
             result = await self.runner.run_suite(
-                suite_dir, scripts=scripts, project_id=request.project_id,
-                base_url=payload.get("base_url"), credential_ref=ref,
+                suite_dir,
+                scripts=scripts,
+                project_id=request.project_id,
+                base_url=payload.get("base_url"),
+                credential_ref=ref,
                 run_destructive=bool(payload.get("run_destructive")),
                 timeout=int(payload.get("timeout") or 900),
-                runner=payload.get("subprocess_runner"), run_id=run.id, on_outcome=on_outcome,
+                runner=payload.get("subprocess_runner"),
+                run_id=run.id,
+                on_outcome=on_outcome,
+                **input_options,
             )
             if not isinstance(result, SuiteRunResult):
                 return result
@@ -256,12 +265,18 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
             live.outcomes.extend(result.outcomes)
             if not result.process_ok and not result.outcomes:
                 for script in scripts:
-                    live.outcomes.append(RawTestOutcome(
-                        spec_path=script.file_path, title=script.test_case_code,
-                        status=TestResultStatus.ERROR, duration_ms=None,
-                        error_message=result.detail, expected="pass", actual=result.detail,
-                        script_id=script.id,
-                    ))
+                    live.outcomes.append(
+                        RawTestOutcome(
+                            spec_path=script.file_path,
+                            title=script.test_case_code,
+                            status=TestResultStatus.ERROR,
+                            duration_ms=None,
+                            error_message=result.detail,
+                            expected="pass",
+                            actual=result.detail,
+                            script_id=script.id,
+                        )
+                    )
         if not isinstance(live, SuiteRunResult):
             return live
         for outcome in live.outcomes:
@@ -317,8 +332,13 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         for script in scripts:
             version = by_key.get((script.test_case_id, script.test_case_version))
             steps = version.steps if version is not None and isinstance(version.steps, list) else []
-            data = version.test_data if version is not None and isinstance(version.test_data, dict) else {}
+            data = (
+                version.test_data
+                if version is not None and isinstance(version.test_data, dict)
+                else {}
+            )
             context[str(script.id)] = {
+                "case_code": script.test_case_code,
                 "title": version.title if version is not None else "",
                 "category": version.category if version is not None else "",
                 "inputs": input_fields(data, steps),
@@ -357,6 +377,13 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         case_context: dict[str, dict[str, Any]],
     ) -> None:
         result_id = uuid.uuid4()
+        if payload.get("input_dir") and outcome.script_id is not None:
+            context = case_context.get(str(outcome.script_id), {})
+            code = str(context.get("case_code") or "")
+            used = actual_inputs(Path(payload["input_dir"]), code)
+            if used:
+                context["inputs"] = used
+                case_context[str(outcome.script_id)] = context
         evidence = await self._upload(
             project_id=str(request.project_id),
             run_id=str(payload["run_id"]),

@@ -17,6 +17,7 @@ from uuid import UUID
 from core.agents.automation_generation import templates
 from core.agents.automation_generation.artifacts import list_files
 from core.agents.automation_generation.execution_plan import prepare_execution
+from core.agents.automation_generation.input_runtime import RUNTIME_SOURCE
 from core.agents.automation_generation.selector_strategy import (
     SelectorDecision,
     resolve_in_state,
@@ -193,6 +194,9 @@ def generate_suite(
         templates.render_auth(base_url=json.dumps(application_url) if application_url else '""'),
     )
     _merge_testdata(suite_dir / "data" / "testdata.ts", data_cases, replace=not incremental)
+    _write(suite_dir / "data" / "execution-inputs.ts", RUNTIME_SOURCE)
+    if not (suite_dir / "execution-inputs.json").exists():
+        _write(suite_dir / "execution-inputs.json", '{"schema_version": 1, "values": {}}\n')
     written_pages: list[Path] = []
     for page in pages.values():
         page_path = suite_dir / "pages" / page["file_name"]
@@ -216,6 +220,7 @@ def generate_suite(
     scripts = [_public_script(item) for item in planned_cases]
     manifest = {
         "framework": "playwright",
+        "input_runtime_version": 1,
         "executed": False,
         "project_id": str(project_id),
         "generation_id": str(generation_id),
@@ -223,12 +228,14 @@ def generate_suite(
         "application_map_id": str(map_id) if map_id else None,
         "application_map_version": map_version,
         "verification_status": "NOT_VERIFIED",
+        "input_bindings": [binding for item in planned_cases if not item.blocked for binding in item.input_bindings],
         "files": [],
         "cases": [
             {
                 "test_case_id": str(item.test_case_id),
                 "test_case_code": item.tc_code,
                 "test_case_version": item.version,
+                "input_runtime_version": 1,
                 "requirement_id": str(item.requirement_id),
                 "requirement_version": item.requirement_version,
                 "application_map_id": str(item.application_map_id),
@@ -293,6 +300,7 @@ class _Draft:
     blocked_reason: str | None = None
     fixture: str = "sessionPage"
     starting_state: str = "AUTHENTICATED"
+    input_bindings: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def blocked(self) -> bool:
@@ -366,6 +374,7 @@ def _plan_case(
     risks = ["SAFE"]
     calls: list[tuple[str, str, str | None]] = []
     data_fields: list[dict[str, str]] = []
+    input_bindings: list[dict[str, Any]] = []
     used_props: dict[tuple[str, str], str] = {}
     prepared = prepare_execution(case, states)
     case.steps = prepared.steps
@@ -416,6 +425,15 @@ def _plan_case(
         element_name = str(target.get("element_name") or decision.evidence.get("name") or "")
         if action in {"fill", "select"}:
             expression, field = _fill_expression(case, index, step, element_name, leaves, forbidden)
+            binding = _input_binding(case, index, step, element_name, state, forbidden)
+            input_bindings.append(binding)
+            raw = str(step.get("value") or "")
+            match = re.fullmatch(r"\{([^{}]+)\}", raw.strip())
+            if match and not any(
+                path == match.group(1) or path.endswith("." + match.group(1)) for path, _ in leaves
+            ):
+                expression = "null"
+            expression = f"await executionInput({json.dumps(binding['key'])}, {expression})"
             if field:
                 data_fields.append(field)
             verb = "select" if action == "select" else "fill"
@@ -447,6 +465,7 @@ def _plan_case(
         blocked_reason="; ".join(reasons) if reasons else None,
         fixture=prepared.fixture,
         starting_state=prepared.starting_state,
+        input_bindings=input_bindings,
     )
     draft.source = _render_case(draft, generation_id)
     return draft
@@ -559,15 +578,18 @@ def _action_for(method: str, prop: str) -> dict[str, str] | None:
         f"select{pascal}": (
             "value: string",
             "await this.guard(async () => {"
-            f" const tag = await this.{prop}.evaluate((node) => node.tagName).catch(() => \"\");"
-            f" if (tag === \"SELECT\") {{ await this.{prop}.selectOption({{ label: value }}).catch(async () => {{ await this.{prop}.selectOption(value); }}); return; }}"
+            f' const tag = await this.{prop}.evaluate((node) => node.tagName).catch(() => "");'
+            f' if (tag === "SELECT") {{ await this.{prop}.selectOption({{ label: value }}).catch(async () => {{ await this.{prop}.selectOption(value); }}); return; }}'
             f" await this.{prop}.click();"
-            " await this.page.getByRole(\"option\", { name: value, exact: true }).click();"
+            ' await this.page.getByRole("option", { name: value, exact: true }).click();'
             " });",
         ),
         f"click{pascal}": ("", f"await this.guard(async () => {{ await this.{prop}.click(); }});"),
         f"waitFor{pascal}": ("", f'await this.{prop}.waitFor({{ state: "visible" }});'),
-        f"expect{pascal}": ("expected: string", f"await expect(this.{prop}).toContainText(expected);"),
+        f"expect{pascal}": (
+            "expected: string",
+            f"await expect(this.{prop}).toContainText(expected);",
+        ),
         f"expect{pascal}Visible": ("", f"await expect(this.{prop}).toBeVisible();"),
     }
     if method not in mapping:
@@ -589,6 +611,61 @@ def _data_cases(cases: list[_Draft]) -> list[dict[str, Any]]:
     return [{"code": code, "fields": fields} for code, fields in grouped.items()]
 
 
+def _input_binding(
+    case: CaseInput,
+    index: int,
+    step: dict[str, Any],
+    name: str,
+    state: StateInput,
+    forbidden: set[str],
+) -> dict[str, Any]:
+    element = next(
+        (
+            item
+            for item in state.elements
+            if item.get("element_code") == step.get("target", {}).get("element_code")
+        ),
+        {},
+    )
+    objective = " ".join([case.title, case.objective])
+    if _contains_secret(objective, forbidden):
+        objective = "Resolve the input for the existing case"
+    raw = str(step.get("value") or "")
+    placeholder = re.fullmatch(r"\{([^{}]+)\}", raw.strip())
+    resolved = raw
+    if placeholder:
+        resolved = next(
+            (
+                value
+                for key, value in _string_leaves(case.test_data)
+                if key == placeholder.group(1) or key.endswith("." + placeholder.group(1))
+            ),
+            None,
+        )
+    validation_case = bool(re.search(r"empty|required|missing|blank", objective, re.I))
+    negative_target = case.category == "NEGATIVE" and (
+        any(word.lower() in objective.lower() for word in name.split() if len(word) > 2)
+        or resolved in {"wrong", "not-an-email", "invalid-captcha", "abc"}
+    )
+    return {
+        "key": f"{case.tc_code}:v{case.version}:step{index}",
+        "case_code": case.tc_code,
+        "case_version": case.version,
+        "step_number": index,
+        "field": name,
+        "category": case.category or "POSITIVE",
+        "objective": objective,
+        "negative_target": negative_target,
+        "allow_empty": case.category == "NEGATIVE" and validation_case and resolved == "",
+        "sensitive": bool(_SENSITIVE.search(name + " " + raw)) or bool(re.search(r"password|otp|captcha|\bpin\b", name + " " + str(element.get("type") or element.get("input_type") or ""), re.I)),
+        "validation": element.get("validation") or {},
+        "action": step.get("action"),
+        "options": element.get("options") or [],
+        "requires_fixture": bool(re.search(r"login|sign in|authenticate", objective, re.I))
+        and not negative_target,
+    }
+
+
 def _fill_expression(
     case: CaseInput,
     index: int,
@@ -603,7 +680,9 @@ def _fill_expression(
     source = raw
     if placeholder:
         key = placeholder.group(1)
-        found = next((path for path, _value in leaves if path == key or path.endswith("." + key)), None)
+        found = next(
+            (path for path, _value in leaves if path == key or path.endswith("." + key)), None
+        )
         if found:
             leaf_path = found
             source = dict(leaves)[found]
@@ -832,9 +911,7 @@ def _merge_testdata(path: Path, data_cases: list[dict[str, Any]], *, replace: bo
         return
     text = path.read_text(encoding="utf-8")
     missing = [
-        case
-        for case in data_cases
-        if not re.search(rf"\b{re.escape(str(case['code']))}\s*:", text)
+        case for case in data_cases if not re.search(rf"\b{re.escape(str(case['code']))}\s*:", text)
     ]
     if not missing:
         return
@@ -860,8 +937,12 @@ def _augment_page(existing: str, rendered: str) -> str:
     for name in _LOCATOR_LINE.findall(rendered):
         if f"readonly {name}:" in updated:
             continue
-        line = next(line for line in rendered.splitlines() if line.startswith(f"  readonly {name}:"))
-        updated = updated.replace("  readonly page: Page;\n", f"  readonly page: Page;\n{line}\n", 1)
+        line = next(
+            line for line in rendered.splitlines() if line.startswith(f"  readonly {name}:")
+        )
+        updated = updated.replace(
+            "  readonly page: Page;\n", f"  readonly page: Page;\n{line}\n", 1
+        )
     for name in _ASSIGN_LINE.findall(rendered):
         if name == "page" or f"this.{name} =" in updated:
             continue
@@ -904,44 +985,57 @@ def _merge_manifest(path: Path, fresh: dict[str, Any]) -> dict[str, Any]:
     existing["project_id"] = fresh["project_id"]
     existing["generation_id"] = fresh["generation_id"]
     existing["application_url"] = fresh["application_url"]
+    existing["input_runtime_version"] = fresh["input_runtime_version"]
+    changed_codes = {item["test_case_code"] for item in fresh.get("cases", [])}
+    existing["input_bindings"] = [
+        item
+        for item in existing.get("input_bindings", [])
+        if item["case_code"] not in changed_codes
+    ] + fresh.get("input_bindings", [])
     return existing
 
 
 def _package_json(project_id: UUID) -> str:
-    return json.dumps(
-        {
-            "name": f"playwright-suite-{str(project_id)[:8]}",
-            "private": True,
-            "scripts": {
-                "test:list": "playwright test --list",
-                "typecheck": "tsc --noEmit",
+    return (
+        json.dumps(
+            {
+                "name": f"playwright-suite-{str(project_id)[:8]}",
+                "private": True,
+                "scripts": {
+                    "test:list": "playwright test --list",
+                    "typecheck": "tsc --noEmit",
+                },
+                "devDependencies": {
+                    "@playwright/test": "^1.56.0",
+                    "typescript": "~5.9.3",
+                },
             },
-            "devDependencies": {
-                "@playwright/test": "^1.56.0",
-                "typescript": "~5.9.3",
-            },
-        },
-        indent=2,
-    ) + "\n"
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def _tsconfig() -> str:
-    return json.dumps(
-        {
-            "compilerOptions": {
-                "target": "ES2022",
-                "module": "commonjs",
-                "moduleResolution": "node",
-                "strict": True,
-                "esModuleInterop": True,
-                "skipLibCheck": True,
-                "noEmit": True,
-                "types": [],
+    return (
+        json.dumps(
+            {
+                "compilerOptions": {
+                    "target": "ES2022",
+                    "module": "commonjs",
+                    "moduleResolution": "node",
+                    "strict": True,
+                    "esModuleInterop": True,
+                    "skipLibCheck": True,
+                    "noEmit": True,
+                    "types": [],
+                },
+                "include": ["./**/*.ts"],
             },
-            "include": ["./**/*.ts"],
-        },
-        indent=2,
-    ) + "\n"
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 _ENV_DTS = """\

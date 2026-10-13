@@ -52,9 +52,10 @@ def _encoded_extra_login_fields(secret: dict[str, Any]) -> str:
             re.I,
         )
     }
-    return base64.b64encode(
-        json.dumps(fields, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
+    return base64.b64encode(json.dumps(fields, separators=(",", ":")).encode("utf-8")).decode(
+        "ascii"
+    )
+
 
 # Prints the test title when it starts and appends one JSON line when it ends,
 # so the Execution page can list that case before the suite process exits.
@@ -186,6 +187,7 @@ class PlaywrightClient:
         runner: Any | None = None,
         on_output: Callable[[str], Awaitable[None]] | None = None,
         on_case: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        input_dir: str | None = None,
     ) -> PlaywrightProcessResult:
         env = await self._environment(
             project_id=project_id,
@@ -193,6 +195,8 @@ class PlaywrightClient:
             credential_ref=credential_ref,
             run_destructive=run_destructive,
         )
+        if input_dir:
+            env["EXECUTION_INPUT_DIR"] = input_dir
         return await execute_suite(
             suite_dir,
             spec_paths=spec_paths,
@@ -226,8 +230,12 @@ class PlaywrightClient:
         env["TEST_LOGIN_FIELDS_B64"] = _encoded_extra_login_fields(secret)
         env["TEST_LOGIN_URL"] = str(secret.get("login_url") or "/login")
         env["TEST_ACCOUNT_ROLE"] = str(secret.get("account_role") or "")
-        env["TEST_LOGIN_PRELUDE_B64"] = base64.b64encode(str(secret.get("login_prelude") or "[]").encode()).decode()
-        env["TEST_LOGIN_CHOICE_B64"] = base64.b64encode(str(secret.get("login_choice") or "null").encode()).decode()
+        env["TEST_LOGIN_PRELUDE_B64"] = base64.b64encode(
+            str(secret.get("login_prelude") or "[]").encode()
+        ).decode()
+        env["TEST_LOGIN_CHOICE_B64"] = base64.b64encode(
+            str(secret.get("login_choice") or "null").encode()
+        ).decode()
         return env
 
 
@@ -490,10 +498,19 @@ async def execute_suite(
 def host_suite_dir(suite_dir: Path) -> str:
     """Map the container suite folder to the folder on the desktop machine."""
     host_root = os.environ.get("AUTOMATION_HOST_ROOT", "").strip().replace("\\", "/").rstrip("/")
-    artifact_root = os.environ.get("AUTOMATION_ARTIFACT_DIR", "/app/artifacts/automation").strip().replace("\\", "/").rstrip("/")
+    artifact_root = (
+        os.environ.get("AUTOMATION_ARTIFACT_DIR", "/app/artifacts/automation")
+        .strip()
+        .replace("\\", "/")
+        .rstrip("/")
+    )
     raw = str(suite_dir).replace("\\", "/").rstrip("/")
-    if host_root and artifact_root and (raw == artifact_root or raw.startswith(artifact_root + "/")):
-        return f"{host_root}{raw[len(artifact_root):]}"
+    if (
+        host_root
+        and artifact_root
+        and (raw == artifact_root or raw.startswith(artifact_root + "/"))
+    ):
+        return f"{host_root}{raw[len(artifact_root) :]}"
     return raw
 
 
@@ -508,9 +525,21 @@ async def _run_on_headed_host(
     """Ask the desktop process to run npx playwright test with a visible browser."""
     forwarded = {
         key: env[key]
-        for key in ("BASE_URL", "TEST_USERNAME", "TEST_PASSWORD", "TEST_LOGIN_FIELDS_B64", "TEST_LOGIN_URL", "TEST_ACCOUNT_ROLE", "TEST_LOGIN_PRELUDE_B64", "TEST_LOGIN_CHOICE_B64", "RUN_DESTRUCTIVE")
+        for key in (
+            "BASE_URL",
+            "TEST_USERNAME",
+            "TEST_PASSWORD",
+            "TEST_LOGIN_FIELDS_B64",
+            "TEST_LOGIN_URL",
+            "TEST_ACCOUNT_ROLE",
+            "TEST_LOGIN_PRELUDE_B64",
+            "TEST_LOGIN_CHOICE_B64",
+            "RUN_DESTRUCTIVE",
+        )
         if env.get(key)
     }
+    if env.get("EXECUTION_INPUT_DIR"):
+        forwarded["EXECUTION_INPUT_DIR"] = host_suite_dir(Path(env["EXECUTION_INPUT_DIR"]))
     payload = {
         "suite_dir": host_suite_dir(suite_dir),
         "spec_paths": spec_paths,
@@ -534,7 +563,9 @@ async def _run_on_headed_host(
                 loaded = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"The visible browser runner refused the suite ({exc.code}): {detail}") from exc
+            raise RuntimeError(
+                f"The visible browser runner refused the suite ({exc.code}): {detail}"
+            ) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(
                 "The visible browser runner is not available on this computer, so Playwright cannot open a window."

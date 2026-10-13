@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _SKIP_DIRS = {"node_modules", "test-results", "playwright-report", "blob-report"}
-_SLEEP = re.compile(r"\b(waitForTimeout|setTimeout|page\.waitForTimeout)\s*\(|\bsleep\s*\(")
+_SLEEP = re.compile(r"\bwaitForTimeout\s*\(|(?<![\w.])setTimeout\s*\(|\bsleep\s*\(")
 _TEST_ONLY = re.compile(r"\b(?:test|describe)\.only\b")
 _XPATH = re.compile(r"xpath=|locator\(\s*['\"]//")
 _SECRET_LITERAL = re.compile(

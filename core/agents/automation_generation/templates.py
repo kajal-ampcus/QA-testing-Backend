@@ -77,6 +77,7 @@ export class [[ class_name ]] {
 
 _SPEC = """\
 import { test, expect } from "../../fixtures/auth";
+import { executionInput } from "../../data/execution-inputs";
 [% for page in pages %]
 import { [[ page.class_name ]] } from "../../pages/[[ page.file_name ]]";
 [% endfor %]
@@ -741,6 +742,8 @@ playwright/.cache/
 .env
 *.auth.json
 storageState.json
+.execution-inputs/
+execution-inputs.json
 """
 
 _ENV_EXAMPLE = """\
