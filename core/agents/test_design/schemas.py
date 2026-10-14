@@ -118,6 +118,10 @@ class TestDesignResult(BaseModel):
     """Agent.run()'s return type: envelope + the generated specs before DB persistence."""
 
     envelope: AgentOutputEnvelope
+    outcome: str = "generated"
+    validation_issues: list[str] = Field(default_factory=list)
+    message: str = ""
+    ac_evidence: list[dict[str, str]] = Field(default_factory=list)
     test_cases: list[TestCaseSpec]
     uncovered_acs: list[str] = Field(default_factory=list)
     partial_pairing_acs: list[str] = Field(

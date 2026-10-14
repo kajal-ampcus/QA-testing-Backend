@@ -66,7 +66,7 @@ def test_prompt_asks_for_compact_batches() -> None:
     )
     lowered = prompt.lower()
     assert "for each acceptance criterion" in lowered
-    assert "at most one case" in lowered
+    assert "one to four distinct cases" in lowered
     assert "do not invent an opposite category" in lowered
     targeted = build_user_prompt(
         requirement_title="Login",

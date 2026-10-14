@@ -225,6 +225,8 @@ async def trigger_discovery(
             detail="Provide a discovery URL or set the project's application_url",
         )
     target_url = str(body.url) if body.url is not None else str(project.application_url)
+    if body.start_from_scratch and body.resume_application_map_id:
+        raise HTTPException(status_code=422, detail="Start from scratch cannot resume an existing map")
     if body.resume_application_map_id:
         resumable = await ApplicationMapRepository(session).get_with_states(
             body.resume_application_map_id

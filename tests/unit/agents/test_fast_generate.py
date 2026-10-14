@@ -46,6 +46,117 @@ STATES = [
 ]
 
 
+def test_login_matches_discovery_authentication_action():
+    from copy import deepcopy
+    states = deepcopy(STATES)
+    states[1]["reached_via"] = [
+        "click(role=button,name='Employee')",
+        "click(role=authentication,name='Sign in with selected account')",
+    ]
+    states[0]["reached_via"] = []
+    cases = generate_cases_from_map(
+        [{"id": "AC-1", "text": "User can log in with valid credentials"}], states, "Login"
+    )
+    assert cases
+    assert any(case.steps[-1].target.state_code == "STATE-002" for case in cases)
+    assert all(not validate_case(case, states, {"AC-1"}) for case in cases)
+
+
+def test_authentication_criterion_selects_login_not_employee_role():
+    from copy import deepcopy
+    states = deepcopy(STATES)
+    states[0]["reached_via"] = []
+    states[0]["elements"].insert(0, {
+        "element_code": "EL-ROLE", "role": "button", "name": "Employee", "source": "OBSERVED_DOM",
+    })
+    states[1]["reached_via"] = ["click(role=button,name='Employee')",
+        "click(role=authentication,name='Sign in with selected account')"]
+    cases = generate_cases_from_map([{
+        "id": "AC-2", "text": "The system validates the credentials and CAPTCHA and redirects the employee to the Dashboard upon successful authentication",
+    }], states, "Employee Login, Food Ordering, Order Tracking, Notifications, and Logout")
+    assert cases
+    assert any(step.action == "click" and step.target.element_name == "LOGIN" for step in cases[0].steps)
+    assert all(not validate_case(case, states, {"AC-2"}) for case in cases)
+
+
+def test_required_field_negative_and_boundary_cases_are_distinct_and_grounded():
+    from copy import deepcopy
+    states = deepcopy(STATES)
+    states[0]["elements"][0]["validation"] = {"required": True}
+    acs = [{"id": "AC-1", "text": "Email is mandatory"}]
+    cases = generate_cases_from_map(acs, states, "Login")
+    negative = next(case for case in cases if case.category == "NEGATIVE")
+    edge = next(case for case in cases if case.category == "EDGE_CASE")
+    assert negative.test_data == {"field_value": ""}
+    assert edge.test_data == {"field_value": "a"}
+    assert negative.expected_result != edge.expected_result
+    assert all(not validate_case(case, states, {"AC-1"}) for case in [negative, edge])
+    assert all(step.action != "click" for case in [negative, edge] for step in case.steps)
+    targeted = generate_cases_from_map(acs, states, "Login", {"AC-1": {"NEGATIVE"}})
+    assert all(case.category == "NEGATIVE" for case in targeted)
+
+
+def test_required_login_field_does_not_generate_cases_on_forgot_password_page() -> None:
+    states = [
+        {
+            "state_code": "STATE-LOGIN",
+            "url_pattern": "/login",
+            "reached_via": [],
+            "elements": [{
+                "element_code": "EL-LOGIN-ID", "role": "textbox", "name": "Employee ID",
+                "source": "OBSERVED_DOM", "validation": {"required": True},
+            }],
+        },
+        {
+            "state_code": "STATE-FORGOT",
+            "url_pattern": "/forgot-password",
+            "reached_via": ["click(role=link,name='Forgot Password')"],
+            "elements": [{
+                "element_code": "EL-FORGOT-ID", "role": "textbox", "name": "Employee / staff ID",
+                "source": "OBSERVED_DOM", "validation": {"required": True},
+            }],
+        },
+        {
+            "state_code": "STATE-DASHBOARD",
+            "url_pattern": "/dashboard",
+            "reached_via": ["click(role=authentication,name='Sign in')"],
+            "elements": [],
+        },
+    ]
+    cases = generate_cases_from_map(
+        [{"id": "AC-LOGIN-ID", "text": "Employee ID is required on the login page"}],
+        states,
+        "Login, Forgot Password, and Dashboard",
+    )
+    required_cases = [case for case in cases if "required input" in case.title]
+    assert required_cases
+    assert {case.steps[0].target.state_code for case in required_cases} == {"STATE-LOGIN"}
+
+
+def test_required_forgot_password_field_uses_forgot_password_page() -> None:
+    states = [
+        {
+            "state_code": "STATE-LOGIN", "url_pattern": "/login", "reached_via": [],
+            "elements": [{"element_code": "EL-LOGIN-ID", "role": "textbox", "name": "Employee ID",
+                          "source": "OBSERVED_DOM", "validation": {"required": True}}],
+        },
+        {
+            "state_code": "STATE-FORGOT", "url_pattern": "/forgot-password",
+            "reached_via": ["click(role=link,name='Forgot Password')"],
+            "elements": [{"element_code": "EL-FORGOT-ID", "role": "textbox", "name": "Employee / staff ID",
+                          "source": "OBSERVED_DOM", "validation": {"required": True}}],
+        },
+    ]
+    cases = generate_cases_from_map(
+        [{"id": "AC-FORGOT-ID", "text": "Employee or staff ID is required on Forgot Password"}],
+        states,
+        "Login, Forgot Password, and Dashboard",
+    )
+    required_cases = [case for case in cases if "required input" in case.title]
+    assert required_cases
+    assert {case.steps[0].target.state_code for case in required_cases} == {"STATE-FORGOT"}
+
+
 def test_fast_generate_does_not_manufacture_positive_negative_pairs() -> None:
     acs = [{"id": "AC-1", "text": "User can log in with valid credentials"}]
     cases = generate_cases_from_map(acs, STATES, "Login")
@@ -54,6 +165,31 @@ def test_fast_generate_does_not_manufacture_positive_negative_pairs() -> None:
         assert validate_case(case, STATES, {"AC-1"}) == []
         assert case.steps[-1].action == "assert"
         assert case.traceability == ["AC-1"]
+
+
+def test_discovery_coverage_includes_observed_controls_and_required_input_variants() -> None:
+    states = [
+        {
+            "state_code": "STATE-LOGIN", "url_pattern": "/login", "reached_via": [],
+            "elements": [
+                {"element_code": "EL-ID", "role": "textbox", "name": "Employee ID", "source": "OBSERVED_DOM", "validation": {"required": True}},
+                {"element_code": "EL-FORGOT", "role": "link", "name": "Forgot Password", "url": "/forgot-password", "source": "OBSERVED_DOM"},
+                {"element_code": "EL-REMEMBER", "role": "checkbox", "name": "Remember me", "source": "OBSERVED_DOM"},
+            ],
+        },
+        {"state_code": "STATE-FORGOT", "url_pattern": "/forgot-password",
+         "reached_via": ["click(role=link,name='Forgot Password')"], "elements": []},
+    ]
+    cases = generate_cases_from_map(
+        [{"id": "AC-1", "text": "Users can use the login and password recovery pages"}], states, "Authentication",
+        include_discovery_coverage=True,
+    )
+    titles = {case.title for case in cases}
+    assert any("navigate using Forgot Password" in title for title in titles)
+    assert any("Remember me is available" in title for title in titles)
+    assert any("Employee ID empty required input" in title for title in titles)
+    assert any(case.category == "EDGE_CASE" and "Employee ID" in case.title for case in cases)
+    assert all(not validate_case(case, states, {"AC-1"}) for case in cases)
 
 
 def test_duplicate_signature_ignores_category_relabelling() -> None:

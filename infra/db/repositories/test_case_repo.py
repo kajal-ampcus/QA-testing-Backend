@@ -172,6 +172,45 @@ class TestCaseRepository(BaseRepository):
             )
             .execution_options(synchronize_session=False)
         )
+
+    async def supersede_for_regeneration(
+        self, requirement_id: uuid.UUID, application_map_id: uuid.UUID
+    ) -> None:
+        """Retire a graph's active cases before an explicit regeneration.
+
+        Historical approvals remain intact for audit purposes; the replacement
+        cases are newly created DRAFTs and must go through review again.
+        """
+        active_ids = select(TestCase.id).where(
+            TestCase.requirement_id == requirement_id,
+            TestCase.application_map_id == application_map_id,
+            TestCase.status != TestCaseStatus.OUTDATED,
+        )
+        await self.session.execute(
+            update(Approval)
+            .where(
+                Approval.target_type == "test_case",
+                Approval.target_id.in_(active_ids),
+                Approval.status == ApprovalStatus.PENDING,
+            )
+            .values(
+                status=ApprovalStatus.REJECTED,
+                decided_by="system",
+                reason="Superseded by explicit test-case regeneration",
+                decided_at=func.now(),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.execute(
+            update(TestCase)
+            .where(
+                TestCase.requirement_id == requirement_id,
+                TestCase.application_map_id == application_map_id,
+                TestCase.status != TestCaseStatus.OUTDATED,
+            )
+            .values(status=TestCaseStatus.OUTDATED)
+            .execution_options(synchronize_session=False)
+        )
         await self.session.execute(
             update(TestCase)
             .where(

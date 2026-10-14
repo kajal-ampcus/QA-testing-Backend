@@ -572,9 +572,14 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         total_input_tokens = total_output_tokens = 0
         model_name = ""
         ac_ids = {ac["id"] for ac in req_version.acceptance_criteria}
-        known_signatures = await self._test_case_repo.existing_signatures(
+        regenerate = bool(request.payload.get("regenerate"))
+        # An explicit regeneration must be allowed to recreate an otherwise
+        # identical scenario. Do not retire the existing set yet: that happens
+        # immediately before the first validated replacement is saved.
+        known_signatures = set() if regenerate else await self._test_case_repo.existing_signatures(
             requirement_id, app_map.id
         )
+        regeneration_retired = False
         credential_ref = (getattr(app_map, "discovery_checkpoint", None) or {}).get("configuration", {}).get("credential_ref") or request.payload.get("credential_ref")
         duplicates_skipped = 0
 
@@ -583,6 +588,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             map_states,
             req_version.title,
             requested_categories or None,
+            include_discovery_coverage=not bool(requested_categories),
         )
         batch_valid: list[TestCaseSpec] = []
         for tc in heuristic_cases:
@@ -596,6 +602,11 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             else:
                 batch_valid.append(tc)
         if batch_valid:
+            if regenerate and not regeneration_retired:
+                await self._test_case_repo.supersede_for_regeneration(
+                    requirement_id, app_map.id
+                )
+                regeneration_retired = True
             valid_cases.extend(batch_valid)
             saved, skipped = await self._persist_specs(
                 project_id=request.project_id,
@@ -671,6 +682,11 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                             else:
                                 llm_valid.append(tc)
                     if llm_valid:
+                        if regenerate and not regeneration_retired:
+                            await self._test_case_repo.supersede_for_regeneration(
+                                requirement_id, app_map.id
+                            )
+                            regeneration_retired = True
                         valid_cases.extend(llm_valid)
                         saved, skipped = await self._persist_specs(
                             project_id=request.project_id,
@@ -694,12 +710,17 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 + "\n".join(f"  • {e}" for e in llm_errors)
             )
 
-        # If validation wiped everything, raise
-        if not valid_cases:
-            raise RuntimeError(
-                "All generated test cases failed validation and were not saved.\n"
-                + "\n".join(f"  • {e}" for e in validation_errors[:10])
-            )
+        # A partial map can legitimately support no candidates. Return a scope
+        # outcome, not an infrastructure failure, without weakening validation.
+        outcome = "generated" if valid_cases else "validation_rejected" if validation_errors else "no_supported_cases"
+        message = (
+            "Generated tests for the supported scenarios. Remaining criteria are deferred; existing tests are preserved."
+            if valid_cases else
+            "Generated candidates were rejected by validation. Review the validation issues before retrying; existing tests are preserved."
+            if validation_errors else
+            f"No supported scenarios were matched in the {len(map_states)} selected states. "
+            "Discover the relevant actions and result pages, or review the evidence mapping. Existing tests are preserved."
+        )
 
         # ── AC coverage checks ────────────────────────────────────────────
         # Coverage is judged over every current case for this requirement
@@ -741,11 +762,12 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         needs_review = _low_confidence(valid_cases)
 
         # ── Persist valid test cases ──────────────────────────────────────
-        await self._map_repo.mark_generated_fingerprints(
-            app_map.id,
-            requirement_id,
-            {state.fingerprint for state in scoped_states},
-        )
+        used_codes = {step.target.state_code for case in valid_cases for step in case.steps}
+        if used_codes:
+            await self._map_repo.mark_generated_fingerprints(
+                app_map.id, requirement_id,
+                {state.fingerprint for state in scoped_states if state.state_code in used_codes},
+            )
         await self._test_case_repo.session.commit()
 
         # ── Build decisions ───────────────────────────────────────────────
@@ -835,7 +857,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 source=EvidenceSource.INFERENCE,
             ))
 
-        has_warnings = bool(llm_errors or validation_errors or uncovered or partial_pairing or needs_review)
+        has_warnings = bool(not valid_cases or llm_errors or validation_errors or uncovered or partial_pairing or needs_review)
         run_status = AgentRunStatus.PARTIAL if has_warnings else AgentRunStatus.SUCCESS
 
         envelope = AgentOutputEnvelope(
@@ -854,6 +876,15 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         )
 
         return TestDesignResult(
+            outcome=outcome,
+            validation_issues=validation_errors[:10],
+            message=message,
+            ac_evidence=[{
+                "ac_id": ac["id"],
+                "status": "deferred" if ac["id"] in uncovered_set else "partial",
+                "reason": "No saved valid scenario references this criterion; more evidence or mapping review is needed."
+                    if ac["id"] in uncovered_set else "Valid scenarios reference this criterion; full behavioral coverage requires review.",
+            } for ac in req_version.acceptance_criteria],
             envelope=envelope,
             test_cases=valid_cases,
             uncovered_acs=uncovered,

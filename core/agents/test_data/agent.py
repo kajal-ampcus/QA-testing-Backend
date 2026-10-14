@@ -23,25 +23,43 @@ def value_for_element(element: dict[str, Any], category: Category) -> FieldDatum
     if category == "EDGE_CASE":
         if "email" in role_name:
             value = "  first.last+tag@sub.example.test  "
+        elif "captcha" in role_name or "verification code" in role_name or "otp" in role_name:
+            value = "0"  # Numeric lower boundary; never solves a live challenge.
+        elif "employee id" in role_name or "employeeid" in role_name or "user id" in role_name:
+            value = "A" * 256
         elif "phone" in role_name or "mobile" in role_name:
             value = "+1 (999) 999-9999"
+        elif "number" in role_name or "amount" in role_name or "quantity" in role_name:
+            value = "0"
         else:
             value = "  <b>O'Brien & Co</b> " + ("x" * (64 if required else 256))
     elif category == "POSITIVE":
         if "email" in role_name:
             value = "person@example.test"
+        elif "captcha" in role_name or "verification code" in role_name or "otp" in role_name:
+            value = "123456"
+        elif "employee id" in role_name or "employeeid" in role_name or "user id" in role_name:
+            value = "EMP001"
         elif "pass" in role_name:
             value = "ValidPass1!"
         elif "phone" in role_name or "mobile" in role_name:
             value = "9999999999"
+        elif "number" in role_name or "amount" in role_name or "quantity" in role_name:
+            value = "1"
         else:
             value = "valid-input"
     elif "email" in role_name:
         value = "not-an-email"
+    elif "captcha" in role_name or "verification code" in role_name or "otp" in role_name:
+        value = "not-a-number"
+    elif "employee id" in role_name or "employeeid" in role_name or "user id" in role_name:
+        value = "' OR '1'='1"
     elif "pass" in role_name:
         value = "wrong"
     elif "phone" in role_name or "mobile" in role_name:
         value = "abc"
+    elif "number" in role_name or "amount" in role_name or "quantity" in role_name:
+        value = "-1"
     else:
         value = ""
     return FieldDatum(key=key, name=name, value=value, category=category)

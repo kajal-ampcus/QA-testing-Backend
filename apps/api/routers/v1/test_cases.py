@@ -40,6 +40,9 @@ class GenerateTestCasesRequest(BaseModel):
     selected_area_ids: list[str] = Field(default_factory=list)
     selected_module_ids: list[str] = Field(default_factory=list)
     selected_branch_keys: list[str] = Field(default_factory=list, max_length=50)
+    # Explicit user action: retire the current graph's cases and create a new
+    # draft set, including cases whose earlier versions were approved.
+    regenerate: bool = False
 
 
 class CreateTestCaseRequest(BaseModel):
@@ -130,6 +133,10 @@ class BulkReviewResponse(BaseModel):
 
 
 class GenerateTestCasesResponse(BaseModel):
+    outcome: str = "generated"
+    message: str = ""
+    ac_evidence: list[dict[str, str]] = Field(default_factory=list)
+    validation_issues: list[str] = Field(default_factory=list)
     generated: int
     test_cases: list[TestCaseOut]
     uncovered_acs: list[str]
@@ -311,6 +318,7 @@ async def generate_test_cases(
             "selected_area_ids": body.selected_area_ids,
             "selected_module_ids": body.selected_module_ids,
             "selected_branch_keys": body.selected_branch_keys,
+            "regenerate": body.regenerate,
             **({"credential_ref": project.credential_ref} if project.credential_ref else {}),
         },
     )
@@ -357,6 +365,10 @@ async def generate_test_cases(
     test_case_outs = [_to_out(tc, v) for tc, v in pairs if tc.id in created_ids]
 
     return GenerateTestCasesResponse(
+        outcome=result.outcome,
+        message=result.message,
+        ac_evidence=result.ac_evidence,
+        validation_issues=result.validation_issues,
         generated=len(test_case_outs),
         test_cases=test_case_outs,
         uncovered_acs=result.uncovered_acs,

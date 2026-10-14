@@ -40,6 +40,20 @@ RULE 2 — Cover each AC only with meaningful, evidence-supported cases.
     not "Chat Interaction") — describe the feature in the title instead,
     e.g. title="Login with valid credentials", category="POSITIVE".
 
+RULE 2A - Apply a coverage matrix to each observed page.
+  Look for distinct, observable scenarios across functional success,
+  invalid/required input validation, boundaries and special-character handling,
+  navigation/state changes, visible UI controls, keyboard/accessibility,
+  authorization/session, and responsive/browser/performance/security checks.
+  Generate a separate case only when BOTH the AC and application map support
+  it. A login page can have valid sign-in, rejected credentials, required-field,
+  password-visibility, recovery-link, and role-tab cases only when their
+  controls and resulting states were observed. CAPTCHA, timeout, lockout, SLA,
+  breakpoint, browser, and security tests additionally require explicit
+  requirement text and observable evidence or configured test support.
+  Prefer two to four compact cases when an AC contains independently observable
+  behaviours; one well-grounded case is correct for a narrow AC.
+
 RULE 3 — Test data must be concrete and named.
   - Use named test data sets in steps (e.g. value="{valid_email}").
   - Define those sets in the test_data dict.
@@ -86,7 +100,8 @@ RULE 8 - Use observed hrefs and target states, never guess destination paths.
 RULE 9 — Keep the tool payload small so generation stays fast:
   - If TARGETED COVERAGE is present, generate ONLY those categories.
   - Otherwise, choose only the category supported by each AC's wording.
-  - Each case traces exactly one AC id.
+  - Each case traces exactly one AC id. An AC can have up to four distinct
+    evidence-supported cases.
   - At most 6 steps per case. Short title. One-sentence objective.
   - Do not emit extra categories, long preconditions, or commentary.
 
@@ -172,8 +187,8 @@ def build_user_prompt(
         )
     else:
         generate_line = (
-            "For each acceptance criterion, generate at most one case in the category "
-            "supported by its wording. Do not invent an opposite category."
+            "For each acceptance criterion, generate one to four distinct cases only where "
+            "the AC and observed map support them. Do not invent an opposite category."
         )
     return f"""REQUIREMENT
 ===========

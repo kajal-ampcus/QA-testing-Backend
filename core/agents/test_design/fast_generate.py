@@ -21,6 +21,7 @@ from core.agents.test_design.schemas import StepTarget, TestCaseSpec, TestStep
 
 _FILLABLE = {"textbox", "searchbox", "spinbutton", "combobox"}
 _CLICKABLE = {"button", "link", "checkbox", "radio"}
+_COVERABLE = _FILLABLE | _CLICKABLE
 _SUBMIT = re.compile(r"\b(submit|send|save|log.?in|sign.?in|continue|next)\b", re.I)
 _CONTROL_LABEL = re.compile(r"observed_link='([^']*)'|name='([^']*)'", re.I)
 _CLICK_NAME = re.compile(r"^click\s+([^()]+)$", re.I)
@@ -79,11 +80,28 @@ def _state_score(state: dict[str, Any], terms: set[str]) -> int:
 
 
 def _rank_states(states: list[dict[str, Any]], ac: dict[str, Any], title: str) -> list[dict[str, Any]]:
+    """Rank a page using this criterion, not the requirement's broad title.
+
+    A requirement commonly describes several pages (for example Login, Forgot
+    Password, and Dashboard).  Including that title in every criterion made
+    those page names equally relevant, so a shared field such as Employee ID
+    could be drafted against the Forgot Password page for a login criterion.
+    """
+    criterion = str(ac.get("text") or "")
     terms = {
         word.lower()
-        for word in re.findall(r"[a-zA-Z0-9]{3,}", f"{title} {ac.get('text', '')}")
+        for word in re.findall(r"[a-zA-Z0-9]{3,}", criterion)
     }
-    return sorted(states, key=lambda state: _state_score(state, terms), reverse=True)
+    scored = [(state, _state_score(state, terms)) for state in states]
+    # A terse AC may not contain any visible page/control words. In that
+    # limited case, the requirement title remains a fallback rather than a
+    # signal that every page belongs to every AC.
+    if not any(score for _, score in scored):
+        fallback_terms = {
+            word.lower() for word in re.findall(r"[a-zA-Z0-9]{3,}", title)
+        }
+        scored = [(state, _state_score(state, fallback_terms)) for state in states]
+    return [state for state, _ in sorted(scored, key=lambda item: item[1], reverse=True)]
 
 
 def _url_path(state: dict[str, Any]) -> str:
@@ -95,7 +113,7 @@ def _url_path(state: dict[str, Any]) -> str:
 _CHROME = re.compile(r"\b(toggle theme|dark mode|light mode)\b", re.I)
 
 
-def _best_click(elements: list[dict[str, Any]], text: str) -> dict[str, Any] | None:
+def _best_click(elements: list[dict[str, Any]], text: str, *, criterion: str | None = None) -> dict[str, Any] | None:
     """Pick a control the case is about.
 
     Theme switches are chrome. They are not the action for menu, order,
@@ -105,6 +123,17 @@ def _best_click(elements: list[dict[str, Any]], text: str) -> dict[str, Any] | N
     pool = [element for element in clicks if not _CHROME.search(str(element.get("name") or ""))]
     if not pool:
         return None
+    intent = criterion if criterion is not None else text
+    if (
+        re.search(r"\b(authentication|credentials|log\s*in|sign\s*in)\b", intent, re.I)
+        and re.search(r"\b(successful|successfully|valid)\b", intent, re.I)
+        and not _NEGATIVE_INTENT.search(intent)
+    ):
+        login = next((element for element in pool if re.fullmatch(
+            r"log\s*in|sign\s*in", str(element.get("name") or "").strip(), re.I
+        )), None)
+        if login is not None:
+            return login
     terms = {word.lower() for word in re.findall(r"[a-zA-Z0-9]{3,}", text)}
 
     def score(element: dict[str, Any]) -> int:
@@ -177,6 +206,16 @@ def _result_state(
                 return state, 0.8
         return start, 0.5
     name = _norm_label(str((click or {}).get("name") or ""))
+    if re.fullmatch(r"log\s*in|sign\s*in", name):
+        # Discovery records browser authentication as a semantic action rather
+        # than a literal click on the application's submit-button label.
+        prefix = start.get("reached_via") or []
+        authenticated = [state for state in states
+            if state["state_code"] != start["state_code"]
+            and (state.get("reached_via") or [])[:len(prefix)] == prefix
+            and re.search(r"role=authentication(?:,|\))", str((state.get("reached_via") or [""])[-1]))]
+        if len(authenticated) == 1:
+            return authenticated[0], 0.8
     if len(name) >= 2:
         for state in states:
             path = state.get("reached_via") or []
@@ -211,7 +250,7 @@ def _fill_value(element: dict[str, Any], *, category: str) -> tuple[str, str, st
 
 def _credential_field(element: dict[str, Any]) -> bool:
     blob = f"{element.get('name') or ''} {element.get('type') or ''}"
-    return bool(re.search(r"password|passphrase|e-?mail|username|user name|captcha", blob, re.I))
+    return bool(re.search(r"password|passphrase|e-?mail|username|user name|employee\s*id|staff\s*id|user\s*id|captcha", blob, re.I))
 
 
 def _named_in_text(element: dict[str, Any], text: str) -> bool:
@@ -258,7 +297,10 @@ def _build_case(
         if element.get("role") == "combobox"
     ):
         return None
-    click = _best_click(elements, text)
+    click = _best_click(elements, text, criterion=str(ac.get("text") or ""))
+    if (re.search(r"\blog\s*out|\bsign\s*out", str(ac.get("text") or ""), re.I)
+        and re.fullmatch(r"log\s*in|sign\s*in", str((click or {}).get("name") or ""), re.I)):
+        return None
     fills = _relevant_fills(elements, text, click)
     if category in {"NEGATIVE", "EDGE_CASE"} and not fills:
         return None  # nothing to vary; repeating the positive inputs adds no value
@@ -351,11 +393,97 @@ def _build_case(
     )
 
 
+def _coverage_ac(acceptance_criteria: list[dict[str, Any]], state: dict[str, Any], element: dict[str, Any]) -> str:
+    """Attach map coverage to the most relevant approved criterion.
+
+    Test cases retain requirement traceability, while their scenario and target
+    come from the browser-observed application map.
+    """
+    context = " ".join((str(state.get("url_pattern") or ""), str(element.get("name") or "")))
+    terms = set(re.findall(r"[a-zA-Z0-9]{3,}", context.lower()))
+    ranked = []
+    for ac in acceptance_criteria:
+        ac_terms = set(re.findall(r"[a-zA-Z0-9]{3,}", str(ac.get("text") or "").lower()))
+        ranked.append((len(terms & ac_terms), str(ac["id"])))
+    return max(ranked, key=lambda item: item[0])[1]
+
+
+def _page_label(state: dict[str, Any]) -> str:
+    path = _url_path(state).strip("/")
+    return re.sub(r"[-_]+", " ", path).title() or "Application"
+
+
+def generate_discovery_coverage_cases(
+    acceptance_criteria: list[dict[str, Any]], states: list[dict[str, Any]]
+) -> list[TestCaseSpec]:
+    """Create bounded tester-style coverage directly from observed controls.
+
+    This complements AC-led scenarios. It never invents a click result: a
+    navigation case is emitted only when discovery recorded its destination.
+    Other interactive components receive a page-level availability assertion;
+    required inputs additionally receive blank and one-character checks.
+    """
+    if not acceptance_criteria:
+        return []
+    cases: list[TestCaseSpec] = []
+    for state in states:
+        for element in _observed(state):
+            if not _usable(element, _COVERABLE):
+                continue
+            name = str(element.get("name") or element.get("text") or "control").strip()
+            if not name:
+                continue
+            ac_id = _coverage_ac(acceptance_criteria, state, element)
+            role = str(element.get("role") or "control")
+            target = _target(state, element)
+            result, confidence = _result_state(states, state, element if role in _CLICKABLE else None)
+            if role in _CLICKABLE and result["state_code"] != state["state_code"]:
+                expected = f"The current URL includes {_url_path(result)}"
+                cases.append(TestCaseSpec(
+                    title=f"{_page_label(state)}: navigate using {name}",
+                    objective="Verify the observed control reaches its discovered destination.",
+                    category="POSITIVE", preconditions=[f"Browser is on {_url_path(state)}"],
+                    steps=[
+                        TestStep(step_number=1, action="navigate", target=_target(state)),
+                        TestStep(step_number=2, action="click", target=target),
+                        TestStep(step_number=3, action="assert", target=_target(result), expected=expected),
+                    ], expected_result=expected, test_data={}, traceability=[ac_id], confidence=confidence,
+                ))
+                continue
+            validation = element.get("validation") or {}
+            if role in _FILLABLE and validation.get("required"):
+                for category, value, suffix, expected in (
+                    ("NEGATIVE", "", "empty required input", "Required-field validation reports this field as missing."),
+                    ("EDGE_CASE", "a", "one-character boundary", "Required-field validation no longer reports this field as missing; other validation rules may still reject the value."),
+                ):
+                    cases.append(TestCaseSpec(
+                        title=f"{_page_label(state)}: {name} {suffix}",
+                        objective="Verify the observed required-field constraint.", category=category,
+                        preconditions=[f"Browser is on {_url_path(state)}"],
+                        steps=[TestStep(step_number=1, action="navigate", target=_target(state)),
+                               TestStep(step_number=2, action="fill", target=target, value="{field_value}"),
+                               TestStep(step_number=3, action="assert", target=target, expected=expected)],
+                        expected_result=expected, test_data={"field_value": value}, traceability=[ac_id], confidence=0.8,
+                    ))
+                continue
+            expected = f"{name} is visible and available"
+            cases.append(TestCaseSpec(
+                title=f"{_page_label(state)}: {name} is available",
+                objective="Verify the observed interactive component is available to the user.",
+                category="POSITIVE", preconditions=[f"Browser is on {_url_path(state)}"],
+                steps=[TestStep(step_number=1, action="navigate", target=_target(state)),
+                       TestStep(step_number=2, action="assert", target=target, expected=expected)],
+                expected_result=expected, test_data={}, traceability=[ac_id], confidence=0.8,
+            ))
+    return cases
+
+
 def generate_cases_from_map(
     acceptance_criteria: list[dict[str, Any]],
     states: list[dict[str, Any]],
     requirement_title: str,
     requested_categories: dict[str, set[str]] | None = None,
+    include_discovery_coverage: bool = False,
 ) -> list[TestCaseSpec]:
     """Return only evidence-supported drafts; never manufacture category pairs."""
     if not states:
@@ -364,6 +492,49 @@ def generate_cases_from_map(
     for ac in acceptance_criteria:
         ranked_states = _rank_states(states, ac, requirement_title)
         wanted = requested_categories.get(ac["id"]) if requested_categories else None
+        # Required-field checks do not need a server submission or a fabricated
+        # error page. Assert only the observed required constraint, not complete
+        # validity (a non-empty value may still violate format or credentials).
+        criterion = str(ac.get("text") or "")
+        if re.search(r"\b(required|mandatory|missing|empty)\b", criterion, re.I):
+            seen_fields: set[tuple[str, str]] = set()
+            for state in ranked_states:
+                generated_for_state = False
+                for element in _observed(state):
+                    name = str(element.get("name") or "")
+                    identity = (state["state_code"], str(element.get("element_code")))
+                    terms = [word for word in re.findall(r"[a-z]+", name.lower())
+                             if word not in {"enter", "your", "the", "answer"}]
+                    if (identity in seen_fields or element.get("role") not in {"textbox", "searchbox"}
+                        or not (element.get("validation") or {}).get("required")
+                        or not any(re.search(r"\b" + re.escape(word) + r"\b", criterion, re.I) for word in terms)):
+                        continue
+                    seen_fields.add(identity)
+                    for category, value, expected in (
+                        ("NEGATIVE", "", "Required-field validation reports this field as missing."),
+                        ("EDGE_CASE", "a", "Required-field validation no longer reports this field as missing; other validation rules may still reject the value."),
+                    ):
+                        if wanted and category not in wanted:
+                            continue
+                        cases.append(TestCaseSpec(
+                            title=f"{name}: {'empty required input' if category == 'NEGATIVE' else 'one-character required boundary'}",
+                            objective="Verify only the observed required-field constraint.",
+                            category=category,
+                            preconditions=[f"Browser is on {_url_path(state)}"],
+                            steps=[
+                                TestStep(step_number=1, action="navigate", target=_target(state)),
+                                TestStep(step_number=2, action="fill", target=_target(state, element), value="{field_value}"),
+                                TestStep(step_number=3, action="assert", target=_target(state, element), expected=expected),
+                            ],
+                            expected_result=expected, test_data={"field_value": value},
+                            traceability=[str(ac["id"])], confidence=0.8,
+                        ))
+                        generated_for_state = True
+                # A required-field AC belongs to one page. Do not duplicate it
+                # on later pages just because those pages reuse an ID/email
+                # field with a similar label.
+                if generated_for_state:
+                    break
         categories = sorted(wanted) if wanted else _default_categories(ac)
         for category in categories:
             if category not in {"POSITIVE", "NEGATIVE", "EDGE_CASE"}:
@@ -394,4 +565,9 @@ def generate_cases_from_map(
                 )
                 if alternate is not None:
                     cases.append(alternate)
+    # Whole-graph generation must not be limited to the wording of the ACs.
+    # Add observed component coverage unless the caller explicitly requested a
+    # small category-repair batch.
+    if include_discovery_coverage and not requested_categories:
+        cases.extend(generate_discovery_coverage_cases(acceptance_criteria, states))
     return cases
