@@ -34,7 +34,7 @@ _SESSION_SECRET_NAME = re.compile(
     re.I,
 )
 _INVALID_CREDENTIAL = re.compile(
-    r"\b(?:invalid|incorrect).{0,40}(?:email|password|credential|employee id|username)\b",
+    r"\b(?:invalid|incorrect).{0,40}(?:email|password|credentials?|employee id|username)\b",
     re.I,
 )
 
@@ -212,6 +212,12 @@ def saved_field_values(secret: dict[str, Any]) -> dict[str, str]:
 
 def value_for_field(field: dict[str, Any], saved: dict[str, str], secret: dict[str, Any] | None = None) -> str | None:
     name = normalize_name(str(field.get("name") or ""))
+    if not name:
+        # An unlabeled password input must not match the first saved field:
+        # the empty string is a substring of every label.
+        if secret is not None and is_password_field(field):
+            return secret.get("password")
+        return None
     if name in saved:
         return saved[name]
     for label, value in saved.items():

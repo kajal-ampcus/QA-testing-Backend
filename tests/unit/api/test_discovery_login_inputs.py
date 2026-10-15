@@ -110,6 +110,41 @@ async def test_submitted_login_creates_account_and_resumes_with_reference(monkey
     assert app_map.discovery_checkpoint["input_requests"][0]["credential_ref"] == ref
     assert "private-password" not in str(app_map.discovery_checkpoint)
     assert "private-password" not in str(queued)
+    assert "public" in app_map.discovery_checkpoint["account_contexts"]
+
+
+@pytest.mark.asyncio
+async def test_selecting_saved_login_restores_its_unfinished_paths():
+    from types import SimpleNamespace
+    from apps.api.routers.v1 import application_maps as api
+
+    employee_job = {"key": "employee-pending", "status": "pending", "path": [{"role": "link", "name": "Payslips"}]}
+    request = {"id": "login", "kind": "login", "status": "pending", "login_label": "Employee",
+        "login_group": "employee", "page_key": "/login", "form_key": "employee", "fields": []}
+    app_map = SimpleNamespace(id=uuid.uuid4(), project_id=uuid.uuid4(), base_url="https://example.test",
+        status="PARTIAL", discovery_checkpoint={
+            "configuration": {"mode": "guided", "credential_ref": None},
+            "input_requests": [request], "jobs": [],
+            "account_contexts": {
+                "cred:employee": {"jobs": [employee_job], "completed_nodes": ["employee-home"]},
+                "cred:admin": {"jobs": [{"key": "admin-pending", "status": "pending"}]},
+            },
+            "graph": {"nodes": [{"fingerprint": "employee-home"}, {"fingerprint": "admin-home"}]},
+        })
+
+    class Session:
+        async def get(self, *_args): return app_map
+        async def scalar(self, *_args): return SimpleNamespace(credential_ref="cred:employee")
+        async def commit(self): pass
+
+    await api.submit_input_request(app_map.id, "login", api.SubmitInputRequestBody(
+        approve_submission=True, credential_ref="cred:employee"), Session())
+
+    checkpoint = app_map.discovery_checkpoint
+    assert employee_job in checkpoint["jobs"]
+    assert checkpoint["completed_nodes"] == ["employee-home"]
+    assert checkpoint["account_contexts"]["cred:admin"]["jobs"][0]["key"] == "admin-pending"
+    assert len(checkpoint["graph"]["nodes"]) == 2
 
 
 @pytest.mark.asyncio

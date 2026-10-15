@@ -2,6 +2,17 @@
 
 import pytest
 
+
+def test_unlabelled_password_uses_password_not_first_saved_field():
+    from core.tool_gateway.mcp_clients.chrome_devtools_client import _saved_control_value
+
+    secret = {"username": "employee-id", "password": "correct-password", "fields": [
+        {"name": "Employee ID", "value": "employee-id"},
+        {"name": "Enter your password", "value": "correct-password"},
+    ]}
+    controls = [("1", "textbox", "Employee ID"), ("2", "textbox", "")]
+    assert _saved_control_value(controls, "2", secret, fallback=secret["password"]) == "correct-password"
+
 from core.tool_gateway.mcp_clients.chrome_devtools_client import (
     _INCORRECT_CAPTCHA_PATTERN,
     ChromeDevToolsClient,
@@ -632,7 +643,8 @@ def test_required_captcha_field_is_not_treated_as_a_wrong_answer():
 
 
 @pytest.mark.asyncio
-async def test_authenticate_sets_login_fields_with_the_react_setter(monkeypatch):
+@pytest.mark.parametrize("rejected", [False, True])
+async def test_authenticate_sets_login_fields_with_the_react_setter(monkeypatch, rejected):
     client = ChromeDevToolsClient()
     client._credential_ref = "cred:employee"
     written: list[tuple[str, str]] = []
@@ -655,6 +667,8 @@ async def test_authenticate_sets_login_fields_with_the_react_setter(monkeypatch)
         return {"username": "EMP001", "password": "secret", "account_role": "Employee"}
 
     async def take_snapshot():
+        if rejected and state["page"] == "home":
+            return login + '\nuid=1_8 StaticText "Invalid login credentials."'
         return home if state["page"] == "home" else login
 
     async def widget():
@@ -685,6 +699,14 @@ async def test_authenticate_sets_login_fields_with_the_react_setter(monkeypatch)
         "core.tool_gateway.mcp_clients.chrome_devtools_client.asyncio.sleep",
         lambda _seconds: _done(),
     )
+
+    if rejected:
+        from core.agents.application_discovery.form_inputs import InvalidCredentialsError
+        with pytest.raises(InvalidCredentialsError, match="saved username or password was rejected"):
+            await client.authenticate()
+        assert client._authenticated is False
+        assert sum(uid == "1_3" for uid, _ in written) == 1
+        return
 
     await client.authenticate()
 

@@ -242,9 +242,6 @@ async def trigger_discovery(
             checkpoint = resumable.discovery_checkpoint
             if checkpoint.get("configuration", {}).get("mode") != "guided":
                 raise HTTPException(status_code=409, detail="Start a fresh guided discovery first")
-            available = {job["key"] for job in checkpoint.get("jobs", [])}
-            if not set(body.selected_branches) <= available:
-                raise HTTPException(status_code=422, detail="Selected branch is no longer available")
         target_url = resumable.base_url
     approved_refs: list[str] = []
     for ref in body.focus_requirements:
@@ -272,11 +269,13 @@ async def trigger_discovery(
     if body.resume_application_map_id and "credential_ref" not in body.model_fields_set:
         requested_ref = resumable.discovery_checkpoint.get("configuration", {}).get("credential_ref")
     credential_ref = await _resolve_credential(session, project, requested_ref)
+    if body.resume_application_map_id and body.discovery_mode == "guided":
+        selected_checkpoint = select_account_checkpoint(resumable.discovery_checkpoint, credential_ref)
+        available = {job["key"] for job in selected_checkpoint.get("jobs", [])}
+        if not set(body.selected_branches) <= available:
+            raise HTTPException(status_code=422, detail="Selected branch is no longer available")
     if body.selected_branches and not body.resume_application_map_id:
         raise HTTPException(status_code=422, detail="Select branches from a saved guided map")
-    switching_account = bool(body.resume_application_map_id) and (
-        resumable.discovery_checkpoint.get("configuration", {}).get("credential_ref") != credential_ref
-    )
     payload = {
         "target": {
             "url": target_url,
@@ -296,7 +295,7 @@ async def trigger_discovery(
             "selected_auth_flows": body.selected_auth_flows,
             "selected_areas": body.selected_areas,
             "selected_modules": body.selected_modules,
-            "selected_branches": [] if switching_account else body.selected_branches,
+            "selected_branches": body.selected_branches,
         },
         "resume_application_map_id": (
             str(body.resume_application_map_id)
@@ -778,6 +777,11 @@ async def submit_input_request(
                 )
 
     if target.get("kind") == "login" and (created_credential is not None or chosen_account is not None):
+        # Save the outgoing frontier before selecting/restoring this account.
+        target = deepcopy(target)
+        checkpoint = select_account_checkpoint(checkpoint, credential_ref)
+        requests = [item for item in checkpoint.get("input_requests", []) if item.get("id") != request_id]
+        requests.append(target)
         target.update(status="approved", submission_approved=True, credential_ref=credential_ref)
         checkpoint["input_requests"] = requests
         configuration = dict(checkpoint.get("configuration") or {})
