@@ -42,6 +42,7 @@ from core.agents.test_execution.live_display import (
     release_live_display,
 )
 from domain.enums import EvidenceChannel, TestRunStatus
+from infra.db.models.automation import AutomationScript
 from infra.db.models.execution import TestResult, TestRun
 from infra.db.models.project import Project
 from infra.db.models.test_case import TestCase
@@ -56,6 +57,7 @@ from infra.execution_inputs import (
 )
 from infra.object_storage.s3_client import S3Client
 from infra.queue.broker import enqueue, get_arq_pool
+from infra.secrets.vault_client import get_login_secret
 from schemas.execution import (
     AssertionOut,
     EvidenceOut,
@@ -159,6 +161,48 @@ async def _input_directory(project_id: uuid.UUID, run_id: uuid.UUID, session: As
     return run, run_input_dir(suite, run_id)
 
 
+async def _case_credential_refs(
+    session: AsyncSession,
+    project: Project,
+    scripts: list[AutomationScript],
+) -> dict[uuid.UUID, str | None]:
+    """Return each selected script's account binding.
+
+    A login entered during discovery without saving it is intentionally kept in
+    Redis only.  Validate those short-lived references here, before creating a
+    run, so an expired login cannot turn into an opaque worker RuntimeError.
+    """
+    cases = await session.scalars(
+        select(TestCase).where(
+            TestCase.project_id == project.id,
+            TestCase.id.in_([script.test_case_id for script in scripts]),
+        )
+    )
+    account_by_case = {case.id: case.credential_ref for case in cases}
+    refs = {
+        account_by_case.get(script.test_case_id) or project.credential_ref
+        for script in scripts
+    }
+    for ref in refs:
+        if not ref or not ref.startswith("session-login:"):
+            continue
+        try:
+            await get_login_secret(ref, project.id)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "A temporary login used by the selected test cases has expired. "
+                    "Enter the account again and select 'Save this account' before "
+                    "regenerating and running the tests."
+                ),
+            ) from exc
+    return {
+        script.id: account_by_case.get(script.test_case_id) or project.credential_ref
+        for script in scripts
+    }
+
+
 @router.get("/projects/{project_id}/runs/{run_id}/input-requests")
 async def get_execution_inputs(
     project_id: uuid.UUID,
@@ -253,7 +297,7 @@ async def start_execution_run(
         for script in scripts
     ]
     try:
-        classify_scripts(snapshots, script_ids, run_destructive)
+        classified = classify_scripts(snapshots, script_ids, run_destructive)
     except ExecutionEligibilityError as exc:
         raise HTTPException(status_code=409, detail=exc.message) from exc
 
@@ -280,6 +324,10 @@ async def start_execution_run(
     if not suite.is_dir():
         raise HTTPException(status_code=404, detail="Generated suite files are not available.")
 
+    scripts_by_id = {script.id: script for script in scripts}
+    runnable_scripts = [scripts_by_id[snapshot.id] for snapshot in classified.runnable]
+    credential_refs = await _case_credential_refs(session, project, runnable_scripts)
+
     settings = ApiSettings()
     job_id = str(uuid.uuid4())
     run = TestRun(
@@ -305,15 +353,8 @@ async def start_execution_run(
         "base_url": project.application_url,
         "environment": settings.environment,
     }
-    cases = await session.scalars(
-        select(TestCase).where(
-            TestCase.project_id == project.id,
-            TestCase.id.in_([script.test_case_id for script in scripts]),
-        )
-    )
-    account_by_case = {case.id: case.credential_ref for case in cases}
     payload["script_credential_refs"] = {
-        str(script.id): account_by_case.get(script.test_case_id) or project.credential_ref
+        str(script.id): credential_refs.get(script.id)
         for script in scripts
     }
     try:

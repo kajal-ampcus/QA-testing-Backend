@@ -30,8 +30,7 @@ def test_login_input_creates_encrypted_opaque_credential(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("save_account", [True, False])
-async def test_submitted_login_creates_account_and_resumes_with_reference(monkeypatch, save_account):
+async def test_submitted_login_creates_account_and_resumes_with_reference(monkeypatch):
     from types import SimpleNamespace
     from apps.api.routers.v1 import application_maps as api
     from infra.db.models.application_map import ApplicationMap
@@ -54,15 +53,6 @@ async def test_submitted_login_creates_account_and_resumes_with_reference(monkey
             "input_requests": [request],
         })
     added, saved, queued = [], [], []
-    temporary = {}
-
-    class Pool:
-        async def set(self, key, value, ex):
-            temporary[key] = (value, ex)
-
-    async def pool():
-        return Pool()
-
     class Session:
         async def get(self, model, identity):
             return app_map if model is ApplicationMap else project
@@ -86,22 +76,14 @@ async def test_submitted_login_creates_account_and_resumes_with_reference(monkey
     monkeypatch.setattr(api, "save_form_answers", save)
     monkeypatch.setattr(api, "_claim_discovery_slot", claim)
     monkeypatch.setattr(api, "enqueue", enqueue)
-    monkeypatch.setattr(api, "get_arq_pool", pool)
-    response = await api.submit_input_request(app_map.id, "login-input", api.SubmitInputRequestBody(approve_submission=True, save_account=save_account, fields=[
+    response = await api.submit_input_request(app_map.id, "login-input", api.SubmitInputRequestBody(approve_submission=True, fields=[
         api.InputFieldAnswer(key="textbox:username", value="qa-user"),
         api.InputFieldAnswer(key="textbox:password", value="private-password"),
     ]), Session())
 
     ref = response.credential_ref
-    if save_account:
-        assert added[0].credential_ref == ref
-        assert not temporary
-    else:
-        assert not added
-        encrypted, ttl = temporary[f"login:{project.id}:{ref}"]
-        assert "private-password" not in encrypted
-        assert decrypt_json_secret(encrypted)["password"] == "private-password"
-        assert ttl == 86400
+    assert added[0].credential_ref == ref
+    assert ref.startswith("cred:")
     assert project.credential_ref is None
     assert response.credential_ref == ref
     assert response.selected_branches

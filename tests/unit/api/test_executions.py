@@ -1,5 +1,6 @@
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -14,9 +15,15 @@ from infra.db.models.project import Project
 
 
 class FakeSession:
-    def __init__(self, project: Project | None, run: TestRun | None = None) -> None:
+    def __init__(
+        self,
+        project: Project | None,
+        run: TestRun | None = None,
+        cases: list[object] | None = None,
+    ) -> None:
         self.project = project
         self.run = run
+        self.cases = cases or []
         self.committed = False
 
     async def get(self, model: type, item_id: uuid.UUID) -> Any:
@@ -30,7 +37,7 @@ class FakeSession:
         self.committed = True
 
     async def scalars(self, statement):
-        return []
+        return self.cases
 
 
 class FakeAutomationRepo:
@@ -180,6 +187,44 @@ async def test_trigger_execution_rejects_active_run(
         )
     assert error.value.status_code == 409
     assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_trigger_execution_rejects_expired_temporary_login_before_queueing(
+    queued: list[dict[str, Any]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = uuid.uuid4()
+    generation_id = uuid.uuid4()
+    (tmp_path / str(generation_id)).mkdir()
+    project = Project(id=project_id, name="App", application_url="https://app.example.test")
+    script = _script(project_id, generation_id)
+    temporary_ref = f"session-login:{uuid.uuid4()}"
+
+    async def expired(_ref: str, _project_id: uuid.UUID) -> dict[str, str]:
+        raise RuntimeError("Temporary login expired. Enter the account again.")
+
+    monkeypatch.setattr(executions, "get_login_secret", expired)
+    monkeypatch.setattr(executions, "AutomationRepository", lambda _session: FakeAutomationRepo([script]))
+    fake_exec = FakeExecutionRepo()
+    monkeypatch.setattr(executions, "ExecutionRepository", lambda _session: fake_exec)
+
+    with pytest.raises(HTTPException) as error:
+        await executions.trigger_execution(
+            project_id,
+            executions.TriggerExecutionRequest(generation_id=generation_id),
+            cast(
+                AsyncSession,
+                FakeSession(
+                    project,
+                    cases=[SimpleNamespace(id=script.test_case_id, credential_ref=temporary_ref)],
+                ),
+            ),
+        )
+
+    assert error.value.status_code == 422
+    assert "temporary login" in str(error.value.detail).lower()
+    assert queued == []
+    assert fake_exec.added == []
 
 
 @pytest.mark.asyncio

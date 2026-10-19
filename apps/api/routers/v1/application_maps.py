@@ -766,15 +766,11 @@ async def submit_input_request(
                 detail="Credential encryption is not configured. Configure CREDENTIAL_ENCRYPTION_KEY on the backend.",
             ) from exc
         if created_credential is not None:
-            if body.save_account:
-                session.add(created_credential)
-                credential_ref = created_credential.credential_ref
-            else:
-                credential_ref = f"session-login:{uuid.uuid4()}"
-                await (await get_arq_pool()).set(
-                    f"login:{app_map.project_id}:{credential_ref}",
-                    created_credential.encrypted_secret, ex=86400,
-                )
+            # Automation may run after discovery has finished or Redis has
+            # restarted.  Keep credentials only in the encrypted database
+            # vault; do not create an expiring Redis-backed login reference.
+            session.add(created_credential)
+            credential_ref = created_credential.credential_ref
 
     if target.get("kind") == "login" and (created_credential is not None or chosen_account is not None):
         # Save the outgoing frontier before selecting/restoring this account.
