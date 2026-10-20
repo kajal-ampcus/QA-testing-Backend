@@ -69,6 +69,7 @@ _PLACEHOLDER_KEYS = ("placeholder", "placeholder_text")
 _TESTID_KEYS = ("data-testid", "data_testid", "test_id", "testid")
 _CSS_KEYS = ("css", "css_selector", "selector")
 _XPATH_KEYS = ("xpath",)
+_DYNAMIC_BADGE = re.compile(r"^(?:\d+\+(?:\s+notifications?)?|\d+\s+notifications?)$", re.IGNORECASE)
 
 
 @dataclass
@@ -82,6 +83,59 @@ class SelectorDecision:
     risk: str = "SAFE"
     state_code: str = ""
     element_code: str | None = None
+
+
+def match_observed_element(
+    state_code: str, elements: list[dict[str, Any]], target: dict[str, Any],
+    action: str, text: str = "",
+) -> SelectorDecision:
+    """Resolve identity within one known state; ties never select the first item."""
+    code = target.get("element_code")
+    if code and any(item.get("element_code") == code for item in elements):
+        candidates = [item for item in elements if item.get("element_code") == code]
+        if (len(candidates) == 1 and action in {"click", "fill", "select"}
+                and (candidates[0].get("disabled") or candidates[0].get("visible") is False)):
+            return _blocked(state_code, code, _risk(candidates[0]), "Observed control is disabled or hidden.")
+        return resolve_in_state(state_code, code, elements)
+
+    def normalized(value: Any) -> str:
+        return " ".join(re.findall(r"\w+", str(value or "").casefold()))
+
+    hint = normalized(target.get("element_name") or target.get("label") or target.get("placeholder"))
+    wording = normalized(text)
+    allowed = {
+        "fill": {"textbox", "searchbox", "spinbutton", "input"},
+        "select": {"combobox", "listbox"},
+        "click": {"button", "link", "checkbox", "radio", "tab", "menuitem", "switch"},
+    }.get(action)
+    ranked = []
+    for element in elements:
+        role = str(element.get("role") or "").lower()
+        if allowed and (role not in allowed or element.get("disabled") or element.get("visible") is False):
+            continue
+        if target.get("element_role") and role != str(target["element_role"]).lower():
+            continue
+        names = [normalized(element.get(key)) for key in ("name", *_LABEL_KEYS, *_PLACEHOLDER_KEYS)]
+        names = [name for name in names if name]
+        score = 1.0 if hint and hint in names else 0.0
+        if not hint and any(re.search(rf"\b{re.escape(name)}\b", wording) for name in names):
+            score = 0.95
+        # Type is useful only when explicitly specified, never from the action alone.
+        target_type = str(target.get("input_type") or target.get("type") or "").casefold()
+        observed_type = str(element.get("input_type") or element.get("type") or "").casefold()
+        if not score and target_type and target_type == observed_type:
+            score = 0.9
+        if score:
+            ranked.append((score, element))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    if not ranked:
+        return _blocked(state_code, str(code or ""), "SAFE", "No confident observed element match.")
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.1:
+        return _blocked(state_code, str(code or ""), "SAFE", "Ambiguous observed element match; specify a unique label or role.")
+    score, element = ranked[0]
+    decision = resolve_in_state(state_code, element.get("element_code"), elements)
+    decision.evidence.update(mapping_status="REMAPPED", confidence=score, source="OBSERVED_DOM")
+    return decision
 
 
 def resolve_in_state(
@@ -125,26 +179,35 @@ def _choose(
     risk = _risk(element)
     role = _role(element)
     name = _text(element.get("name")) or _locator_name(element)
+    if _DYNAMIC_BADGE.fullmatch(name):
+        return _blocked(
+            state_code,
+            code,
+            risk,
+            f"{state_code}/{code} has a dynamic notification badge name {name!r}.",
+        )
     if role and name:
         same = [
             item
             for item in siblings
             if _role(item) == role and (_text(item.get("name")) or _locator_name(item)) == name
         ]
-        if len(same) != 1:
+        if len(same) != 1 and not (
+            _first(element, _LABEL_KEYS) or _first(element, _PLACEHOLDER_KEYS)
+            or _first(element, _TESTID_KEYS) or _css(element)
+        ):
             return _blocked(
                 state_code,
                 code,
                 risk,
                 f"{state_code}/{code} role {role!r} name {name!r} matches {len(same)} elements.",
             )
-        return _resolved(
-            state_code,
-            element,
-            "getByRole",
-            f"getByRole({json.dumps(role)}, {{ name: {json.dumps(name)}, exact: true }})",
-            {"role": role, "name": name},
-        )
+        if len(same) == 1:
+            return _resolved(
+                state_code, element, "getByRole",
+                f"getByRole({json.dumps(role)}, {{ name: {json.dumps(name)}, exact: true }})",
+                {"role": role, "name": name},
+            )
 
     label = _first(element, _LABEL_KEYS)
     if label:
@@ -200,6 +263,13 @@ def _choose(
 
     xpath = _first(element, _XPATH_KEYS)
     if xpath:
+        if _absolute_xpath(xpath):
+            return _blocked(
+                state_code,
+                code,
+                risk,
+                f"{state_code}/{code} uses a fragile absolute XPath {xpath!r}.",
+            )
         expression_value = xpath if xpath.startswith("xpath=") else f"xpath={xpath}"
         same = [item for item in siblings if _first(item, _XPATH_KEYS) == xpath]
         if len(same) != 1:
@@ -298,6 +368,11 @@ def _text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return " ".join(value.split())
+
+
+def _absolute_xpath(xpath: str) -> bool:
+    value = xpath.removeprefix("xpath=").lstrip()
+    return value.startswith("/html/") or value == "/html"
 
 
 def _role(element: dict[str, Any]) -> str:

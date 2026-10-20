@@ -48,6 +48,10 @@ export async function executionInput(key: string, fallback: string | null): Prom
       // Manual answers always take priority over an unconsumed automatic answer.
       answer = read(path.join(directory, `${identifier}.manual.json`)) || read(path.join(directory, `${identifier}.auto.json`));
       if (answer) break;
+      const progress = read(path.join(directory, `${identifier}.request.json`));
+      if (progress?.status === "BLOCKED") {
+        throw new Error(`Input unavailable for ${binding.field}: ${progress.reason}`);
+      }
       await delay(250);
     }
     if (!answer) {
@@ -61,6 +65,9 @@ export async function executionInput(key: string, fallback: string | null): Prom
   }
   if (answer.mode === "empty" && !binding.allow_empty) throw new Error(`Empty input not permitted: ${key}`);
   const value = answer.mode === "empty" ? "" : answer.value;
+  // This reaches the live execution activity feed. Never log the value: it
+  // may be a credential-like synthetic input.
+  console.log(`Input applied: ${binding.case_code} / ${binding.field} (${answer.mode}, ${answer.source || "automatic"})`);
   write(path.join(directory, `${identifier}.consumed.json`), {
     id: identifier, key, case_code: binding.case_code, field: binding.field, sensitive: binding.sensitive,
     mode: answer.mode, value, source: answer.source || "manual", resolved_at: new Date().toISOString(),

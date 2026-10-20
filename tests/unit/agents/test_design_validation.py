@@ -9,7 +9,7 @@ from core.agents.test_design.schemas import (
 from core.agents.test_design.schemas import (
     TestStep as CaseStep,
 )
-from core.agents.test_design.validation import validate_case
+from core.agents.test_design.validation import _ac_verbs, validate_case
 
 
 def case(*steps, test_data=None):
@@ -137,3 +137,107 @@ def test_accepts_observed_precise_assertion():
         test_data={"email": "person@example.test"},
     )
     assert validate_case(candidate, STATES, {"AC-1"}) == []
+
+
+def test_rejects_cases_that_do_not_perform_the_acceptance_criterion_verb():
+    candidate = case(
+        CaseStep(step_number=1, action="click", target=target("EL-001")),
+        CaseStep(step_number=2, action="assert", target=target("EL-002"), expected="Thank you"),
+    )
+    issues = validate_case(
+        candidate,
+        STATES,
+        {"AC-1"},
+        {"AC-1": "The user can log out of the application."},
+    )
+    assert "Case does not perform the 'logout' action the criterion requires." in issues
+
+
+def test_login_surface_nouns_do_not_require_a_login_action_for_required_field_case():
+    candidate = case(
+        CaseStep(step_number=1, action="fill", target=target("EL-003"), value=""),
+        CaseStep(step_number=2, action="assert", target=target("EL-003"), expected="Email is required"),
+    )
+    assert validate_case(
+        candidate, STATES, {"AC-1"}, {"AC-1": "The login form requires an email address."}
+    ) == []
+
+
+def test_login_page_availability_check_does_not_require_authentication_action():
+    candidate = case(
+        CaseStep(step_number=1, action="assert", target=target("EL-003"), expected="Email field is visible"),
+    )
+    assert validate_case(candidate, STATES, {"AC-1"}, {"AC-1": "The login page is available."}) == []
+
+
+def test_genuine_login_action_remains_required_after_a_login_screen_noun():
+    ac = "The login screen is available and the user can log in."
+    assert _ac_verbs(ac) == ["login"]
+    login_states = [{
+        "state_code": "STATE-001", "url_pattern": "/login", "elements": [
+            {"element_code": "LOGIN", "role": "button", "name": "Login"},
+        ],
+    }]
+    genuine = case(
+        CaseStep(step_number=1, action="click", target=target("LOGIN")),
+        CaseStep(step_number=2, action="assert", target=target(), expected="User is authenticated"),
+    )
+    assert validate_case(genuine, login_states, {"AC-1"}, {"AC-1": ac}) == []
+
+    incorrect = case(
+        CaseStep(step_number=1, action="click", target=target("EL-001")),
+        CaseStep(step_number=2, action="assert", target=target("EL-002"), expected="Thank you"),
+    )
+    issues = validate_case(
+        incorrect, STATES, {"AC-1"}, {"AC-1": ac},
+    )
+    assert "Case does not perform the 'login' action the criterion requires." in issues
+
+
+def test_logout_case_clicking_login_is_rejected():
+    states = [{
+        "state_code": "STATE-001", "url_pattern": "/", "elements": [
+            {"element_code": "LOGIN", "role": "button", "name": "LOGIN"},
+            {"element_code": "DONE", "role": "StaticText", "name": "Done"},
+        ],
+    }]
+    candidate = case(
+        CaseStep(step_number=1, action="click", target=target("LOGIN")),
+        CaseStep(step_number=2, action="assert", target=target("DONE"), expected="Done"),
+    )
+    assert "Case does not perform the 'logout' action the criterion requires." in validate_case(
+        candidate, states, {"AC-1"}, {"AC-1": "The user can log out."}
+    )
+
+
+def test_dashboard_redirection_verb_is_recognized():
+    assert "redirect" in _ac_verbs("The user is redirected to the Dashboard after login.")
+
+
+def test_rejects_url_only_assertions():
+    candidate = case(
+        CaseStep(step_number=1, action="navigate", target=StepTarget(state_code="STATE-001")),
+        CaseStep(
+            step_number=2,
+            action="assert",
+            target=StepTarget(state_code="STATE-001"),
+            expected="The URL includes /contact/",
+        ),
+    )
+    issues = validate_case(candidate, STATES, {"AC-1"})
+    assert any("only assertion checks the URL" in issue for issue in issues)
+
+
+def test_allows_structured_url_only_assertions():
+    candidate = case(
+        CaseStep(step_number=1, action="navigate", target=StepTarget(state_code="STATE-001")),
+        CaseStep(
+            step_number=2,
+            action="assert",
+            target=StepTarget(state_code="STATE-001"),
+            expected="The URL includes /contact/",
+            assertion={"kind": "url", "target": "STATE-001"},
+        ),
+    )
+    issues = validate_case(candidate, STATES, {"AC-1"})
+    assert not any("only assertion checks the URL" in issue for issue in issues)

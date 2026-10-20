@@ -10,6 +10,11 @@ class GenerateAutomationRequest(BaseModel):
     test_case_ids: list[UUID] | None = None
     language: str = "typescript"
     framework: str = "playwright"
+    # Rebuild selected cases even when their approved version did not change.
+    # This is needed after a fresh discovery or generator improvement fixes a
+    # previously blocked script.
+    regenerate: bool = False
+    rediscover: bool = True
 
 
 class BlockedCaseOut(BaseModel):
@@ -20,6 +25,7 @@ class BlockedCaseOut(BaseModel):
 
 
 class ScriptOut(BaseModel):
+    recovery: dict = Field(default_factory=dict)
     script_id: UUID
     script_code: str
     test_case_id: UUID

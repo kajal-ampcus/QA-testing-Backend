@@ -62,6 +62,7 @@ _RESERVED = {
 }
 _RISK_RANK = {"SAFE": 0, "REVIEW": 1, "DESTRUCTIVE": 2}
 _SUPPORTED = {"navigate", "fill", "select", "click", "assert", "wait"}
+_QUOTED_TEXT = re.compile(r'''["“']([^"”']+)["”']''')
 
 
 @dataclass
@@ -177,7 +178,6 @@ def generate_suite(
     write = _write_if_absent if incremental else _write
     write(suite_dir / "package.json", _package_json(project_id))
     write(suite_dir / "tsconfig.json", _tsconfig())
-    write(suite_dir / "env.d.ts", _ENV_DTS)
     write(
         suite_dir / "playwright.config.ts",
         templates.render_config(base_url=json.dumps(application_url) if application_url else None),
@@ -197,6 +197,28 @@ def generate_suite(
     _write(suite_dir / "data" / "execution-inputs.ts", RUNTIME_SOURCE)
     if not (suite_dir / "execution-inputs.json").exists():
         _write(suite_dir / "execution-inputs.json", '{"schema_version": 1, "values": {}}\n')
+    # Approved case fixtures belong in the existing private input store, which
+    # is excluded from downloads and source previews. Never fabricate missing data.
+    input_path = suite_dir / "execution-inputs.json"
+    input_draft = json.loads(input_path.read_text(encoding="utf-8"))
+    values = input_draft.setdefault("values", {})
+    for planned in planned_cases:
+        if planned.blocked:
+            continue
+        leaves = dict(_string_leaves(planned.case.test_data))
+        for binding in planned.input_bindings:
+            step = planned.case.steps[binding["step_number"] - 1]
+            raw = step.get("value")
+            if not isinstance(raw, str):
+                continue
+            placeholder = re.fullmatch(r"\{([^{}]+)\}", raw)
+            value = leaves.get(placeholder.group(1)) if placeholder else raw
+            if value is None or (value == "" and not binding["allow_empty"]):
+                continue
+            values.setdefault(binding["key"], {
+                "mode": "empty" if value == "" else "value", "value": value, "source": "case",
+            })
+    _write(input_path, json.dumps(input_draft) + "\n")
     written_pages: list[Path] = []
     for page in pages.values():
         page_path = suite_dir / "pages" / page["file_name"]
@@ -410,10 +432,13 @@ def _plan_case(
             reasons.append(f"Step {index}: {action} requires an observed element_code.")
             continue
         if action == "assert" and not element_code:
-            if state.url_pattern:
+            if state.url_pattern and (
+                (step.get("assertion") or {}).get("kind") == "url"
+                or re.search(r"\b(url|path)\b", str(step.get("expected") or ""), re.I)
+            ):
                 calls.append((state_code, "expectOnPage", None))
             else:
-                reasons.append(f"Step {index}: assert has no observed element or URL.")
+                reasons.append(f"Step {index} ({state_code}): expected result has no mapped assertion target; URL alone cannot verify it.")
             continue
         decision = resolve_in_state(state_code, element_code, state.elements)
         risks.append(decision.risk)
@@ -444,10 +469,11 @@ def _plan_case(
             calls.append((state_code, f"waitFor{_pascal(prop)}", None))
         else:
             expected = str(step.get("expected") or case.expected_result or "")
-            if expected and not _contains_secret(expected, forbidden):
-                calls.append((state_code, f"expect{_pascal(prop)}", json.dumps(expected)))
-            else:
-                calls.append((state_code, f"expect{_pascal(prop)}Visible", None))
+            structured = step.get("assertion")
+            if not isinstance(structured, dict):
+                structured = None
+            method, argument = _assertion_call(prop, expected, forbidden, structured)
+            calls.append((state_code, method, argument))
 
     risk = _max_risk(risks)
     area = _area(case, states, risk, bool(reasons))
@@ -510,7 +536,7 @@ def _render_case(draft: _Draft, generation_id: UUID) -> str:
         lines.append("// No supported observed steps were available.")
     return templates.render_spec(
         pages=pages,
-        uses_data=any("testData." in line for line in lines),
+        uses_execution_input=any("executionInput(" in line for line in lines),
         trace=trace,
         destructive=draft.risk == "DESTRUCTIVE",
         title=json.dumps(f"{draft.tc_code} {draft.title}"),
@@ -591,11 +617,68 @@ def _action_for(method: str, prop: str) -> dict[str, str] | None:
             f"await expect(this.{prop}).toContainText(expected);",
         ),
         f"expect{pascal}Visible": ("", f"await expect(this.{prop}).toBeVisible();"),
+        f"expect{pascal}Available": (
+            "",
+            f"await expect(this.{prop}).toBeVisible(); await expect(this.{prop}).toBeEnabled();",
+        ),
+        f"expect{pascal}Required": (
+            "",
+            f'await expect(this.{prop}).toHaveAttribute("required", /.*/);',
+        ),
+        f"expect{pascal}Invalid": (
+            "",
+            f'await expect(this.{prop}).toHaveAttribute("aria-invalid", "true");',
+        ),
     }
     if method not in mapping:
         return None
     params, body = mapping[method]
     return {"name": method, "params": params, "body": body}
+
+
+def _assertion_call(
+    prop: str,
+    expected: str,
+    forbidden: set[str],
+    assertion: dict[str, Any] | None = None,
+) -> tuple[str, str | None]:
+    """Translate a structured assertion into a Playwright call.
+
+    The structured field is authoritative. Prose is only a fallback for cases
+    written before the field existed.
+    """
+    pascal = _pascal(prop)
+    kind = str((assertion or {}).get("kind") or "").lower()
+    text = str((assertion or {}).get("text") or "")
+
+    if kind == "visible":
+        return f"expect{pascal}Visible", None
+    if kind == "enabled":
+        return f"expect{pascal}Available", None
+    if kind == "required":
+        return f"expect{pascal}Required", None
+    if kind == "invalid":
+        return f"expect{pascal}Invalid", None
+    if kind == "text" and text:
+        if _contains_secret(text, forbidden):
+            return f"expect{pascal}Visible", None
+        return f"expect{pascal}", json.dumps(text)
+    if kind == "url":
+        return f"expectOnPage", None
+
+    # ── Fallback for cases with no structured assertion ──
+    if expected and not _contains_secret(expected, forbidden):
+        quoted = _QUOTED_TEXT.search(expected)
+        if quoted:
+            return f"expect{pascal}", json.dumps(quoted.group(1))
+        if re.search(r"\bavailable\b", expected, re.I):
+            return f"expect{pascal}Available", None
+        if re.search(r"\brequired field\b", expected, re.I):
+            return f"expect{pascal}Required", None
+        if re.search(r"\baria-invalid\b|\binvalid\b", expected, re.I):
+            return f"expect{pascal}Invalid", None
+        return f"expect{pascal}", json.dumps(expected)
+    return f"expect{pascal}Visible", None
 
 
 def _data_cases(cases: list[_Draft]) -> list[dict[str, Any]]:
@@ -1007,6 +1090,7 @@ def _package_json(project_id: UUID) -> str:
                 },
                 "devDependencies": {
                     "@playwright/test": "^1.56.0",
+                    "@types/node": "^22.10.0",
                     "typescript": "~5.9.3",
                 },
             },
@@ -1028,7 +1112,7 @@ def _tsconfig() -> str:
                     "esModuleInterop": True,
                     "skipLibCheck": True,
                     "noEmit": True,
-                    "types": [],
+                    "types": ["node"],
                 },
                 "include": ["./**/*.ts"],
             },
@@ -1036,13 +1120,6 @@ def _tsconfig() -> str:
         )
         + "\n"
     )
-
-
-_ENV_DTS = """\
-declare const process: {
-  env: Record<string, string | undefined>;
-};
-"""
 
 
 def update_manifest_verification(suite_dir: Path, status: str) -> None:

@@ -52,18 +52,18 @@ class StubLLM:
 
 async def test_automatic_positive_and_negative_resolution():
     llm = StubLLM("person@example.test")
-    assert await resolve_input(binding(), llm) == {"mode": "value", "value": "person@example.test"}
-    assert llm.calls[0]["category"] == "POSITIVE"
+    assert await resolve_input(binding(configured_value="person@example.test"), llm) == {"mode": "value", "value": "person@example.test"}
+    assert not llm.calls
     assert await resolve_input(
         binding(category="NEGATIVE", negative_target=True, objective="Reject invalid email format"),
         llm,
-    ) == {"mode": "value", "value": "not-an-email"}
+    ) is None
     assert await resolve_input(
         binding(category="NEGATIVE", negative_target=True, allow_empty=True), llm
     ) == {"mode": "empty", "value": ""}
     assert await resolve_input(binding(requires_fixture=True), llm) is None
     assert await resolve_input(binding(field="Password", sensitive=True), llm) is None
-    assert await resolve_input(binding(field="Password", sensitive=True, category="NEGATIVE", negative_target=True, objective="Reject incorrect password"), llm) == {"mode": "value", "value": "wrong-password"}
+    assert await resolve_input(binding(field="Password", sensitive=True, category="NEGATIVE", negative_target=True, objective="Reject incorrect password"), llm) is None
 
 
 async def test_llm_cannot_make_negative_target_valid_or_invent_unknown_negative_rule():
@@ -221,9 +221,12 @@ async def test_generated_node_checkpoint_automatically_resumes_or_accepts_manual
     typescript = Path(__file__).resolve().parents[4] / "QA-testing-Frontend/node_modules/typescript"
     if not node or not typescript.exists():
         pytest.skip("Node and the frontend TypeScript package are required")
-    item = binding(sensitive=manual, field="Business token" if manual else "Email")
+    item = binding(sensitive=manual, field="Business token" if manual else "Email",
+                   configured_value=None if manual else "person@example.test")
     write_json(tmp_path / "bindings.json", {item["key"]: item})
-    write_json(tmp_path / "snapshot.json", {"values": {}})
+    write_json(tmp_path / "snapshot.json", {"values": {
+        item["key"]: {"mode": "value", "value": "fixture-token", "source": "manual"}
+    } if manual else {}})
     (tmp_path / "runtime.ts").write_text(RUNTIME_SOURCE, encoding="utf-8")
     driver = r"""
 const fs = require("fs");
@@ -239,10 +242,6 @@ fs.writeFileSync("runtime.cjs", source);
 require("./runtime.cjs").executionInput("TC-001:v1:step2", null).then(value => console.log("ANSWER=" + value)).catch(error => { console.error(error); process.exitCode = 1; });
 """
     (tmp_path / "driver.cjs").write_text(driver, encoding="utf-8")
-    monkeypatch.setattr(
-        "core.agents.input_resolution.coordinator.get_llm_client",
-        lambda: StubLLM("person@example.test"),
-    )
     coordinator = asyncio.create_task(coordinate_inputs(tmp_path))
     process = await asyncio.create_subprocess_exec(
         node,
@@ -254,19 +253,6 @@ require("./runtime.cjs").executionInput("TC-001:v1:step2", null).then(value => c
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        if manual:
-            for _ in range(100):
-                requests = list(tmp_path.glob("*.request.json"))
-                if requests and read_json(requests[0]).get("status") == "WAITING_FOR_INPUT":
-                    request = read_json(requests[0])
-                    write_json(
-                        tmp_path / f"{request['id']}.manual.json",
-                        {"mode": "value", "value": "fixture-token", "source": "manual"},
-                    )
-                    break
-                await asyncio.sleep(0.1)
-            else:
-                pytest.fail("Manual fallback checkpoint did not appear")
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
         assert process.returncode == 0, stderr.decode()
         assert (

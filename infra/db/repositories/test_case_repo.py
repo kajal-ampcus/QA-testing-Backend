@@ -30,11 +30,11 @@ _VERSION_FIELDS = (
 def case_signature(version_data: dict[str, Any]) -> tuple[Any, ...]:
     """Semantic identity used to avoid saving relabelled copies.
 
-    Category is deliberately excluded: identical actions and assertions are
-    still duplicates when one title says positive and another says negative.
+    Category and traceability are deliberately excluded: identical actions and
+    assertions are duplicates even when one case is traced to a second AC or
+    labelled with a different category.
     """
     return (
-        tuple(sorted(str(item) for item in version_data.get("traceability", []))),
         tuple(
             (
                 step.get("action"),
@@ -46,7 +46,6 @@ def case_signature(version_data: dict[str, Any]) -> tuple[Any, ...]:
             for step in version_data.get("steps", [])
         ),
     )
-
 
 class TestCaseRepository(BaseRepository):
 
@@ -141,15 +140,43 @@ class TestCaseRepository(BaseRepository):
         )
 
     async def existing_signatures(
-        self, requirement_id: uuid.UUID, application_map_id: uuid.UUID
+        self, requirement_id: uuid.UUID, application_map_id: uuid.UUID | None = None
     ) -> set[tuple[Any, ...]]:
+        """Signatures for the whole requirement.
+
+        The map filter is dropped on purpose: a case regenerated against a new
+        map version is the same scenario, not a new one.
+        """
         pairs = await self.list_for_requirement(requirement_id)
         return {
             case_signature({field: getattr(version, field) for field in _VERSION_FIELDS})
             for tc, version in pairs
-            if tc.application_map_id == application_map_id
-            and tc.status != TestCaseStatus.OUTDATED
+            if tc.status != TestCaseStatus.OUTDATED
         }
+
+    async def find_by_signature(
+        self, requirement_id: uuid.UUID, signature: tuple[Any, ...]
+    ) -> tuple[TestCase, TestCaseVersion] | None:
+        """Locate the saved case that already expresses this scenario."""
+        for tc, version in await self.list_for_requirement(requirement_id):
+            if tc.status == TestCaseStatus.OUTDATED:
+                continue
+            data = {field: getattr(version, field) for field in _VERSION_FIELDS}
+            if case_signature(data) == signature:
+                return tc, version
+        return None
+
+    async def merge_traceability(
+        self, test_case_id: uuid.UUID, version_id: uuid.UUID, extra_acs: list[str]
+    ) -> None:
+        """Attach additional acceptance criteria to an existing case."""
+        version = await self.session.get(TestCaseVersion, version_id)
+        if version is None:
+            return
+        merged = sorted(set(list(version.traceability or []) + [a for a in extra_acs if a]))
+        if merged != list(version.traceability or []):
+            version.traceability = merged
+            await self.session.flush()
 
     async def mark_outdated(self, requirement_id: uuid.UUID, current_version: int) -> None:
         """Flag cases written against an older requirement version."""

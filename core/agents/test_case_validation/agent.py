@@ -23,16 +23,18 @@ class TestCaseValidationAgent(BaseAgent[ValidationVerdict]):
         case: TestCaseSpec,
         states: list[dict[str, Any]],
         ac_ids: set[str],
+        ac_texts: dict[str, str] | None = None,
     ) -> list[str]:
-        return self.validate(case, states, ac_ids).issues
+        return self.validate(case, states, ac_ids, ac_texts).issues
 
     def validate(
         self,
         case: TestCaseSpec,
         states: list[dict[str, Any]],
         ac_ids: set[str],
+        ac_texts: dict[str, str] | None = None,
     ) -> ValidationVerdict:
-        issues = validate_case(case, states, ac_ids)
+        issues = validate_case(case, states, ac_ids, ac_texts)
         by_code = {state["state_code"]: state for state in states}
         element_ok = all(
             (
@@ -67,4 +69,5 @@ class TestCaseValidationAgent(BaseAgent[ValidationVerdict]):
         case = TestCaseSpec.model_validate(request.payload["test_case"])
         states = list(request.payload.get("states") or [])
         ac_ids = set(request.payload.get("ac_ids") or [])
-        return self.validate(case, states, ac_ids)
+        ac_texts = dict(request.payload.get("ac_texts") or {})
+        return self.validate(case, states, ac_ids, ac_texts)

@@ -7,6 +7,7 @@ Approval queues the Test Execution Agent. The worker runs npx playwright test.
 
 import base64
 import json
+import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -19,7 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
 from apps.api.settings import ApiSettings
-from core.agents.automation_generation.agent import AutomationGenerationAgent
+from core.agents.application_discovery.recovery import rediscover_state
+from core.agents.automation_generation.agent import AutomationGenerationAgent, _case
 from core.agents.automation_generation.artifacts import (
     build_zip,
     generation_dir,
@@ -34,6 +36,7 @@ from core.agents.automation_generation.eligibility import (
     RequirementSnapshot,
     select_eligible,
 )
+from core.agents.automation_generation.recovery import recover_cases
 from core.agents.automation_generation.registry import (
     StackChoiceError,
     execution_available,
@@ -41,6 +44,7 @@ from core.agents.automation_generation.registry import (
 )
 from core.agents.automation_generation.suite import (
     CaseInput,
+    StateInput,
     _forbidden_literals,
     case_ids_to_write,
 )
@@ -136,6 +140,9 @@ async def _write_login_env(project: Project, suite_dir: Path) -> None:
         f"TEST_LOGIN_FIELDS_B64={encoded_fields}",
         f"TEST_LOGIN_URL={login_url}",
         "RUN_DESTRUCTIVE=false",
+        f"PLAYWRIGHT_IGNORE_HTTPS_ERRORS={os.environ.get('PLAYWRIGHT_IGNORE_HTTPS_ERRORS', 'false').lower()}",
+        f"PLAYWRIGHT_HEADLESS={os.environ.get('PLAYWRIGHT_HEADLESS', 'true').lower()}",
+        f"PLAYWRIGHT_SLOW_MO={os.environ.get('PLAYWRIGHT_SLOW_MO', '0')}",
         "",
     ]
     (suite_dir / ".env").write_text("\n".join(lines), encoding="utf-8")
@@ -188,13 +195,17 @@ async def generate_automation(
 
     repo = AutomationRepository(session)
     previous = await repo.list_for_project(project_id)
-    generation_id = _canonical_generation(previous) or uuid.uuid4()
+    generation_id = uuid.uuid4() if body.regenerate else (_canonical_generation(previous) or uuid.uuid4())
     existing_rows = [row for row in previous if row.generation_id == generation_id]
     suite_dir = generation_dir(artifact_root(settings), project_id, generation_id)
     folder_ready = (suite_dir / "manifest.json").is_file()
     stored_versions = (
         {row.test_case_id: row.test_case_version for row in existing_rows} if folder_ready else {}
     )
+    if body.regenerate:
+        # Force a new plan from the current application-map evidence.  Keep the
+        # generation id so links, reviews, and the suite folder remain stable.
+        stored_versions = {}
     if folder_ready and language == "typescript" and framework == "playwright":
         manifest = json.loads((suite_dir / "manifest.json").read_text(encoding="utf-8"))
         if manifest.get("input_runtime_version") != 1:
@@ -230,6 +241,42 @@ async def generate_automation(
         for state in full_map.states
     }
     case_payload = [_case_payload(case, version, full_map.version) for case, version in to_write]
+    accounts = {item.get("credential_ref") for item in case_payload}
+    saved_recovery = (full_map.diagnostic_evidence or {}).get("automation_recovery") or {}
+    if len(accounts) == 1:
+        account = next(iter(accounts))
+        for record in saved_recovery.values():
+            if record.get("credential_ref") != account or record.get("map_version") != full_map.version:
+                continue
+            for code, elements in record.get("states", {}).items():
+                if code in states:
+                    states[code]["elements"] = elements
+    async def refresh(state, case):
+        if len(accounts) != 1:
+            raise ValueError("Rediscover cases for one configured account at a time.")
+        return await rediscover_state(
+            project_id=project_id, base_url=full_map.base_url, state=state,
+            credential_ref=case.credential_ref,
+        )
+
+    recovered_states, recovery, refreshed = await recover_cases(
+        [_case(item) for item in case_payload],
+        {code: StateInput(code, item["url_pattern"], item["elements"]) for code, item in states.items()},
+        generation_id, refresh if body.rediscover else None,
+    )
+    states = {code: {"url_pattern": state.url_pattern, "elements": state.elements}
+              for code, state in recovered_states.items()}
+    # Keep approved map states immutable. Evidence is versioned by generation
+    # in the map's existing diagnostic store and in the suite manifest.
+    if refreshed:
+        diagnostic = dict(full_map.diagnostic_evidence or {})
+        evidence = dict(diagnostic.get("automation_recovery") or {})
+        evidence[str(generation_id)] = {
+            "map_version": full_map.version, "credential_ref": next(iter(accounts)),
+            "states": refreshed,
+        }
+        diagnostic["automation_recovery"] = evidence
+        full_map.diagnostic_evidence = diagnostic
     forbidden = _forbidden(case_payload)
     gen_request = AgentInputEnvelope(
         agent_run_id=uuid.uuid4(),
@@ -317,7 +364,7 @@ async def generate_automation(
                 selector_strategy=script.selectors,
                 risk_level=script.risk,
                 review_status=status,
-                review_findings={"blocked_reason": script.blocked_reason},
+                review_findings={"blocked_reason": script.blocked_reason, "recovery": recovery.get(str(script.test_case_id), {})},
                 suite_summary=summary,
                 current_version=1,
                 created_at=datetime.now(UTC),
@@ -346,7 +393,7 @@ async def generate_automation(
             current.file_path = script.spec_path
             current.selector_strategy = script.selectors
             current.risk_level = script.risk
-            current.review_findings = {"blocked_reason": script.blocked_reason}
+            current.review_findings = {"blocked_reason": script.blocked_reason, "recovery": recovery.get(str(script.test_case_id), {})}
             repo.append_version(current, status)
             row = current
         written.append(row)
@@ -599,6 +646,7 @@ def _script_out(row: AutomationScript) -> ScriptOut:
         review_status=row.review_status,
         blocked_reason=(row.review_findings or {}).get("blocked_reason"),
         selector_strategy=list(row.selector_strategy or []),
+        recovery=(row.review_findings or {}).get("recovery", {}),
     )
 
 

@@ -50,6 +50,15 @@ class TestStep(BaseModel):
     expected: str | None = Field(
         default=None, description="For assert actions: what should be true after this step."
     )
+    assertion: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Optional, for assert actions only: the structured intent. "
+            '{"kind": "visible"|"enabled"|"text"|"required"|"invalid"|"url", '
+            '"target": "EL-012", "text": "literal expected text"}. '
+            "Automation translates this directly and never guesses from prose."
+        ),
+    )
 
     model_config = {"extra": "forbid"}
 

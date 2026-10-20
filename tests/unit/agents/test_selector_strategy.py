@@ -68,6 +68,23 @@ def test_xpath_is_only_the_fallback_and_is_flagged() -> None:
     assert decision.expression is not None and decision.expression.startswith('locator("xpath=')
 
 
+def test_dynamic_badge_and_absolute_xpath_are_blocked() -> None:
+    badge = resolve_in_state(
+        "STATE-001",
+        "EL-006",
+        [{"element_code": "EL-006", "role": "button", "name": "9+"}],
+    )
+    xpath = resolve_in_state(
+        "STATE-001",
+        "EL-007",
+        [{"element_code": "EL-007", "xpath": "/html/body/main/button"}],
+    )
+    assert badge.status == "blocked"
+    assert "dynamic notification badge" in (badge.reason or "")
+    assert xpath.status == "blocked"
+    assert "absolute XPath" in (xpath.reason or "")
+
+
 def test_missing_metadata_does_not_invent_a_selector() -> None:
     decision = resolve_in_state(
         "STATE-001",
@@ -79,15 +96,14 @@ def test_missing_metadata_does_not_invent_a_selector() -> None:
     assert decision.strategy is None
 
 
-def test_ambiguous_role_name_blocks_instead_of_guessing() -> None:
+def test_exact_code_uses_unique_observed_css_when_role_name_is_ambiguous() -> None:
     elements = [
         {"element_code": "EL-001", "role": "button", "name": "Save", "dom_id": "save-a"},
         {"element_code": "EL-002", "role": "button", "name": "Save", "dom_id": "save-b"},
     ]
     decision = resolve_in_state("STATE-001", "EL-001", elements)
-    assert decision.status == "blocked"
-    assert "ambiguous" in (decision.reason or "").lower() or "matches" in (decision.reason or "")
-    assert decision.expression is None
+    assert decision.status == "resolved"
+    assert decision.expression == 'locator("#save-a")'
 
 
 def test_element_code_is_resolved_inside_its_state() -> None:

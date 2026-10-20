@@ -76,14 +76,13 @@ export class [[ class_name ]] {
 """
 
 _SPEC = """\
-import { test, expect } from "../../fixtures/auth";
+import { test } from "../../fixtures/auth";
+[% if uses_execution_input %]
 import { executionInput } from "../../data/execution-inputs";
+[% endif %]
 [% for page in pages %]
 import { [[ page.class_name ]] } from "../../pages/[[ page.file_name ]]";
 [% endfor %]
-[% if uses_data %]
-import { testData } from "../../data/testdata";
-[% endif %]
 
 /**
  * Traceability
@@ -676,12 +675,13 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   use: {
     baseURL,
-    headless: false,
+    ignoreHTTPSErrors: process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS === "true",
+    headless: process.env.PLAYWRIGHT_HEADLESS !== "false",
     viewport: null,
     actionTimeout: 20_000,
     navigationTimeout: 30_000,
     launchOptions: {
-      slowMo: 1400,
+      slowMo: Number(process.env.PLAYWRIGHT_SLOW_MO || 0),
       args: ["--start-maximized"],
     },
   },
@@ -753,6 +753,9 @@ TEST_USERNAME=
 TEST_PASSWORD=
 TEST_CAPTCHA=
 RUN_DESTRUCTIVE=false
+PLAYWRIGHT_IGNORE_HTTPS_ERRORS=false
+PLAYWRIGHT_HEADLESS=true
+PLAYWRIGHT_SLOW_MO=0
 [% for name in names %]
 [[ name ]]=
 [% endfor %]

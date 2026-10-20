@@ -127,7 +127,7 @@ def test_login_success_uses_a_public_page_and_submits(tmp_path) -> None:
     assert "test.beforeEach" not in auth
 
 
-def test_invalid_login_submits_a_negative_value(tmp_path) -> None:
+def test_negative_login_without_negative_fixture_or_assertion_is_blocked(tmp_path) -> None:
     ids = _ids()
     case = _case(
         ids,
@@ -160,12 +160,9 @@ def test_invalid_login_submits_a_negative_value(tmp_path) -> None:
         ],
     )
     plan, spec, _auth = _render(tmp_path, case, _login_states())
-    assert plan.scripts[0].blocked is False
-    assert "publicPage: page" in spec
-    assert "enterApplication" not in spec
-    assert '"wrong"' in spec
-    assert ".click" in spec
-    assert "rejected" in spec
+    assert plan.scripts[0].blocked is True
+    assert "configure the intended invalid value" in plan.scripts[0].blocked_reason
+    assert '"wrong"' not in spec
 
 
 def test_forgot_password_does_not_fill_credentials(tmp_path) -> None:
@@ -256,11 +253,8 @@ def test_captcha_refresh_stays_on_the_public_page(tmp_path) -> None:
         ],
     )
     plan, spec, auth = _render(tmp_path, case, _login_states())
-    assert plan.scripts[0].blocked is False
-    assert "publicPage: page" in spec
-    assert "enterApplication" not in spec
-    assert ".fill" not in spec
-    assert ".click" in spec
+    assert plan.scripts[0].blocked is True
+    assert "no mapped assertion target" in plan.scripts[0].blocked_reason
     assert "await enterApplication(page)" in auth
     public = auth.split("publicPage:", 1)[1].split("sessionPage:", 1)[0]
     assert "enterApplication" not in public
@@ -311,6 +305,34 @@ def test_protected_page_signs_in_for_that_test_only(tmp_path) -> None:
     assert "test.beforeEach" not in auth
 
 
+def test_public_precondition_conflicting_with_protected_start_is_blocked(tmp_path) -> None:
+    ids = _ids()
+    case = _case(
+        ids,
+        tc_code="TC-106",
+        title="Open the dashboard",
+        preconditions=["The user is logged out"],
+        expected_result="The dashboard is visible",
+        steps=[
+            {"step_number": 1, "action": "navigate", "target": {"state_code": "STATE-010"}},
+        ],
+    )
+    states = {
+        "STATE-010": StateInput(
+            state_code="STATE-010",
+            url_pattern="https://app.example/dashboard",
+            elements=[
+                {"element_code": "EL-020", "role": "heading", "name": "Dashboard", "risk": "SAFE", "source": "OBSERVED_DOM"},
+            ],
+        )
+    }
+    plan, spec, _auth = _render(tmp_path, case, states)
+    assert plan.scripts[0].blocked is True
+    assert "requires a public session" in (plan.scripts[0].blocked_reason or "")
+    assert "requires an authenticated session" in (plan.scripts[0].blocked_reason or "")
+    assert "test.fixme" in spec
+
+
 def test_unconfigured_captcha_answer_blocks_the_case(tmp_path) -> None:
     ids = _ids()
     case = _case(
@@ -346,3 +368,41 @@ def test_unconfigured_captcha_answer_blocks_the_case(tmp_path) -> None:
     assert "CAPTCHA" in (plan.scripts[0].blocked_reason or "")
     assert "test.fixme" in spec
     assert "enterApplication" not in spec
+
+
+def test_blank_captcha_validation_is_not_blocked(tmp_path) -> None:
+    ids = _ids()
+    case = _case(
+        ids,
+        tc_code="TC-107",
+        title="Blank CAPTCHA is rejected",
+        category="NEGATIVE",
+        objective="Verify CAPTCHA validation",
+        expected_result="CAPTCHA is a required field",
+        test_data={"captcha": ""},
+        steps=[
+            {"step_number": 1, "action": "navigate", "target": {"state_code": "STATE-001"}},
+            {
+                "step_number": 2,
+                "action": "fill",
+                "target": {"state_code": "STATE-001", "element_code": "EL-003", "element_name": "Captcha"},
+                "value": "{captcha}",
+            },
+            {
+                "step_number": 3,
+                "action": "click",
+                "target": {"state_code": "STATE-001", "element_code": "EL-004", "element_name": "Login"},
+            },
+            {
+                "step_number": 4,
+                "action": "assert",
+                "target": {"state_code": "STATE-001", "element_code": "EL-003", "element_name": "Captcha"},
+                "expected": "CAPTCHA is a required field",
+            },
+        ],
+    )
+    plan, spec, _auth = _render(tmp_path, case, _login_states())
+    assert plan.scripts[0].blocked is False
+    page = (plan.suite_dir / "pages" / "state-001.page.ts").read_text(encoding="utf-8")
+    assert 'toHaveAttribute("required", /.*/)' in page
+    assert "expectCaptchaEl003Required()" in spec

@@ -35,6 +35,8 @@ RULE 2 — Cover each AC only with meaningful, evidence-supported cases.
   - Generate EDGE_CASE only for an explicit measurable boundary or limit.
   - If no measurable assertion is observed, omit the case instead of using a
     generic "page remains open" or current-URL assertion.
+  - A current-URL assertion is acceptable only when the scenario is purely
+    navigational and kind is "url". Otherwise assert the observed content.
   - The `category` field is the TEST TYPE, always exactly POSITIVE, NEGATIVE,
     or EDGE_CASE. Never put a feature/domain name there (not "Authentication",
     not "Chat Interaction") — describe the feature in the title instead,
@@ -66,6 +68,16 @@ RULE 4 — Steps must be ordered and atomic.
     array. This is a required field on every single step — never omit it.
   - assert steps must immediately follow the action they check.
   - Always end with one or more assert steps verifying the expected_result.
+  - Every assert step MUST include a structured "assertion" object:
+      {"kind": "visible"|"enabled"|"text"|"required"|"invalid"|"url",
+       "target": "EL-xxx", "text": "literal expected text"}
+    kind "text" -> the page literally shows that text
+    kind "visible" -> the element must be present on screen
+    kind "enabled" -> the element must be present and interactable
+    kind "required" -> the field carries a required/invalid marker
+    kind "url" -> only when the outcome is navigation itself
+    Do not use kind "url" when the criterion promises a message, a value,
+    or a visible outcome; assert that instead.
 
 RULE 5 — Preconditions must be explicit.
   - State the starting URL pattern (e.g. "Browser is on /login").

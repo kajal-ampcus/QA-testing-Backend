@@ -8,10 +8,30 @@ from core.agents.automation_generation.artifacts import build_zip, ide_links
 from core.agents.automation_generation.suite import (
     CaseInput,
     StateInput,
+    _assertion_call,
     case_ids_to_write,
     generate_suite,
 )
 from core.agents.automation_review.lint_rules import lint_suite
+
+
+def test_assertion_call_uses_semantic_assertions_unless_text_is_quoted() -> None:
+    assert _assertion_call("employee", "Employee is visible and available", set()) == (
+        "expectEmployeeAvailable",
+        None,
+    )
+    assert _assertion_call("employee", "Employee is a required field", set()) == (
+        "expectEmployeeRequired",
+        None,
+    )
+    assert _assertion_call("employee", "Employee is invalid", set()) == (
+        "expectEmployeeInvalid",
+        None,
+    )
+    assert _assertion_call("employee", 'The employee name is "Employee"', set()) == (
+        "expectEmployee",
+        '"Employee"',
+    )
 
 
 def _ids():
@@ -170,6 +190,11 @@ def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:
     root = plan.suite_dir
     for name in ("package.json", "playwright.config.ts", "tsconfig.json", ".gitignore", ".env.example", "README.md", "manifest.json", "fixtures/auth.ts", "data/testdata.ts"):
         assert (root / name).is_file(), name
+    assert not (root / "env.d.ts").exists()
+    package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    assert package["devDependencies"]["@types/node"] == "^22.10.0"
+    tsconfig = json.loads((root / "tsconfig.json").read_text(encoding="utf-8"))
+    assert tsconfig["compilerOptions"]["types"] == ["node"]
     assert (root / "pages" / "state-001.page.ts").is_file()
     assert (root / "pages" / "state-002.page.ts").is_file()
     specs = list((root / "tests").rglob("*.spec.ts"))
@@ -197,7 +222,8 @@ def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:
     assert "openContext(browser, true)" in auth
     config = (root / "playwright.config.ts").read_text(encoding="utf-8")
     assert "workers: 1" in config
-    assert "headless: false" in config
+    assert 'headless: process.env.PLAYWRIGHT_HEADLESS !== "false"' in config
+    assert "slowMo: Number(process.env.PLAYWRIGHT_SLOW_MO || 0)" in config
     assert "process.env[match[1]]?.trim()" in config
     assert "expect(true)" not in spec
     assert "waitForTimeout" not in spec

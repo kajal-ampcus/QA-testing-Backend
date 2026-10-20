@@ -162,6 +162,62 @@ def _best_observed_element(
     return max(ranked, key=lambda item: item[0])[1] if ranked else None
 
 
+def _name_score(element: dict[str, Any], text: str) -> int:
+    name = str(element.get("name") or element.get("text") or "").lower()
+    terms = [word.lower() for word in re.findall(r"[a-zA-Z0-9]{3,}", text)]
+    return sum(term in name for term in terms)
+
+
+def _result_content_element(
+    state: dict[str, Any], text: str
+) -> dict[str, Any] | None:
+    """A content element on the destination page that proves the outcome.
+
+    A heading is the strongest evidence and matches how a tester writes an
+    expected result. A URL check proves navigation only, so it is the last
+    resort and only used when the destination page has no readable content.
+    """
+    observed = _observed(state)
+    for roles in ({"heading"}, {"statictext", "paragraph"}):
+        candidates = [
+            element
+            for element in observed
+            if str(element.get("role") or "").lower() in roles
+            and str(element.get("name") or element.get("text") or "").strip()
+        ]
+        if candidates:
+            return sorted(
+                candidates, key=lambda element: _name_score(element, text), reverse=True
+            )[0]
+    return None
+
+
+def _content_assertion(
+    state: dict[str, Any], text: str
+) -> tuple[StepTarget, dict[str, str], str]:
+    """Build the assert step target, expected text and structured intent.
+
+    Returns (step_target, assertion, expected).
+    """
+    content = _result_content_element(state, text)
+    if content is None:
+        return (
+            _target(state),
+            {"kind": "url", "target": str(state.get("state_code") or "")},
+            f"The current URL includes {_url_path(state)}",
+        )
+    label = str(content.get("name") or content.get("text") or "").strip()
+    code = str(content.get("element_code") or "")
+    is_heading = str(content.get("role") or "").lower() == "heading"
+    assertion = {
+        "kind": "text" if is_heading else "visible",
+        "target": code,
+    }
+    if is_heading:
+        assertion["text"] = label
+    return _target(state, content), assertion, f"{label} is visible"
+
+
 def _default_categories(ac: dict[str, Any]) -> list[str]:
     text = str(ac.get("text") or "")
     if _EDGE_INTENT.search(text):
@@ -356,12 +412,15 @@ def _build_case(
         valid or (category == "NEGATIVE" and observed_negative_result)
     ):
         assert_state = result
-        expected = f"The current URL includes {_url_path(result)}"
-        assertion_target = _target(assert_state)
+        assertion_target, assertion, expected = _content_assertion(result, text)
     elif not click and assertion_element:
         assert_state = start
         expected = f"{assertion_element.get('name') or assertion_element.get('text')} is visible"
         assertion_target = _target(assert_state, assertion_element)
+        assertion = {
+            "kind": "visible",
+            "target": str(assertion_element.get("element_code") or ""),
+        }
     else:
         return None
     steps.append(
@@ -370,18 +429,24 @@ def _build_case(
             action="assert",
             target=assertion_target,
             expected=expected,
+            assertion=assertion,
         )
     )
     if len(steps) < 2:
         return None
-    label = str(ac.get("text") or ac.get("id") or "scenario")
     kind = {
         "POSITIVE": "works as expected",
         "NEGATIVE": "is prevented as required",
     }.get(category, "handles the stated boundary")
     variant = f" ({dropdown_variant + 1})" if dropdown_variant else ""
+    action_names = [
+        str(step.target.element_name or "")
+        for step in steps
+        if step.action in {"click", "fill", "select"} and step.target.element_name
+    ]
+    subject = action_names[0] if action_names else (ac.get("id") or "scenario")
     return TestCaseSpec(
-        title=f"{label[:70]} {kind}{variant}",
+        title=f"{subject}: {kind}{variant}",
         objective=f"Verify observed UI for {ac.get('id')} ({category.lower()}).",
         category=category,  # type: ignore[arg-type]
         preconditions=[f"Browser is on {_url_path(start)}"],
@@ -438,7 +503,7 @@ def generate_discovery_coverage_cases(
             target = _target(state, element)
             result, confidence = _result_state(states, state, element if role in _CLICKABLE else None)
             if role in _CLICKABLE and result["state_code"] != state["state_code"]:
-                expected = f"The current URL includes {_url_path(result)}"
+                assert_target, assertion, expected = _content_assertion(result, name)
                 cases.append(TestCaseSpec(
                     title=f"{_page_label(state)}: navigate using {name}",
                     objective="Verify the observed control reaches its discovered destination.",
@@ -446,15 +511,17 @@ def generate_discovery_coverage_cases(
                     steps=[
                         TestStep(step_number=1, action="navigate", target=_target(state)),
                         TestStep(step_number=2, action="click", target=target),
-                        TestStep(step_number=3, action="assert", target=_target(result), expected=expected),
+                        TestStep(step_number=3, action="assert", target=assert_target,
+                                 expected=expected, assertion=assertion),
                     ], expected_result=expected, test_data={}, traceability=[ac_id], confidence=confidence,
                 ))
                 continue
             validation = element.get("validation") or {}
             if role in _FILLABLE and validation.get("required"):
-                for category, value, suffix, expected in (
-                    ("NEGATIVE", "", "empty required input", "Required-field validation reports this field as missing."),
-                    ("EDGE_CASE", "a", "one-character boundary", "Required-field validation no longer reports this field as missing; other validation rules may still reject the value."),
+                code = str(element.get("element_code") or "")
+                for category, value, suffix, expected, kind in (
+                    ("NEGATIVE", "", "empty required input", "Required-field validation reports this field as missing.", "required"),
+                    ("EDGE_CASE", "a", "one-character boundary", "Required-field validation no longer reports this field as missing; other validation rules may still reject the value.", "visible"),
                 ):
                     cases.append(TestCaseSpec(
                         title=f"{_page_label(state)}: {name} {suffix}",
@@ -462,7 +529,8 @@ def generate_discovery_coverage_cases(
                         preconditions=[f"Browser is on {_url_path(state)}"],
                         steps=[TestStep(step_number=1, action="navigate", target=_target(state)),
                                TestStep(step_number=2, action="fill", target=target, value="{field_value}"),
-                               TestStep(step_number=3, action="assert", target=target, expected=expected)],
+                               TestStep(step_number=3, action="assert", target=target, expected=expected,
+                                        assertion={"kind": kind, "target": code})],
                         expected_result=expected, test_data={"field_value": value}, traceability=[ac_id], confidence=0.8,
                     ))
                 continue
@@ -472,7 +540,8 @@ def generate_discovery_coverage_cases(
                 objective="Verify the observed interactive component is available to the user.",
                 category="POSITIVE", preconditions=[f"Browser is on {_url_path(state)}"],
                 steps=[TestStep(step_number=1, action="navigate", target=_target(state)),
-                       TestStep(step_number=2, action="assert", target=target, expected=expected)],
+                       TestStep(step_number=2, action="assert", target=target, expected=expected,
+                                assertion={"kind": "enabled", "target": str(element.get("element_code") or "")})],
                 expected_result=expected, test_data={}, traceability=[ac_id], confidence=0.8,
             ))
     return cases
@@ -524,7 +593,9 @@ def generate_cases_from_map(
                             steps=[
                                 TestStep(step_number=1, action="navigate", target=_target(state)),
                                 TestStep(step_number=2, action="fill", target=_target(state, element), value="{field_value}"),
-                                TestStep(step_number=3, action="assert", target=_target(state, element), expected=expected),
+                                TestStep(step_number=3, action="assert", target=_target(state, element), expected=expected,
+                                         assertion={"kind": "required" if category == "NEGATIVE" else "visible",
+                                                    "target": str(element.get("element_code") or "")}),
                             ],
                             expected_result=expected, test_data={"field_value": value},
                             traceability=[str(ac["id"])], confidence=0.8,

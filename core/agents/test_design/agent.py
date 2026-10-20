@@ -425,17 +425,28 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         specs: list[TestCaseSpec],
         known_signatures: set[tuple[Any, ...]],
         credential_ref: str | None = None,
-    ) -> tuple[list[AgentArtifactRef], int]:
+    ) -> tuple[list[AgentArtifactRef], int, int, list[str]]:
         """Write a finished AC batch so the UI can show cases before the run ends.
 
         Cases identical to one already saved for this requirement and map are
-        skipped, so re-running generation does not pile up duplicates."""
+        merged into the existing case's traceability, so re-running generation
+        does not pile up duplicates or lose AC coverage."""
         artifacts: list[AgentArtifactRef] = []
         skipped = 0
+        merged_count = 0
+        merged_acs: list[str] = []
         for tc_spec in specs:
             version_data = _spec_version_data(tc_spec)
             signature = case_signature(version_data)
             if signature in known_signatures:
+                found = await self._test_case_repo.find_by_signature(requirement_id, signature)
+                if found is not None:
+                    tc, version = found
+                    extra = [ac for ac in tc_spec.traceability if ac not in (version.traceability or [])]
+                    if extra:
+                        await self._test_case_repo.merge_traceability(tc.id, version.id, extra)
+                        merged_count += 1
+                        merged_acs.extend(extra)
                 skipped += 1
                 continue
             known_signatures.add(signature)
@@ -451,7 +462,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             )
             artifacts.append(AgentArtifactRef(type="test_case", id=str(tc.id), version=1))
         await self._test_case_repo.session.commit()
-        return artifacts, skipped
+        return artifacts, skipped, merged_count, merged_acs
 
     async def run(self, request: AgentInputEnvelope) -> TestDesignResult:
         requirement_id = uuid.UUID(request.payload["requirement_id"])
@@ -572,6 +583,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         total_input_tokens = total_output_tokens = 0
         model_name = ""
         ac_ids = {ac["id"] for ac in req_version.acceptance_criteria}
+        ac_texts = {ac["id"]: ac.get("text", "") for ac in req_version.acceptance_criteria}
         regenerate = bool(request.payload.get("regenerate"))
         # An explicit regeneration must be allowed to recreate an otherwise
         # identical scenario. Do not retire the existing set yet: that happens
@@ -582,6 +594,8 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         regeneration_retired = False
         credential_ref = (getattr(app_map, "discovery_checkpoint", None) or {}).get("configuration", {}).get("credential_ref") or request.payload.get("credential_ref")
         duplicates_skipped = 0
+        traceability_merges = 0
+        merged_acs: list[str] = []
 
         heuristic_cases = generate_cases_from_map(
             pending_acs,
@@ -596,7 +610,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 continue
             all_test_cases.append(tc)
             tc = _renumber_steps(tc)
-            issues = self._validator.issues_for(tc, map_states, ac_ids)
+            issues = self._validator.issues_for(tc, map_states, ac_ids, ac_texts)
             if issues:
                 validation_errors.append(f"'{tc.title}': {' | '.join(issues)}")
             else:
@@ -608,7 +622,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 )
                 regeneration_retired = True
             valid_cases.extend(batch_valid)
-            saved, skipped = await self._persist_specs(
+            saved, skipped, merged, attached_acs = await self._persist_specs(
                 project_id=request.project_id,
                 requirement_id=requirement_id,
                 requirement_version=requirement.current_version,
@@ -619,6 +633,8 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             )
             artifacts.extend(saved)
             duplicates_skipped += skipped
+            traceability_merges += merged
+            merged_acs.extend(attached_acs)
         model_name = "map-grounded-batch"
 
         use_llm = (os.environ.get("TEST_DESIGN_USE_LLM") or "").strip().lower() in {
@@ -674,7 +690,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                             model_name = model
                         for tc in accepted:
                             tc = _renumber_steps(tc)
-                            issues = self._validator.issues_for(tc, map_states, ac_ids)
+                            issues = self._validator.issues_for(tc, map_states, ac_ids, ac_texts)
                             if issues:
                                 validation_errors.append(
                                     f"'{tc.title}': {' | '.join(issues)}"
@@ -688,7 +704,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                             )
                             regeneration_retired = True
                         valid_cases.extend(llm_valid)
-                        saved, skipped = await self._persist_specs(
+                        saved, skipped, merged, attached_acs = await self._persist_specs(
                             project_id=request.project_id,
                             requirement_id=requirement_id,
                             requirement_version=requirement.current_version,
@@ -699,6 +715,8 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                         )
                         artifacts.extend(saved)
                         duplicates_skipped += skipped
+                        traceability_merges += merged
+                        merged_acs.extend(attached_acs)
             finally:
                 for task in outstanding:
                     task.cancel()
@@ -816,6 +834,16 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 decision=f"Skipped {duplicates_skipped} test case(s) identical to ones already saved",
                 reason="Same category, traceability and steps as an existing case for this requirement and map",
                 evidence=[f"Duplicates skipped: {duplicates_skipped}"],
+                confidence=1.0,
+                source=EvidenceSource.INFERENCE,
+            ))
+
+        if traceability_merges:
+            attached = sorted(set(merged_acs))
+            decisions.append(AgentDecision(
+                decision=f"Attached {', '.join(attached)} to existing test case(s)",
+                reason="An identical scenario already existed, so its traceability was merged.",
+                evidence=[f"Traceability merges: {traceability_merges}", *attached],
                 confidence=1.0,
                 source=EvidenceSource.INFERENCE,
             ))
