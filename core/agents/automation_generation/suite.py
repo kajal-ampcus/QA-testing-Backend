@@ -27,6 +27,8 @@ _SENSITIVE = re.compile(
     r"password|passwd|secret|token|api[_-]?key|credential|session|authorization|private[_-]?key|\bpwd\b",
     re.IGNORECASE,
 )
+# Intentional negative-test values that _fill_expression emits inline.
+_SAFE_NEGATIVE_INPUTS = {"wrong", "invalid-captcha", "not-an-email"}
 _RESERVED = {
     "page",
     "constructor",
@@ -796,8 +798,6 @@ def _fill_expression(
 def _forbidden_literals(cases: list[CaseInput]) -> set[str]:
     forbidden: set[str] = set()
     for case in cases:
-        if case.credential_ref and len(case.credential_ref) >= 4:
-            forbidden.add(case.credential_ref)
         for path, value in _string_leaves(case.test_data):
             if len(value) >= 4 and _SENSITIVE.search(path):
                 forbidden.add(value)
@@ -807,7 +807,11 @@ def _forbidden_literals(cases: list[CaseInput]) -> set[str]:
             value = step.get("value")
             if isinstance(value, str) and len(value) >= 4 and _SENSITIVE.search(name):
                 forbidden.add(value)
-    return {item for item in forbidden if item.strip()}
+    return {
+        item
+        for item in forbidden
+        if item.strip() and item not in _SAFE_NEGATIVE_INPUTS
+    }
 
 
 def _string_leaves(data: dict[str, Any]) -> list[tuple[str, str]]:
@@ -845,7 +849,7 @@ def _reject_secret_literals(
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        if _contains_secret(text, forbidden):
+        if _contains_secret_literal(text, forbidden):
             hits.append(path)
     if not hits:
         return
@@ -855,6 +859,28 @@ def _reject_secret_literals(
         for path in hits:
             path.unlink(missing_ok=True)
     raise RuntimeError("Refusing to keep a suite that contained a secret literal.")
+
+
+def _contains_secret_literal(text: str, forbidden: set[str]) -> bool:
+    """Check generated source string literals, not incidental identifier substrings.
+
+    Generated TypeScript stores data-derived values as quoted literals. Scanning
+    the entire source with substring matching made short values such as common
+    login words collide with unrelated code and route names.
+    """
+    literals = re.finditer(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`', text)
+    for match in literals:
+        token = match.group(0)
+        if token.startswith('"'):
+            try:
+                value = json.loads(token)
+            except (json.JSONDecodeError, TypeError):
+                value = token[1:-1]
+        else:
+            value = token[1:-1]
+        if value in forbidden:
+            return True
+    return False
 
 
 def _selector_record(selector: SelectorDecision) -> dict[str, Any]:

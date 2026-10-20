@@ -43,3 +43,36 @@ async def test_multiple_accounts_keep_independent_progress_and_shared_results():
     await run("cred:employee")
     assert checkpoint["jobs"] == employee_jobs
     assert len([node for node in checkpoint["graph"]["nodes"] if node["url_pattern"] == "/dashboard"]) == 3
+
+
+def test_employee_admin_kitchen_round_trip_preserves_frontiers_and_combined_graph():
+    graph = {"nodes": [{"fingerprint": "employee-home"}], "edges": []}
+    employee = {
+        "jobs": [{"key": "employee", "status": "completed"}],
+        "completed_nodes": ["employee-home"],
+        "progress": {"completed_tasks": 1},
+        "pending_nodes": [], "failed_nodes": [], "in_progress_nodes": [],
+        "live_view": {"label": "Employee"},
+        "credential_update_required": True,
+    }
+    original = {"configuration": {"credential_ref": "cred:employee"}, "graph": graph, **employee}
+    snapshot = deepcopy(original)
+    admin = select_account_checkpoint(original, "cred:admin")
+    assert original == snapshot
+    assert "progress" not in admin
+    assert "live_view" not in admin
+    assert "credential_update_required" not in admin
+    admin.update(jobs=[{"key": "admin", "status": "failed"}], progress={"failed_tasks": 1})
+    admin["graph"]["nodes"].append({"fingerprint": "admin-home"})
+    admin["graph"]["edges"].append({"parent": "employee-home", "child": "admin-home", "route": "admin"})
+    kitchen = select_account_checkpoint(admin, "cred:kitchen")
+    kitchen.update(jobs=[{"key": "kitchen", "status": "available"}])
+    kitchen["graph"]["nodes"].append({"fingerprint": "kitchen-home"})
+    restored = select_account_checkpoint(kitchen, "cred:employee")
+    for key, value in employee.items():
+        assert restored[key] == value
+    assert restored["account_contexts"]["cred:admin"]["jobs"][0]["status"] == "failed"
+    assert restored["account_contexts"]["cred:kitchen"]["jobs"][0]["key"] == "kitchen"
+    assert len(restored["graph"]["nodes"]) == 3
+    assert restored["graph"]["edges"] == admin["graph"]["edges"]
+    assert len(original["graph"]["nodes"]) == 1

@@ -18,6 +18,7 @@ import socket
 import tempfile
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from collections import Counter
 from contextlib import AsyncExitStack, suppress
 from html import unescape
@@ -838,6 +839,122 @@ class ChromeDevToolsClient:
         self._omit_url_allowlist = False
         self._errlog_file: TextIO | None = None
         self._mcp_log_path: Path | None = None
+        self._action_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+        self._next_action_context: tuple[str, bool] | None = None
+
+    def set_action_callback(
+        self, callback: Callable[[dict[str, Any]], Awaitable[None]] | None
+    ) -> None:
+        """Attach the discovery checkpoint event sink to this MCP session."""
+        self._action_callback = callback
+
+    def set_next_action_context(self, description: str, *, sensitive: bool = False) -> None:
+        """Describe the next click/fill without storing the value being entered."""
+        self._next_action_context = (description, sensitive)
+
+    @staticmethod
+    def _safe_action_error(error: Exception, *, sensitive: bool) -> str:
+        if sensitive:
+            return "The browser could not complete this sensitive input action."
+        # MCP errors sometimes echo tool arguments. Do not include exception text
+        # for fill calls (all values are omitted), and keep other error messages
+        # short and free of URL query strings.
+        message = str(error).splitlines()[0][:240]
+        message = re.sub(r"https?://\S+", "the page", message, flags=re.I)
+        message = re.sub(r"(?i)(password|token|secret|credential|authorization)(\s*[:=]\s*)\S+", r"\1\2[redacted]", message)
+        return message or type(error).__name__
+
+    async def _emit_action(self, event: dict[str, Any]) -> None:
+        if self._action_callback is None:
+            return
+        try:
+            await self._action_callback(event)
+        except Exception:
+            logger.debug("Could not publish browser action event", exc_info=True)
+
+    def _describe_action(self, tool_name: str, arguments: dict[str, Any]) -> tuple[str, bool] | None:
+        context = self._next_action_context
+        self._next_action_context = None
+        if tool_name == "navigate_page":
+            if context:
+                return context[0][:140], context[1]
+            url = str(arguments.get("url") or "")
+            parsed = urlparse(url)
+            destination = parsed.path or "/" if parsed.scheme in {"http", "https"} else "the application page"
+            return f"Navigate to {destination[:100]}", False
+        if tool_name == "evaluate_script" and context:
+            return context[0][:140], context[1] or context[0].casefold().startswith(("enter ", "type ", "fill "))
+        if tool_name in {"click", "fill", "select_option", "press_key"}:
+            if context:
+                description, sensitive = context
+            elif tool_name == "fill":
+                description, sensitive = "Enter text in a form field", True
+            elif tool_name == "click":
+                description, sensitive = "Click a page control", False
+            elif tool_name == "select_option":
+                description, sensitive = "Choose a dropdown option", False
+            else:
+                description, sensitive = "Use a keyboard control", False
+            if tool_name == "fill" and not description.casefold().startswith(("enter ", "type ", "fill ")):
+                description = f"Enter text in {description}"
+            return description[:140], sensitive or tool_name == "fill"
+        return None
+
+    async def _highlight_target(self, tool_name: str, arguments: dict[str, Any]) -> None:
+        if tool_name not in {"click", "fill", "select_option"} and not (
+            tool_name == "evaluate_script" and arguments.get("args")
+        ):
+            return
+        uid = arguments.get("uid")
+        if tool_name == "evaluate_script":
+            refs = arguments.get("args")
+            uid = refs[0] if isinstance(refs, list) and refs else None
+        if not isinstance(uid, str) or not uid:
+            return
+        marker = uuid.uuid4().hex
+        function = """(element) => {
+          if (!element || !element.style) return false;
+          const marker = MARKER;
+          const original = {
+            outline: element.style.getPropertyValue('outline'),
+            outlinePriority: element.style.getPropertyPriority('outline'),
+            outlineOffset: element.style.getPropertyValue('outline-offset'),
+            outlineOffsetPriority: element.style.getPropertyPriority('outline-offset'),
+            boxShadow: element.style.getPropertyValue('box-shadow'),
+            boxShadowPriority: element.style.getPropertyPriority('box-shadow')
+          };
+          element.dataset.discoveryActionHighlight = marker;
+          element.style.setProperty('outline', '3px solid #ffb020', 'important');
+          element.style.setProperty('outline-offset', '2px', 'important');
+          element.style.setProperty('box-shadow', '0 0 0 5px rgba(255,176,32,.28)', 'important');
+          const imposed = {
+            outline: element.style.getPropertyValue('outline'),
+            outlineOffset: element.style.getPropertyValue('outline-offset'),
+            boxShadow: element.style.getPropertyValue('box-shadow')
+          };
+          window.setTimeout(() => {
+            if (element.dataset.discoveryActionHighlight !== marker) return;
+            for (const [name, key, value, priority] of [
+              ['outline', 'outline', original.outline, original.outlinePriority],
+              ['outline-offset', 'outlineOffset', original.outlineOffset, original.outlineOffsetPriority],
+              ['box-shadow', 'boxShadow', original.boxShadow, original.boxShadowPriority]
+            ]) {
+              if (element.style.getPropertyValue(name) !== imposed[key] ||
+                  element.style.getPropertyPriority(name) !== 'important') continue;
+              value ? element.style.setProperty(name, value, priority) : element.style.removeProperty(name);
+            }
+            delete element.dataset.discoveryActionHighlight;
+          }, 900);
+          return true;
+        }""".replace("MARKER", json.dumps(marker))
+        try:
+            await self._require_session().call_tool(
+                "evaluate_script",
+                self._page_args(function=function, args=[uid], waitForStableDom=False),
+            )
+        except Exception:
+            # Highlighting is visual-only and must never block the MCP action.
+            logger.debug("Could not highlight browser action target", exc_info=True)
 
     # def _server_params(self) -> StdioServerParameters:
     #     command = os.environ.get("CHROME_DEVTOOLS_MCP_COMMAND")
@@ -1023,14 +1140,37 @@ class ChromeDevToolsClient:
 
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         session = self._require_session()
+        described = self._describe_action(tool_name, arguments)
+        action_id = str(uuid.uuid4()) if described else None
+        if described and action_id:
+            description, sensitive = described
+            await self._emit_action({"id": action_id, "description": description, "status": "running"})
+        await self._highlight_target(tool_name, arguments)
         try:
             result = await session.call_tool(tool_name, arguments)
         except Exception as exc:
+            if described and action_id:
+                await self._emit_action({
+                    "id": action_id,
+                    "description": described[0],
+                    "status": "failed",
+                    "error": self._safe_action_error(exc, sensitive=described[1]),
+                })
             if "connection closed" in str(exc).lower():
                 raise self._startup_error(exc) from exc
             raise
         if result.is_error:
-            raise RuntimeError(f"chrome-devtools-mcp tool '{tool_name}' failed: {result.content}")
+            error = RuntimeError(f"chrome-devtools-mcp tool '{tool_name}' failed: {result.content}")
+            if described and action_id:
+                await self._emit_action({
+                    "id": action_id,
+                    "description": described[0],
+                    "status": "failed",
+                    "error": self._safe_action_error(error, sensitive=described[1]),
+                })
+            raise error
+        if described and action_id:
+            await self._emit_action({"id": action_id, "description": described[0], "status": "success"})
         return result.content
 
     async def list_tool_schemas(self) -> dict[str, dict[str, Any]]:
@@ -1095,11 +1235,11 @@ class ChromeDevToolsClient:
     async def take_snapshot(self) -> Any:
         return await self._call("take_snapshot", self._page_args())
 
-    async def take_screenshot(self) -> Any:
+    async def _save_screenshot(self, *, full_page: bool) -> str:
         directory = Path(os.environ.get("DISCOVERY_EVIDENCE_DIR", "artifacts/discovery")).resolve()
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"{uuid.uuid4()}.png"
-        content = await self._call("take_screenshot", self._page_args(fullPage=True))
+        content = await self._call("take_screenshot", self._page_args(fullPage=full_page))
         image = next((block for block in content if getattr(block, "type", None) == "image"), None)
         if image is None or not getattr(image, "data", None):
             raise RuntimeError("Discovery screenshot returned no image data")
@@ -1107,6 +1247,14 @@ class ChromeDevToolsClient:
         target.write_bytes(raw)
         target.with_suffix(".sha256").write_text(hashlib.sha256(raw).hexdigest(), encoding="utf-8")
         return f"/api/v1/application-maps/evidence/{target.name}"
+
+    async def take_screenshot(self) -> Any:
+        """Capture a full-page image for map evidence and diagnostics."""
+        return await self._save_screenshot(full_page=True)
+
+    async def take_viewport_screenshot(self) -> str:
+        """Capture only the visible browser viewport for the live preview."""
+        return await self._save_screenshot(full_page=False)
 
     async def inspect_elements(self, snapshot: object) -> list[dict[str, Any]]:
         """Attach browser-read attributes to the exact observed MCP controls."""
@@ -1323,13 +1471,16 @@ class ChromeDevToolsClient:
         The native setter plus input/change events is what a React form reads.
         The MCP fill tool is only the fallback when that setter cannot run.
         """
+        label = re.sub(r"\s+", " ", description).strip().removesuffix(" field")
         try:
+            self.set_next_action_context(f"Enter {label} in login form", sensitive=True)
             await self._set_control_value(element_ref, value)
             return
         except Exception as error:
             stale = isinstance(error, RuntimeError) and self._is_stale_interaction_error(error)
             if not stale:
                 try:
+                    self.set_next_action_context(f"Enter {label} in login form", sensitive=True)
                     await self.fill(element_ref, value)
                     return
                 except RuntimeError as fill_error:
@@ -1349,6 +1500,7 @@ class ChromeDevToolsClient:
                 f"{description.capitalize()} disappeared while the login form was updating."
             ) from first_error
         try:
+            self.set_next_action_context(f"Enter {label} in login form", sensitive=True)
             await self._set_control_value(refreshed_ref, value)
         except RuntimeError as recovery_error:
             raise RuntimeError(
@@ -1365,6 +1517,7 @@ class ChromeDevToolsClient:
     ) -> None:
         """Click a login control again with a fresh UID if the form re-rendered."""
         try:
+            self.set_next_action_context(f"Click {description}")
             await self.click(element_ref)
             return
         except RuntimeError as error:
@@ -1379,6 +1532,7 @@ class ChromeDevToolsClient:
             raise RuntimeError(
                 f"{description.capitalize()} disappeared while the login form was updating."
             ) from first_error
+        self.set_next_action_context(f"Click {description}")
         await self.click(refreshed_ref)
 
     async def handle_dialog(self, action: str = "dismiss") -> Any:
@@ -1841,6 +1995,7 @@ class ChromeDevToolsClient:
             uid = next((uid for uid, role, name in controls
                 if role == "combobox" and name == choice.get("name")), None)
             if uid:
+                self.set_next_action_context(f"Choose the {role_name} login option")
                 await self.fill(uid, choice["value"])
                 await self.wait_until_ready()
                 return _parse_controls(_snapshot_text(await self.take_snapshot()))
@@ -1955,10 +2110,13 @@ class ChromeDevToolsClient:
                     value = fields.get(re.sub(r"\s+", " ", step.get("name", "")).strip().casefold())
                     if not value:
                         raise RuntimeError("Saved login is missing a required step value")
+                    self.set_next_action_context(f"Enter {step.get('name') or 'login detail'}", sensitive=True)
                     await self.fill(uid, value)
                 elif step.get("value") is not None:
+                    self.set_next_action_context(f"Enter text in {step.get('name') or 'login field'}", sensitive=True)
                     await self.fill(uid, step["value"])
                 else:
+                    self.set_next_action_context(f"Click {step.get('name') or step.get('role')}")
                     await self.click(uid)
                 await self.wait_until_ready()
 

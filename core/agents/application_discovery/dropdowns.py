@@ -257,6 +257,8 @@ async def _open_and_collect(client: Any, element: dict[str, Any], limit_scrolls:
     uid = element.get("uid")
     if not uid:
         return []
+    if hasattr(client, "set_next_action_context"):
+        client.set_next_action_context(f"Open dropdown: {element.get('name') or 'unnamed control'}")
     await client.click(str(uid))
     if hasattr(client, "wait_until_ready"):
         await client.wait_until_ready()
@@ -299,13 +301,18 @@ async def _select_option(client: Any, element: dict[str, Any], option: dict[str,
         )
     uid = str(current["uid"])
     label = option["label"]
+    safe_label = str(element.get("name") or "dropdown")
     if kind == "native" and uid:
         # chrome-devtools-mcp selects native <option>s by their visible text,
         # not by the DOM value. CEP, for example, uses UUID values for district
         # labels such as "Akola".
+        if hasattr(client, "set_next_action_context"):
+            client.set_next_action_context(f"Choose an option in {safe_label}")
         await client.fill(uid, label)
     else:
         if uid:
+            if hasattr(client, "set_next_action_context"):
+                client.set_next_action_context(f"Open dropdown: {safe_label}")
             await client.click(uid)
             if hasattr(client, "wait_until_ready"):
                 await client.wait_until_ready()
@@ -322,6 +329,8 @@ async def _select_option(client: Any, element: dict[str, Any], option: dict[str,
         )
         if match is None:
             return nodes
+        if hasattr(client, "set_next_action_context"):
+            client.set_next_action_context(f"Choose an option in {safe_label}")
         await client.click(str(match["uid"]))
     if hasattr(client, "wait_until_ready"):
         await client.wait_until_ready()

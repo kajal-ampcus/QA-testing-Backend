@@ -8,8 +8,8 @@ import asyncio
 import json
 import os
 import uuid
-from copy import deepcopy
 from contextlib import suppress
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,20 +24,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
 from core.agents.application_discovery.account_scope import select_account_checkpoint
-from core.policy_safety.environment_policy import DiscoveryTargetError, validate_discovery_target
-from domain.enums import RequirementStatus
-from infra.db.models.application_map import ApplicationMap
-from infra.db.models.discovery_evidence_review import DiscoveryEvidenceReview
-from infra.db.models.discovery_credential import DiscoveryCredential
-from infra.db.models.project import Project
-from infra.db.models.requirement import Requirement
-from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from core.agents.application_discovery.form_inputs import (
     is_password_field,
     is_username_field,
     split_saved_values,
 )
-from infra.db.repositories.form_answer_repo import save_form_answers, get_form_answers
+from core.policy_safety.environment_policy import DiscoveryTargetError, validate_discovery_target
+from domain.enums import RequirementStatus
+from infra.db.models.application_map import ApplicationMap
+from infra.db.models.discovery_credential import DiscoveryCredential
+from infra.db.models.discovery_evidence_review import DiscoveryEvidenceReview
+from infra.db.models.project import Project
+from infra.db.models.requirement import Requirement
+from infra.db.repositories.application_map_repo import ApplicationMapRepository
+from infra.db.repositories.form_answer_repo import get_form_answers, save_form_answers
 from infra.queue.broker import enqueue, get_arq_pool
 from infra.queue.discovery_lock import (
     active_discovery_job,
@@ -45,7 +45,7 @@ from infra.queue.discovery_lock import (
     clear_inactive_discovery,
     release_discovery,
 )
-from infra.secrets.vault_client import encrypt_login_secret, merge_login_fields, get_login_secret
+from infra.secrets.vault_client import encrypt_login_secret, get_login_secret, merge_login_fields
 
 _REDIS_ERRORS = (RedisConnectionError, RedisTimeoutError, OSError)
 
@@ -669,6 +669,15 @@ async def submit_input_request(
         if isinstance(item, dict)
     ]
     target = next((item for item in requests if item.get("id") == request_id), None)
+    if target is None:
+        # The role explorer can reopen a login choice saved in another account's
+        # frontier. Only login choices are portable; form answers remain scoped.
+        target = next((
+            dict(item)
+            for context in checkpoint.get("account_contexts", {}).values()
+            for item in context.get("input_requests", [])
+            if item.get("id") == request_id and item.get("kind") == "login_choice"
+        ), None)
     if target is None:
         raise HTTPException(status_code=404, detail="Discovery input request not found")
     if getattr(app_map, "status", None) == "RUNNING" and target.get("kind") in {"login", "login_choice"}:

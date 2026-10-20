@@ -38,6 +38,11 @@ class ProjectCreateRequest(BaseModel):
     credential_ref: None = None
 
 
+class ProjectUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    application_url: AnyHttpUrl | None = None
+
+
 class ProjectResponse(BaseModel):
     id: uuid.UUID
     name: str
@@ -76,6 +81,30 @@ async def get_project(
     return ProjectDetailResponse.model_validate(project).model_copy(
         update={"has_application_map": bool(has_map)}
     )
+
+
+@router.patch("/{project_id}", response_model=ProjectResponse)
+async def update_project(
+    project_id: uuid.UUID,
+    body: ProjectUpdateRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> Project:
+    """Update a project's name and/or application entry URL."""
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not body.model_fields_set:
+        raise HTTPException(status_code=422, detail="Provide a project name or application URL")
+    if "name" in body.model_fields_set:
+        name = (body.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Project name cannot be empty")
+        project.name = name
+    if "application_url" in body.model_fields_set:
+        project.application_url = str(body.application_url) if body.application_url else None
+    await session.commit()
+    await session.refresh(project)
+    return project
 
 
 @router.get("", response_model=list[ProjectResponse])

@@ -516,6 +516,8 @@ class Crawler:
             if _is_chrome_navigation_control(step.role, step.name, step.url):
                 continue
             if step.role == "link" and step.url:
+                if hasattr(self._client, "set_next_action_context"):
+                    self._client.set_next_action_context(f"Open link: {step.name or 'page link'}")
                 await self._client.navigate_page(step.url)
                 await self._client.wait_until_ready()
                 snapshot = await self._client.take_snapshot()
@@ -533,8 +535,14 @@ class Crawler:
             if match is None or not match.get("uid"):
                 raise RuntimeError(f"Replay failed: {step.role!r} '{step.name}' not found")
             if step.value is not None:
+                if hasattr(self._client, "set_next_action_context"):
+                    self._client.set_next_action_context(
+                        f"Enter text in {step.name or 'form field'}", sensitive=bool(step.sensitive)
+                    )
                 await self._client.fill(match["uid"], step.value)
             else:
+                if hasattr(self._client, "set_next_action_context"):
+                    self._client.set_next_action_context(f"Click {step.name or step.role}")
                 await self._client.click(match["uid"])
             with suppress(Exception):
                 await self._client.handle_dialog("dismiss")

@@ -34,3 +34,28 @@ async def test_admin_can_be_selected_after_employee_without_losing_results():
     assert checkpoint["input_requests"][0]["selected_choice"] == choice
     assert checkpoint["jobs"][-1]["key"] == response.selected_branches[0]
     assert checkpoint["jobs"][-1]["path"][0]["name"] == "Admin"
+
+
+@pytest.mark.asyncio
+async def test_login_choice_saved_under_another_account_can_be_reopened():
+    request = {"id": "roles", "kind": "login_choice", "status": "applied",
+               "choices": [{"id": "kitchen", "label": "Kitchen", "step": {"role": "button", "name": "Kitchen"}}],
+               "navigation_path": []}
+    employee = {"jobs": [{"key": "employee", "status": "completed"}], "input_requests": [request]}
+    app_map = SimpleNamespace(status="PARTIAL", discovery_checkpoint={
+        "configuration": {"mode": "guided", "credential_ref": "cred:admin"},
+        "jobs": [{"key": "admin", "status": "failed"}],
+        "account_contexts": {"cred:employee": employee},
+        "graph": {"nodes": [{"fingerprint": "employee-home"}], "edges": []},
+    })
+
+    class Session:
+        async def get(self, *_args): return app_map
+        async def commit(self): pass
+
+    result = await submit_input_request(uuid.uuid4(), "roles", SubmitInputRequestBody(choice_id="kitchen", approve_submission=True), Session())
+    assert result.selected_branches
+    checkpoint = app_map.discovery_checkpoint
+    assert checkpoint["account_contexts"]["cred:employee"] == employee
+    assert checkpoint["account_contexts"]["cred:admin"]["jobs"][0]["key"] == "admin"
+    assert checkpoint["graph"]["nodes"][0]["fingerprint"] == "employee-home"

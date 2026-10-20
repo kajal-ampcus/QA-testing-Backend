@@ -3,10 +3,11 @@
 from copy import deepcopy
 from typing import Any
 
-
 _FRONTIER = (
     "jobs", "completed_nodes", "input_requests", "module_inventory_flows",
     "reveal_probed", "collection_follow_queued",
+    "progress", "pending_nodes", "failed_nodes", "in_progress_nodes",
+    "live_view", "action_log", "credential_update_required",
 )
 
 
@@ -27,5 +28,4 @@ def select_account_checkpoint(checkpoint: dict[str, Any], credential_ref: str | 
             result[key] = deepcopy(selected[key])
     configuration["credential_ref"] = credential_ref
     result["credential_ref"] = credential_ref
-    result.pop("credential_update_required", None)
     return result

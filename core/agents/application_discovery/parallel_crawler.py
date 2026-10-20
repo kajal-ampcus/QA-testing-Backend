@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urldefrag, urljoin, urlparse
 
@@ -200,6 +201,7 @@ class ParallelCrawler:
         self._seen: set[str] = set()
         self._page_keys: dict[str, str] = {}
         self._live_view: dict[str, Any] | None = None
+        self._action_log: list[dict[str, Any]] = []
         self._expanded: set[str] = set()
         self._expanding: set[str] = set()
         self._queued_actions: set[tuple[str, str, str, str]] = set()
@@ -208,6 +210,7 @@ class ParallelCrawler:
         self._nodes: dict[str, dict[str, Any]] = {}
         self._edges: set[tuple[str, str, str]] = set()
         self._lock = asyncio.Lock()
+        self._action_lock = asyncio.Lock()
         self._persist_lock = asyncio.Lock()
         self._last_checkpoint_at = float("-inf")
         self._sequence = itertools.count()
@@ -294,6 +297,10 @@ class ParallelCrawler:
             if node.get("functional_key")
         }
         self._live_view = self._checkpoint.get("live_view")
+        self._action_log = [
+            item for item in self._checkpoint.get("action_log", [])
+            if isinstance(item, dict) and item.get("id")
+        ][-100:]
         self._edges = {
             (edge["parent_fingerprint"], edge["child_fingerprint"], edge["action"])
             for edge in graph.get("edges", [])
@@ -355,6 +362,7 @@ class ParallelCrawler:
             "account_contexts": self._checkpoint.get("account_contexts", {}),
             "progress": self._progress(),
             "live_view": self._live_view,
+            "action_log": self._action_log,
             "configuration": {
                 "mode": self._discovery_mode,
                 "selected_auth_flow": self._selected_auth_flow,
@@ -407,6 +415,36 @@ class ParallelCrawler:
         async with self._persist_lock:
             self._last_checkpoint_at = time.monotonic()
             await self._on_checkpoint(self._checkpoint_payload())
+
+    async def _record_browser_action(self, event: dict[str, Any]) -> None:
+        """Persist safe MCP action status changes for the existing polling UI."""
+        async with self._action_lock:
+            action_id = str(event.get("id") or "")[:80]
+            description = str(event.get("description") or "Browser action")[:140]
+            status = event.get("status")
+            if not action_id or status not in {"running", "success", "failed"}:
+                return
+            action = {"id": action_id, "description": description, "status": status}
+            if status == "failed" and event.get("error"):
+                # Client-side errors are already scrubbed; cap stored details too.
+                action["error"] = str(event["error"])[:240]
+            existing = next((index for index, item in enumerate(self._action_log) if item.get("id") == action_id), None)
+            if existing is None:
+                action["timestamp"] = datetime.now(timezone.utc).isoformat()
+                self._action_log.append(action)
+            else:
+                action["timestamp"] = self._action_log[existing].get("timestamp")
+                self._action_log[existing] = action
+            self._action_log = self._action_log[-100:]
+            await self._save_checkpoint(force=True)
+
+    @staticmethod
+    async def _capture_live_screenshot(client: Any, fallback: str | None = None) -> str | None:
+        capture = getattr(client, "take_viewport_screenshot", None)
+        if capture is not None:
+            with suppress(Exception):
+                return str(await capture())
+        return fallback
 
     def _progress(self) -> dict[str, Any]:
         statuses = [job["status"] for job in self._job_states.values()]
@@ -764,6 +802,10 @@ class ParallelCrawler:
             )
             if match is None or not match.get("uid"):
                 return None
+            if hasattr(client, "set_next_action_context"):
+                client.set_next_action_context(
+                    f"Enter text in {field_info.get('name') or 'form field'}", sensitive=True
+                )
             await client.fill(str(match["uid"]), value)
         snapshot = await client.take_snapshot()
         elements = parse_elements(snapshot)
@@ -795,6 +837,8 @@ class ParallelCrawler:
             )
         if submit_match is None or not submit_match.get("uid"):
             return None
+        if hasattr(client, "set_next_action_context"):
+            client.set_next_action_context(f"Click {submit_match.get('name') or 'form submit button'}")
         await client.click(str(submit_match["uid"]))
         await client.wait_until_ready()
         return await client.take_snapshot()
@@ -1398,6 +1442,8 @@ class ParallelCrawler:
             try:
                 context = self._client_factory()
                 async with context as client:
+                    if hasattr(client, "set_action_callback"):
+                        client.set_action_callback(self._record_browser_action)
                     crawler = Crawler(
                         client,
                         self._budget,
@@ -1489,11 +1535,12 @@ class ParallelCrawler:
                                     await client.take_snapshot(), job.path
                                 )
                             else:
+                                live_screenshot = await self._capture_live_screenshot(client)
                                 async with self._lock:
                                     self._live_view = {
                                         "url": self._login_url or base_url,
                                         "label": "Signing in",
-                                        "screenshot_ref": None,
+                                        "screenshot_ref": live_screenshot,
                                         "fingerprint": None,
                                         "action": "authenticate",
                                     }
@@ -1617,12 +1664,15 @@ class ParallelCrawler:
                                     queue, nodes, job, skip_auth, live_url, page_key,
                                     str(root.get("name") or ""), screenshot_ref,
                                 )
+                                live_screenshot = await self._capture_live_screenshot(
+                                    client, screenshot_ref
+                                )
                                 async with self._lock:
                                     canonical = self._page_keys.get(page_key)
                                     self._live_view = {
                                         "url": live_url,
                                         "label": observed_page_label(nodes, live_url),
-                                        "screenshot_ref": screenshot_ref,
+                                        "screenshot_ref": live_screenshot,
                                         "fingerprint": canonical,
                                         "action": action,
                                     }
@@ -1684,10 +1734,13 @@ class ParallelCrawler:
                                 )
                                 if should_expand:
                                     self._expanding.add(fingerprint)
+                                live_screenshot = await self._capture_live_screenshot(
+                                    client, screenshot_ref or (state or {}).get("evidence_ref")
+                                )
                                 self._live_view = {
                                     "url": live_url,
                                     "label": observed_page_label(nodes, live_url),
-                                    "screenshot_ref": screenshot_ref or (state or {}).get("evidence_ref"),
+                                    "screenshot_ref": live_screenshot,
                                     "fingerprint": fingerprint,
                                     "action": action,
                                 }
@@ -1997,6 +2050,8 @@ class ParallelCrawler:
     async def _bootstrap(self, base_url: str, on_state_discovered: OnStateDiscovered) -> None:
         """Observe entry/login and the actual landing state before scheduling branches."""
         async with self._client_factory() as client:
+            if hasattr(client, "set_action_callback"):
+                client.set_action_callback(self._record_browser_action)
             crawler = Crawler(client, self._budget, self._keywords, login_url=self._login_url, authenticate=self._authenticate)
             crawler._base_url = base_url
             parent: str | None = None
@@ -2029,10 +2084,13 @@ class ParallelCrawler:
                     page_key = f"authenticated::{self._credential_ref or 'public'}::{page_key}"
                 if page_key:
                     self._page_keys.setdefault(page_key, fingerprint)
+                live_screenshot = await self._capture_live_screenshot(
+                    client, state.get("evidence_ref")
+                )
                 self._live_view = {
                     "url": live_url,
                     "label": observed_page_label(nodes, live_url),
-                    "screenshot_ref": state.get("evidence_ref"),
+                    "screenshot_ref": live_screenshot,
                     "fingerprint": fingerprint,
                     "action": action,
                 }
