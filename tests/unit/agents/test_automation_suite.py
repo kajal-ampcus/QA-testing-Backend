@@ -406,3 +406,47 @@ def test_case_ids_to_write_skips_an_unchanged_version() -> None:
         [(kept, 1), (changed, 2), (added, 1)],
         {kept: 1, changed: 1},
     ) == [changed, added]
+
+
+def test_discovery_input_is_private_to_execution_inputs(tmp_path) -> None:
+    ids = _ids()
+    states = {
+        "STATE-001": StateInput(
+            state_code="STATE-001",
+            url_pattern="https://shop.example/login",
+            elements=[
+                {"element_code": "EL-001", "role": "textbox", "name": "Employee ID", "risk": "SAFE", "source": "OBSERVED_DOM"},
+                {"element_code": "EL-002", "role": "button", "name": "Login", "risk": "SAFE", "source": "OBSERVED_DOM"},
+            ],
+        ),
+        "STATE-002": StateInput(
+            state_code="STATE-002",
+            url_pattern="https://shop.example/home",
+            elements=[{"element_code": "EL-003", "role": "heading", "name": "Welcome", "risk": "SAFE", "source": "OBSERVED_DOM"}],
+        ),
+    }
+    case = _case(
+        ids,
+        title="Login",
+        objective="Login succeeds",
+        test_data={},
+        steps=[
+            {"step_number": 1, "action": "navigate", "target": {"state_code": "STATE-001"}},
+            {"step_number": 2, "action": "fill", "target": {"state_code": "STATE-001", "element_code": "EL-001", "element_name": "Employee ID"}},
+            {"step_number": 3, "action": "click", "target": {"state_code": "STATE-001", "element_code": "EL-002", "element_name": "Login"}},
+            {"step_number": 4, "action": "assert", "target": {"state_code": "STATE-002", "element_code": "EL-003", "element_name": "Welcome"}, "expected": "Welcome"},
+        ],
+    )
+    plan = generate_suite(
+        suite_dir=tmp_path / "suite",
+        generation_id=uuid4(),
+        project_id=ids["project_id"],
+        application_url="https://shop.example",
+        cases=[case],
+        states=states,
+        discovery={"employee id": "E123"},
+    )
+    execution_inputs = json.loads((plan.suite_dir / "execution-inputs.json").read_text(encoding="utf-8"))
+    assert any(value["value"] == "E123" and value["source"] == "discovery" for value in execution_inputs["values"].values())
+    for path in [*plan.suite_dir.rglob("*.spec.ts"), *plan.suite_dir.glob("pages/*.ts"), plan.suite_dir / "data" / "testdata.ts", plan.suite_dir / "manifest.json"]:
+        assert "E123" not in path.read_text(encoding="utf-8"), path

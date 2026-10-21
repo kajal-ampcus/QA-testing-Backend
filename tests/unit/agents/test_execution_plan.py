@@ -37,7 +37,7 @@ def _case(ids, **overrides) -> CaseInput:
     return CaseInput(**data)
 
 
-def _render(tmp_path, case: CaseInput, states: dict[str, StateInput]):
+def _render(tmp_path, case: CaseInput, states: dict[str, StateInput], discovery=None):
     plan = generate_suite(
         suite_dir=tmp_path / "suite",
         generation_id=uuid4(),
@@ -45,6 +45,7 @@ def _render(tmp_path, case: CaseInput, states: dict[str, StateInput]):
         application_url="https://app.example",
         cases=[case],
         states=states,
+        discovery=discovery,
     )
     specs = list(plan.suite_dir.rglob("*.spec.ts"))
     assert len(specs) == 1
@@ -163,6 +164,39 @@ def test_negative_login_without_negative_fixture_or_assertion_is_blocked(tmp_pat
     assert plan.scripts[0].blocked is True
     assert "configure the intended invalid value" in plan.scripts[0].blocked_reason
     assert '"wrong"' not in spec
+
+
+def test_negative_employee_id_with_only_discovery_value_is_blocked(tmp_path) -> None:
+    ids = _ids()
+    states = _login_states()
+    states["STATE-001"].elements[0]["name"] = "Employee ID"
+    case = _case(
+        ids,
+        tc_code="TC-EMP-NEG",
+        title="Invalid Employee ID is rejected",
+        category="NEGATIVE",
+        objective="Invalid Employee ID is rejected",
+        expected_result="The sign-in is rejected",
+        test_data={"password": "ValidPass1!"},
+        steps=[
+            {"step_number": 1, "action": "navigate", "target": {"state_code": "STATE-001"}},
+            {
+                "step_number": 2,
+                "action": "fill",
+                "target": {"state_code": "STATE-001", "element_code": "EL-001", "element_name": "Employee ID"},
+            },
+            {
+                "step_number": 3,
+                "action": "fill",
+                "target": {"state_code": "STATE-001", "element_code": "EL-002", "element_name": "Password"},
+                "value": "{password}",
+            },
+            {"step_number": 4, "action": "assert", "target": {"state_code": "STATE-002", "element_code": "EL-010", "element_name": "Welcome"}, "expected": "The sign-in is rejected"},
+        ],
+    )
+    plan, _spec, _auth = _render(tmp_path, case, states, discovery={"employee id": "E123"})
+    assert plan.scripts[0].blocked is True
+    assert "only positive fixtures" in plan.scripts[0].blocked_reason
 
 
 def test_forgot_password_does_not_fill_credentials(tmp_path) -> None:

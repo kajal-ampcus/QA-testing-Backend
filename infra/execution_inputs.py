@@ -69,7 +69,7 @@ def prepare_run_inputs(suite: Path, run_id: UUID) -> Path:
             raise ValueError(f"Unknown or stale input binding: {key}")
         if not isinstance(answer, dict):
             raise ValueError(f"Invalid input entry: {key}")
-        resolved[key] = {**validate_answer(answer, bindings[key]), "source": "case" if answer.get("source") == "case" else "manual"}
+        resolved[key] = {**validate_answer(answer, bindings[key]), "source": answer.get("source") if answer.get("source") in {"case", "discovery"} else "manual"}
     write_json(directory / "snapshot.json", {"schema_version": 1, "values": resolved})
     write_json(directory / "bindings.json", bindings)
     return directory

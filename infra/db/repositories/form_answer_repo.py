@@ -267,6 +267,33 @@ async def list_saved_inputs(project_id: uuid.UUID) -> list[dict[str, Any]]:
     return listed
 
 
+async def list_project_answers(
+    project_id: uuid.UUID, credential_ref: str | None = None
+) -> dict[str, str]:
+    """Durable discovery answers for one account as {normalized field name: value}.
+
+    CAPTCHA/OTP are already dropped by _durable_fields. Project-wide rows are
+    applied first so this account's own answers win. Never log or persist this.
+    """
+    async with AsyncSessionLocal() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(DiscoveryFormAnswer).where(DiscoveryFormAnswer.project_id == project_id)
+                )
+            ).scalars()
+        )
+    wanted = credential_scope(credential_ref)
+    answers: dict[str, str] = {}
+    for scope in ("", wanted):
+        for row in rows:
+            if (row.credential_scope or "") != scope:
+                continue
+            for key, value in _durable_fields(decrypt_json_secret(row.encrypted_values)).items():
+                answers[key.split(":", 1)[-1]] = value
+    return answers
+
+
 async def update_saved_input(
     project_id: uuid.UUID, answer_id: uuid.UUID, values: dict[str, str]
 ) -> bool:

@@ -26,7 +26,10 @@ from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunSt
 class AutomationGenerationAgent(BaseAgent[SuitePlan]):
     name = "automation_generation"
 
-    async def run(self, request: AgentInputEnvelope) -> SuitePlan:
+    async def run(
+        self, request: AgentInputEnvelope, discovery: dict[str, str] | None = None
+    ) -> SuitePlan:
+        # `discovery` holds secrets: pass it here, never inside the envelope payload.
         payload = request.payload
         cases = [_case(item) for item in payload.get("cases", [])]
         states = {
@@ -48,6 +51,7 @@ class AutomationGenerationAgent(BaseAgent[SuitePlan]):
             cases=cases,
             states=states,
             incremental=bool(request.constraints.get("incremental")),
+            discovery=discovery or {},
         )
 
     @staticmethod

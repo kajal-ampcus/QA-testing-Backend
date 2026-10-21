@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from core.agents.application_discovery.form_inputs import normalize_name
 from core.agents.automation_generation.selector_strategy import match_observed_element
 
 _AUTH_PRE = re.compile(
@@ -68,14 +69,17 @@ class ExecutionPlan:
     notes: list[str] = field(default_factory=list)
 
 
-def prepare_execution(case: _Case, states: dict[str, _State]) -> ExecutionPlan:
+def prepare_execution(
+    case: _Case, states: dict[str, _State], discovery: dict[str, str] | None = None
+) -> ExecutionPlan:
     """Return the steps and fixture that should be rendered for this case."""
+    discovery = discovery or {}
     steps = _copy_steps(case.steps)
     data = dict(case.test_data or {})
     starting = classify_start(case, states)
     text = _objective(case)
     start = _start_state(case, states)
-    steps, mapping_issues = ground_steps(steps, states, data)
+    steps, mapping_issues = ground_steps(steps, states, data, discovery)
     if mapping_issues:
         return _blocked(starting, steps, data, "; ".join(mapping_issues))
     start_conflict = _start_conflict(case, start)
@@ -95,7 +99,7 @@ def prepare_execution(case: _Case, states: dict[str, _State]) -> ExecutionPlan:
         if not any(step.get("action") in {"fill", "select"} for step in steps):
             return _blocked(starting, steps, data, f"{case.tc_code} is a validation case but the map has no editable control.")
         data, steps = _empty_required(steps, data, text, states)
-        if not any(step.get("action") == "fill" and _fill_value(step, data) == "" for step in steps):
+        if not any(step.get("action") == "fill" and not str(step.get("value") or "").startswith("{discovery:") and _fill_value(step, data) == "" for step in steps):
             return _blocked(starting, steps, data, "Empty-field scenario has no unambiguous empty target; name the field explicitly.")
     elif kind in {"login_success", "login_rejected"}:
         steps = [step for step in steps if not _unrelated_fill(step, states, text, keep_credentials=True)]
@@ -117,7 +121,7 @@ def prepare_execution(case: _Case, states: dict[str, _State]) -> ExecutionPlan:
 
     # Required companion fields use configured fixtures only. Their values must
     # not be changed by the negative condition under test.
-    if start and any(step.get("action") == "click" for step in steps):
+    if start and _has_click(steps, states, _SUBMIT):
         filled = {step.get("target", {}).get("element_code") for step in steps if step.get("action") in {"fill", "select"}}
         for element in start.elements:
             if not element.get("required") or element.get("element_code") in filled:
@@ -127,11 +131,15 @@ def prepare_execution(case: _Case, states: dict[str, _State]) -> ExecutionPlan:
             name = str(element.get("name") or "")
             value = data.get(name, data.get(name.lower()))
             if not isinstance(value, str) or not value:
-                return _blocked(starting, steps, data, f"Required companion field {name!r} has no configured test value.")
+                key = normalize_name(name)
+                if key not in discovery:
+                    return _blocked(starting, steps, data, f"Required companion field {name!r} has no configured test value.")
+                value = "{discovery:" + key + "}"
             companion = {"action": "select" if element.get("role") == "combobox" else "fill",
                          "target": {"state_code": start.state_code, "element_code": element["element_code"], "element_name": name},
                          "value": value}
-            position = next(i for i, step in enumerate(steps) if step.get("action") == "click")
+            position = next(i for i, s in enumerate(steps)
+                            if s.get("action") == "click" and _SUBMIT.search(_step_name(s, states)))
             steps.insert(position, companion)
 
     if kind == "login_success" and not _has_click(steps, states, _SUBMIT):
@@ -176,7 +184,7 @@ def prepare_execution(case: _Case, states: dict[str, _State]) -> ExecutionPlan:
     )
 
 
-def ground_steps(steps, states, data):
+def ground_steps(steps, states, data, discovery=None):
     """Translate explicit prose actions, retaining approved assertion text and values."""
     issues = []
     current_state = None
@@ -235,6 +243,8 @@ def ground_steps(steps, states, data):
                     step["value"] = quotes.group(1)
                 elif isinstance(configured, str):
                     step["value"] = configured
+                elif normalize_name(field) in (discovery or {}):
+                    step["value"] = "{discovery:" + normalize_name(field) + "}"
                 else:
                     issues.append(f"Step {index} ({code}): no configured value for {field}; configure test data.")
     return steps, issues
@@ -559,13 +569,16 @@ def _ensure_negative(
     states: dict[str, _State],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], str | None]:
     fills = [step for step in steps if step.get("action") == "fill"]
+    is_disc = lambda s: str(s.get("value") or "").startswith("{discovery:")
     if not fills:
         return data, steps, f"{case.tc_code} is a negative case but does not change an input."
     for step in fills:
+        if is_disc(step):
+            continue
         placeholder = re.fullmatch(r"\{([^{}]+)\}", str(step.get("value") or ""))
         if placeholder and _configured_value(data, placeholder.group(1)) is None:
             return data, steps, f"Negative input {placeholder.group(1)!r} has no configured fixture."
-    if any(not _looks_positive(_fill_value(step, data)) for step in fills):
+    if any(not _looks_positive(_fill_value(step, data)) for step in fills if not is_disc(step)):
         return data, steps, None
     return data, steps, "Negative scenario has only positive fixtures; configure the intended invalid value."
 

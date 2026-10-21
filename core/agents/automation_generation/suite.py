@@ -158,7 +158,9 @@ def generate_suite(
     cases: list[CaseInput],
     states: dict[str, StateInput],
     incremental: bool = False,
+    discovery: dict[str, str] | None = None,
 ) -> SuitePlan:
+    discovery = discovery or {}
     if incremental:
         suite_dir.mkdir(parents=True, exist_ok=True)
     else:
@@ -167,7 +169,7 @@ def generate_suite(
         suite_dir.mkdir(parents=True)
 
     forbidden = _forbidden_literals(cases)
-    planned_cases = [_plan_case(case, states, forbidden, generation_id) for case in cases]
+    planned_cases = [_plan_case(case, states, forbidden, generation_id, discovery) for case in cases]
     pages = _pages_for(planned_cases, states)
     data_cases = _data_cases(planned_cases)
     env_names = [
@@ -215,11 +217,16 @@ def generate_suite(
                 continue
             placeholder = re.fullmatch(r"\{([^{}]+)\}", raw)
             value = leaves.get(placeholder.group(1)) if placeholder else raw
+            source = "case"
+            if value is None and placeholder and placeholder.group(1).startswith("discovery:"):
+                value, source = discovery.get(placeholder.group(1)[len("discovery:"):]), "discovery"
             if value is None or (value == "" and not binding["allow_empty"]):
                 continue
-            values.setdefault(binding["key"], {
-                "mode": "empty" if value == "" else "value", "value": value, "source": "case",
-            })
+            current = values.get(binding["key"])
+            if current is None or current.get("source") in {"case", "discovery"}:  # never clobber "manual"
+                values[binding["key"]] = {
+                    "mode": "empty" if value == "" else "value", "value": value, "source": source,
+                }
     _write(input_path, json.dumps(input_draft) + "\n")
     written_pages: list[Path] = []
     for page in pages.values():
@@ -392,6 +399,7 @@ def _plan_case(
     states: dict[str, StateInput],
     forbidden: set[str],
     generation_id: UUID,
+    discovery: dict[str, str] | None = None,
 ) -> _Draft:
     reasons: list[str] = []
     selectors: list[SelectorDecision] = []
@@ -400,7 +408,7 @@ def _plan_case(
     data_fields: list[dict[str, str]] = []
     input_bindings: list[dict[str, Any]] = []
     used_props: dict[tuple[str, str], str] = {}
-    prepared = prepare_execution(case, states)
+    prepared = prepare_execution(case, states, discovery)
     case.steps = prepared.steps
     case.test_data = prepared.test_data
     if prepared.blocked_reason:
@@ -460,6 +468,7 @@ def _plan_case(
                 path == match.group(1) or path.endswith("." + match.group(1)) for path, _ in leaves
             ):
                 expression = "null"
+                field = None  # value comes from execution-inputs.json, not an env var
             expression = f"await executionInput({json.dumps(binding['key'])}, {expression})"
             if field:
                 data_fields.append(field)

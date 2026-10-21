@@ -49,6 +49,7 @@ from core.agents.automation_generation.suite import (
     case_ids_to_write,
 )
 from core.agents.automation_review.agent import AutomationReviewAgent
+from infra.db.repositories.form_answer_repo import list_project_answers
 from core.policy_safety.approval_gates import requires_approval
 from domain.enums import ApprovalStatus, AutomationReviewStatus, RiskLevel
 from infra.db.models.agent_run import AgentRun
@@ -278,6 +279,7 @@ async def generate_automation(
         diagnostic["automation_recovery"] = evidence
         full_map.diagnostic_evidence = diagnostic
     forbidden = _forbidden(case_payload)
+    discovery = await list_project_answers(project_id, next(iter(accounts)))
     gen_request = AgentInputEnvelope(
         agent_run_id=uuid.uuid4(),
         project_id=project_id,
@@ -293,7 +295,7 @@ async def generate_automation(
         constraints={"suite_dir": str(suite_dir), "incremental": True},
     )
     try:
-        plan = await AutomationGenerationAgent().run(gen_request)
+        plan = await AutomationGenerationAgent().run(gen_request, discovery=discovery)
     except StackChoiceError as exc:
         raise HTTPException(status_code=422, detail=exc.message) from exc
     except RuntimeError as exc:
