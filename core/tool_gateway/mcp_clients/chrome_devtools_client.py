@@ -1005,6 +1005,10 @@ class ChromeDevToolsClient:
             else:
                 command, args = self._npx_command([])
         args.append(f"--chromeArg=--remote-debugging-port={self._cdp_port}")
+        # Discovery screenshots are rendered in a landscape split pane. Give
+        # Chromium a desktop viewport so responsive sites do not collapse into
+        # a narrow mobile layout before the screenshot reaches the UI.
+        args.append("--chromeArg=--window-size=1440,900")
         if executable_path := os.environ.get("CHROME_EXECUTABLE_PATH"):
             args.extend(["--executablePath", executable_path])
 
@@ -1288,6 +1292,42 @@ class ChromeDevToolsClient:
                         XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null).snapshotLength === 1;
                 } catch { return false; }
             };
+            const uniqueCss = (selector) => {
+                try { return document.querySelectorAll(selector).length === 1; }
+                catch { return false; }
+            };
+            const stableId = (value) => value &&
+                !/^(?:[0-9]+|[0-9a-f]{8}-[0-9a-f-]{27}|:r[0-9a-z]+:|react-select-.+|radix-.+|headlessui-.+)$/i.test(value);
+            const cssString = (value) => JSON.stringify(String(value));
+            const stableCssOf = (el) => {
+                if (stableId(el.id)) {
+                    const selector = '#' + CSS.escape(el.id);
+                    if (uniqueCss(selector)) return selector;
+                }
+                for (const attr of ['data-testid', 'aria-label', 'name']) {
+                    const value = el.getAttribute(attr);
+                    if (!value) continue;
+                    const selector = `${el.localName}[${attr}=${cssString(value)}]`;
+                    if (uniqueCss(selector)) return selector;
+                }
+                return null;
+            };
+            const landmarkSelector = (el) => {
+                const landmarks = 'header, footer, nav, main, aside, [role="banner"], [role="contentinfo"], [role="navigation"], [role="main"], [role="complementary"], [role="search"], [role="form"]';
+                for (let scope = el.closest(landmarks); scope; scope = scope.parentElement?.closest(landmarks)) {
+                    const candidates = [];
+                    if (['header', 'footer', 'nav', 'main', 'aside'].includes(scope.localName)) {
+                        candidates.push(scope.localName);
+                    }
+                    const role = scope.getAttribute('role');
+                    if (role && ['banner', 'contentinfo', 'navigation', 'main', 'complementary', 'search', 'form'].includes(role)) {
+                        candidates.push(`[role=${cssString(role)}]`);
+                    }
+                    const unique = candidates.find(uniqueCss);
+                    if (unique) return unique;
+                }
+                return null;
+            };
             const xpathOf = (el) => {
                 if (!(el instanceof Element)) return null;
                 const attributes = [
@@ -1317,6 +1357,8 @@ class ChromeDevToolsClient:
             return els.map(el => ({
                 dom_id: el.id || null,
                 locator: el.id ? '#' + CSS.escape(el.id) : null,
+                css_selector: stableCssOf(el),
+                locator_scope: landmarkSelector(el),
                 xpath: xpathOf(el),
                 input_type: el.getAttribute('type'),
                 control_group: el.parentElement ? xpathOf(el.parentElement) : null,

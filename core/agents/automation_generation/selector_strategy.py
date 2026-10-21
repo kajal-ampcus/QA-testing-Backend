@@ -69,6 +69,13 @@ _PLACEHOLDER_KEYS = ("placeholder", "placeholder_text")
 _TESTID_KEYS = ("data-testid", "data_testid", "test_id", "testid")
 _CSS_KEYS = ("css", "css_selector", "selector")
 _XPATH_KEYS = ("xpath",)
+_SCOPE_SELECTORS = frozenset(
+    {
+        "header", "footer", "nav", "main", "aside",
+        '[role="banner"]', '[role="contentinfo"]', '[role="navigation"]',
+        '[role="main"]', '[role="complementary"]', '[role="search"]', '[role="form"]',
+    }
+)
 _DYNAMIC_BADGE = re.compile(r"^(?:\d+\+(?:\s+notifications?)?|\d+\s+notifications?)$", re.IGNORECASE)
 
 
@@ -179,6 +186,8 @@ def _choose(
     risk = _risk(element)
     role = _role(element)
     name = _text(element.get("name")) or _locator_name(element)
+    scope = element.get("locator_scope")
+    scoped_unique = False
     if _DYNAMIC_BADGE.fullmatch(name):
         return _blocked(
             state_code,
@@ -192,9 +201,16 @@ def _choose(
             for item in siblings
             if _role(item) == role and (_text(item.get("name")) or _locator_name(item)) == name
         ]
+        scoped_unique = (
+            len(same) > 1
+            and isinstance(scope, str)
+            and scope in _SCOPE_SELECTORS
+            and all(isinstance(item.get("locator_scope"), str) for item in same)
+            and sum(item.get("locator_scope") == scope for item in same) == 1
+        )
         if len(same) != 1 and not (
             _first(element, _LABEL_KEYS) or _first(element, _PLACEHOLDER_KEYS)
-            or _first(element, _TESTID_KEYS) or _css(element)
+            or _first(element, _TESTID_KEYS) or _css(element) or scoped_unique
         ):
             return _blocked(
                 state_code,
@@ -246,19 +262,33 @@ def _choose(
     css = _css(element)
     if css:
         same = [item for item in siblings if _css(item) == css]
-        if len(same) != 1:
+        if len(same) != 1 and not scoped_unique:
             return _blocked(
                 state_code,
                 code,
                 risk,
                 f"{state_code}/{code} observed CSS selector {css!r} is ambiguous.",
             )
+        if len(same) == 1:
+            return _resolved(
+                state_code,
+                element,
+                "css",
+                f"locator({json.dumps(css)})",
+                {"css": css},
+            )
+
+    if role and name and scoped_unique:
+        expression = (
+            f"locator({json.dumps(scope)}).getByRole({json.dumps(role)}, "
+            f"{{ name: {json.dumps(name)}, exact: true }})"
+        )
         return _resolved(
             state_code,
             element,
-            "css",
-            f"locator({json.dumps(css)})",
-            {"css": css},
+            "scoped_getByRole",
+            expression,
+            {"role": role, "name": name, "scope": scope},
         )
 
     xpath = _first(element, _XPATH_KEYS)

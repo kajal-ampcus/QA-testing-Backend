@@ -576,7 +576,8 @@ class Crawler:
         semantic = [
             {k: v for k, v in el.items() if k in {
                 "role", "name", "url", "input_type", "checked", "selected",
-                "expanded", "disabled", "required", "options",
+                "expanded", "disabled", "required", "options", "css_selector",
+                "locator_scope",
             }}
             for el in raw_elements
             if el.get("role") not in {"image", "StaticText", "InlineTextBox"}

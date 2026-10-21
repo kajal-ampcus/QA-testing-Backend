@@ -253,14 +253,19 @@ def ground_steps(steps, states, data, discovery=None):
 def classify_start(case: _Case, states: dict[str, _State]) -> str:
     preconditions = " ".join(case.preconditions or [])
     start = _start_state(case, states)
-    if start is not None:
-        if _credential_surface(start) and _exercises_auth_surface(case, states):
-            return "LOGIN_PAGE"
-        return "AUTHENTICATED"
+    if start is not None and _credential_surface(start) and _exercises_auth_surface(case, states):
+        return "LOGIN_PAGE"
     if _AUTH_PRE.search(preconditions) and not _PUBLIC_PRE.search(preconditions):
         return "AUTHENTICATED"
     if _PUBLIC_PRE.search(preconditions):
         return "PUBLIC"
+    if start is not None:
+        # A discovered page is not automatically protected just because the
+        # map was created during a discovery run. Public applications often
+        # expose many routes without any authentication step. Require explicit
+        # authenticated preconditions or protected-area intent before choosing
+        # the session fixture; otherwise use the public browser context.
+        return "AUTHENTICATED" if _protected_language(_objective(case)) else "PUBLIC"
     text = _objective(case)
     if _credential_language(text) and not _protected_language(text):
         return "LOGIN_PAGE"
@@ -273,13 +278,13 @@ def _start_conflict(case: _Case, start: _State | None) -> str | None:
     if start is None:
         return None
     preconditions = " ".join(case.preconditions or [])
-    discovered = "LOGIN_PAGE" if _credential_surface(start) else "AUTHENTICATED"
-    if _AUTH_PRE.search(preconditions) and discovered == "LOGIN_PAGE":
+    on_login_page = _credential_surface(start)
+    if _AUTH_PRE.search(preconditions) and not _PUBLIC_PRE.search(preconditions) and on_login_page:
         return (
             f"{case.tc_code} requires an authenticated session, but discovered start state "
             f"{start.state_code} is a login page."
         )
-    if _PUBLIC_PRE.search(preconditions) and discovered == "AUTHENTICATED":
+    if _PUBLIC_PRE.search(preconditions) and not on_login_page and _protected_language(_objective(case)):
         return (
             f"{case.tc_code} requires a public session, but discovered start state "
             f"{start.state_code} requires an authenticated session."

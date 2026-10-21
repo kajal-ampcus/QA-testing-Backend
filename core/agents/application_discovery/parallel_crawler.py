@@ -444,6 +444,10 @@ class ParallelCrawler:
         if capture is not None:
             with suppress(Exception):
                 return str(await capture())
+            # A full-page evidence image can be several times taller than the
+            # live panel; using it as a fallback makes the actual browser view
+            # unreadably small. Keep live preview captures viewport-only.
+            return None
         return fallback
 
     def _progress(self) -> dict[str, Any]:
