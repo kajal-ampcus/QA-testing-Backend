@@ -12,6 +12,44 @@ docker compose ps -a
 
 Images copy application source at **build** time. After backend or frontend code changes, rebuild (`--build`) rather than only restarting containers.
 
+## Development without rebuilding for code changes
+
+Use the optional development override from `QA-testing-Backend` after the initial
+API and worker images have been built:
+
+```powershell
+docker compose -f compose.yaml -f compose.dev.yaml up -d --no-build
+```
+
+This switches the existing local stack to development mode at
+http://localhost:3000. Wait for active executions to finish before switching.
+The first start downloads the Node image if needed and installs frontend
+dependencies into a separate Docker volume. It does not rebuild application images.
+
+- React, CSS, and frontend source edits update through Vite hot reload.
+- Backend Python edits reload the API automatically. Polling supports Windows
+  bind mounts; generated artifacts are outside the watched directories.
+- Worker source is mounted too, but restart it after code changes when no job
+  is running: `docker compose -f compose.yaml -f compose.dev.yaml restart worker`.
+  Automatic worker restarts could interrupt discovery or execution jobs.
+- Changes to startup scripts require restarting the affected service.
+- After frontend dependency changes, restart `frontend` with the same two
+  Compose files; startup runs `npm ci` again without an image rebuild.
+- Python dependencies, browser/system packages, and Dockerfile changes still
+  require rebuilding the affected API/worker images. Use
+  `docker compose -f compose.yaml -f compose.dev.yaml up -d --build api worker`.
+- After environment or Compose changes, rerun the development `up` command.
+  Database schema changes still require an Alembic migration, for example
+  `docker compose -f compose.yaml -f compose.dev.yaml run --rm migrate`.
+
+Use both `-f` arguments for development commands. To return to the image-based
+setup, run `docker compose -f compose.yaml up -d --build` after jobs finish.
+
+This uses [Docker bind mounts](https://docs.docker.com/engine/storage/bind-mounts/)
+and [Vite file watching](https://vite.dev/config/server-options#server-watch).
+
+## Standard container setup
+
 The API and worker share `./artifacts/discovery` so diagnostic screenshots written by the worker are served by the API. Target apps running on the Windows host must use `host.docker.internal` instead of `localhost`. Discovery of private/loopback hosts is allowed in this local stack unless you set `DISCOVERY_ALLOW_PRIVATE_TARGETS=false`. If `API_KEY` is set in `.env`, rebuild the frontend so `VITE_API_KEY` is baked into the UI.
 
 Docker Desktop groups everything under **qa-platform**. Containers are created

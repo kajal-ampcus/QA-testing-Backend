@@ -1,0 +1,67 @@
+# Use with: docker compose -f compose.yaml -f compose.dev.yaml up -d --no-build
+# Existing API/worker images supply dependencies; source comes from the host.
+x-source-mounts: &source-mounts
+  - ./apps:/app/apps:ro
+  - ./core:/app/core:ro
+  - ./domain:/app/domain:ro
+  - ./schemas:/app/schemas:ro
+  - ./infra:/app/infra:ro
+  - ./scripts:/app/scripts:ro
+  - ./alembic:/app/alembic:ro
+  - ./alembic.ini:/app/alembic.ini:ro
+
+services:
+  api:
+    volumes: *source-mounts
+    environment:
+      PYTHONPATH: /app
+      WATCHFILES_FORCE_POLLING: "true"
+    command:
+      - uvicorn
+      - apps.api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/apps
+      - --reload-dir
+      - /app/core
+      - --reload-dir
+      - /app/domain
+      - --reload-dir
+      - /app/schemas
+      - --reload-dir
+      - /app/infra
+
+  worker:
+    volumes: *source-mounts
+    environment:
+      PYTHONPATH: /app
+    # Restart explicitly after edits so saving code cannot interrupt a job.
+
+  migrate:
+    volumes: *source-mounts
+    environment:
+      PYTHONPATH: /app
+
+  frontend:
+    image: node:22-alpine
+    build: !reset null
+    working_dir: /app
+    volumes:
+      - ../QA-testing-Frontend:/app
+      # Keep container dependencies separate from Windows node_modules.
+      - frontend-dev-modules:/app/node_modules
+    environment:
+      API_PROXY_TARGET: http://api:8000
+      LIVE_VIEW_PROXY_TARGET: http://worker:6080
+      VITE_API_KEY: ${VITE_API_KEY:-${API_KEY:-}}
+      VITE_USE_POLLING: "true"
+    command: ["sh", "-c", "npm ci --no-audit --no-fund && exec npm run dev -- --port 80 --strictPort"]
+    healthcheck:
+      start_period: 120s
+
+volumes:
+  frontend-dev-modules:
