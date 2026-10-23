@@ -232,7 +232,7 @@ def extract_trace_logs(trace_path: Path | None) -> tuple[bytes | None, bytes | N
     try:
         with zipfile.ZipFile(trace_path) as archive:
             for name in archive.namelist():
-                if not name.endswith(".trace"):
+                if not name.endswith((".trace", ".network")):
                     continue
                 for raw_line in archive.read(name).splitlines():
                     try:
@@ -245,12 +245,13 @@ def extract_trace_logs(trace_path: Path | None) -> tuple[bytes | None, bytes | N
                     params = event.get("params") if isinstance(event.get("params"), dict) else {}
                     lowered = method.lower()
                     if "console" in lowered:
-                        console.append(params or {"type": method})
+                        console.append(params or event)
                     if (
                         lowered in {"request", "response", "requestfinished", "requestfailed"}
                         or "network" in lowered
+                        or lowered == "resource-snapshot"
                     ):
-                        network.append(params or {"type": method})
+                        network.append(params or event.get("snapshot") or event)
     except (OSError, zipfile.BadZipFile):
         return _json_bytes([]), _json_bytes([])
     return _json_bytes(console), _json_bytes(network)

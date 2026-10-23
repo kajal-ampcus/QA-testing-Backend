@@ -168,3 +168,15 @@ def test_extra_login_fields_are_runtime_encoded_without_primary_credentials() ->
     assert json.loads(base64.b64decode(encoded)) == {
         "Tenant code": "qa-tenant"
     }
+
+
+def test_extract_trace_logs_preserves_modern_playwright_events(tmp_path: Path) -> None:
+    trace = tmp_path / "modern.zip"
+    console_event = {"type": "console", "messageType": "error", "text": "Request failed", "location": {"url": "https://example.test/app.js", "lineNumber": 12}}
+    snapshot = {"request": {"method": "GET", "url": "https://example.test/api"}, "response": {"status": 500}, "time": 42}
+    with zipfile.ZipFile(trace, "w") as archive:
+        archive.writestr("0.trace", json.dumps(console_event))
+        archive.writestr("0.network", "invalid line\n" + json.dumps({"type": "resource-snapshot", "snapshot": snapshot}))
+    console, network = extract_trace_logs(trace)
+    assert json.loads(console) == [console_event]
+    assert json.loads(network) == [snapshot]
