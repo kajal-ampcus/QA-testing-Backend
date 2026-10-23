@@ -119,8 +119,12 @@ def prepare_execution(
     if captcha_issue:
         return _blocked(starting, steps, data, captcha_issue)
 
-    # Required companion fields use configured fixtures only. Their values must
-    # not be changed by the negative condition under test.
+    # Required companion fields use configured fixtures only.  Login
+    # credentials are the exception: discovery deliberately keeps them in the
+    # credential vault rather than in saved inputs.  Generated suites receive
+    # those values through TEST_USERNAME / TEST_PASSWORD at run time, so a
+    # validation case for one credential can still submit the form with the
+    # other credential populated.
     if start and _has_click(steps, states, _SUBMIT):
         filled = {step.get("target", {}).get("element_code") for step in steps if step.get("action") in {"fill", "select"}}
         for element in start.elements:
@@ -132,9 +136,13 @@ def prepare_execution(
             value = data.get(name, data.get(name.lower()))
             if not isinstance(value, str) or not value:
                 key = normalize_name(name)
-                if key not in discovery:
-                    return _blocked(starting, steps, data, f"Required companion field {name!r} has no configured test value.")
-                value = "{discovery:" + key + "}"
+                credential_env = _credential_environment(element, name)
+                if credential_env:
+                    value = "{credential:" + credential_env + "}"
+                else:
+                    if key not in discovery:
+                        return _blocked(starting, steps, data, f"Required companion field {name!r} has no configured test value.")
+                    value = "{discovery:" + key + "}"
             companion = {"action": "select" if element.get("role") == "combobox" else "fill",
                          "target": {"state_code": start.state_code, "element_code": element["element_code"], "element_name": name},
                          "value": value}
@@ -371,6 +379,18 @@ def _credential_surface(state: _State) -> bool:
     return False
 
 
+def _credential_environment(element: dict[str, Any], name: str) -> str | None:
+    """Return the runtime environment variable for a login credential field."""
+    blob = f"{name} {element.get('type') or ''} {element.get('input_type') or ''}"
+    if _PASSWORD.search(blob) or str(element.get("input_type") or element.get("type") or "").lower() == "password":
+        return "TEST_PASSWORD"
+    if _CAPTCHA.search(blob):
+        return "TEST_CAPTCHA"
+    if _USERNAME.search(blob):
+        return "TEST_USERNAME"
+    return None
+
+
 def _exercises_auth_surface(case: _Case, states: dict[str, _State]) -> bool:
     text = _objective(case)
     if _credential_language(text) or _FORGOT.search(text) or _CAPTCHA.search(text) or _REFRESH.search(text):
@@ -400,7 +420,7 @@ def _credential_language(text: str) -> bool:
 
 
 def _protected_language(text: str) -> bool:
-    return bool(re.search(r"\b(dashboard|profile|orders|notifications|settings|portal)\b", text, re.I))
+    return bool(re.search(r"\b(dashboard|profile|orders|notifications|settings|portal|account)\b", text, re.I))
 
 
 def _is_negative(case: _Case, text: str) -> bool:
@@ -532,7 +552,10 @@ def _ensure_observed_fill(steps: list[dict[str, Any]], start: _State | None, tex
             "element_name": element.get("name"),
             "element_role": element.get("role"),
         },
-        "value": "" if re.search(r"\b(empty|blank|missing|required)\b", text, re.I) else "{negative_input}",
+        # A generated negative is intentionally a non-secret, deterministic
+        # value.  It makes imported prose-only negative cases executable
+        # without requiring users to add a fixture just to prove rejection.
+        "value": "" if re.search(r"\b(empty|blank|missing|required)\b", text, re.I) else "wrong",
     }
     for index, step in enumerate(steps):
         if step.get("action") in {"click", "assert"}:
@@ -574,18 +597,40 @@ def _ensure_negative(
     states: dict[str, _State],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], str | None]:
     fills = [step for step in steps if step.get("action") == "fill"]
-    is_disc = lambda s: str(s.get("value") or "").startswith("{discovery:")
+    def is_discovery_value(step: dict[str, Any]) -> bool:
+        return str(step.get("value") or "").startswith("{discovery:")
+
     if not fills:
         return data, steps, f"{case.tc_code} is a negative case but does not change an input."
-    for step in fills:
-        if is_disc(step):
-            continue
-        placeholder = re.fullmatch(r"\{([^{}]+)\}", str(step.get("value") or ""))
-        if placeholder and _configured_value(data, placeholder.group(1)) is None:
-            return data, steps, f"Negative input {placeholder.group(1)!r} has no configured fixture."
-    if any(not _looks_positive(_fill_value(step, data)) for step in fills if not is_disc(step)):
+    non_discovery_fills = [step for step in fills if not is_discovery_value(step)]
+    if any(
+        str(step.get("value") or "") != "" and not _looks_positive(_fill_value(step, data))
+        for step in non_discovery_fills
+    ):
         return data, steps, None
-    return data, steps, "Negative scenario has only positive fixtures; configure the intended invalid value."
+    # When the case specifies only positive data, turn the field it discusses
+    # into a harmless invalid value.  This is deterministic for repeatable
+    # generated tests; it is not a real credential or a user-provided secret.
+    target = _negative_target(fills, case, states)
+    if target is None:
+        return data, steps, f"{case.tc_code} is a negative case but has no editable input."
+    target["value"] = "wrong"
+    return data, steps, None
+
+
+def _negative_target(
+    fills: list[dict[str, Any]], case: _Case, states: dict[str, _State]
+) -> dict[str, Any] | None:
+    if not fills:
+        return None
+    text = _objective(case).casefold()
+    named = [step for step in fills if _step_name(step, states).casefold() in text]
+    if named:
+        return named[0]
+    # Login cases without a named field use the password where available. This
+    # retains the known-good username and exercises server-side rejection.
+    password = [step for step in fills if _PASSWORD.search(_step_name(step, states))]
+    return password[0] if password else fills[0]
 
 
 def _empty_required(

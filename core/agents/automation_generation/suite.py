@@ -222,6 +222,15 @@ def generate_suite(
                 value, source = discovery.get(placeholder.group(1)[len("discovery:"):]), "discovery"
             if value is None or (value == "" and not binding["allow_empty"]):
                 continue
+            # Sensitive values are never persisted into the execution-inputs
+            # store; they are resolved at run time from the environment or vault.
+            if binding.get("sensitive"):
+                continue
+            # Only discovery-sourced defaults and explicitly empty validation
+            # values are seeded. Other case values stay in their existing
+            # test-data/env source so they are not duplicated into this store.
+            if source == "case" and value != "":
+                continue
             current = values.get(binding["key"])
             if current is None or current.get("source") in {"case", "discovery"}:  # never clobber "manual"
                 values[binding["key"]] = {
@@ -464,7 +473,7 @@ def _plan_case(
             input_bindings.append(binding)
             raw = str(step.get("value") or "")
             match = re.fullmatch(r"\{([^{}]+)\}", raw.strip())
-            if match and not any(
+            if match and not match.group(1).startswith("credential:") and not any(
                 path == match.group(1) or path.endswith("." + match.group(1)) for path, _ in leaves
             ):
                 expression = "null"
@@ -548,6 +557,7 @@ def _render_case(draft: _Draft, generation_id: UUID) -> str:
     return templates.render_spec(
         pages=pages,
         uses_execution_input=any("executionInput(" in line for line in lines),
+        uses_runtime_credential=any("envCredential(" in line for line in lines),
         trace=trace,
         destructive=draft.risk == "DESTRUCTIVE",
         title=json.dumps(f"{draft.tc_code} {draft.title}"),
@@ -770,6 +780,10 @@ def _fill_expression(
 ) -> tuple[str, dict[str, str] | None]:
     raw = str(step.get("value") or "")
     placeholder = re.fullmatch(r"\{([^{}]+)\}", raw.strip())
+    if placeholder and placeholder.group(1).startswith("credential:"):
+        environment = placeholder.group(1)[len("credential:"):]
+        if environment in {"TEST_USERNAME", "TEST_PASSWORD", "TEST_CAPTCHA"}:
+            return f"envCredential({json.dumps(environment)})", None
     leaf_path = None
     source = raw
     if placeholder:
@@ -809,13 +823,15 @@ def _forbidden_literals(cases: list[CaseInput]) -> set[str]:
     for case in cases:
         for path, value in _string_leaves(case.test_data):
             if len(value) >= 4 and _SENSITIVE.search(path):
-                forbidden.add(value)
+                if not re.fullmatch(r"\{[^{}]+\}", value.strip()):
+                    forbidden.add(value)
         for step in case.steps:
             target = step.get("target") if isinstance(step.get("target"), dict) else {}
             name = str(target.get("element_name") or "")
             value = step.get("value")
             if isinstance(value, str) and len(value) >= 4 and _SENSITIVE.search(name):
-                forbidden.add(value)
+                if not re.fullmatch(r"\{[^{}]+\}", value.strip()):
+                    forbidden.add(value)
     return {
         item
         for item in forbidden

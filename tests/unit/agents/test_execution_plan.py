@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 
+from core.agents.automation_generation.execution_plan import prepare_execution
 from core.agents.automation_generation.suite import CaseInput, StateInput, generate_suite
 
 
@@ -128,7 +129,44 @@ def test_login_success_uses_a_public_page_and_submits(tmp_path) -> None:
     assert "test.beforeEach" not in auth
 
 
-def test_negative_login_without_negative_fixture_or_assertion_is_blocked(tmp_path) -> None:
+def test_empty_login_credential_uses_the_other_vault_credential_at_runtime(tmp_path) -> None:
+    ids = _ids()
+    states = _login_states()
+    states["STATE-001"].elements[0].update(name="Username", required=True)
+    states["STATE-001"].elements[1].update(required=True, input_type="password")
+    cases = []
+    for code, empty_element in (
+        ("TC-USERNAME-EMPTY", "EL-001"),
+        ("TC-PASSWORD-EMPTY", "EL-002"),
+    ):
+        cases.append(_case(
+            ids,
+            tc_code=code,
+            title=("Username" if empty_element == "EL-001" else "Password") + " is required",
+            category="NEGATIVE",
+            objective="Verify required validation when the field is empty",
+            expected_result="The field is required",
+            steps=[
+                {"step_number": 1, "action": "navigate", "target": {"state_code": "STATE-001"}},
+                {"step_number": 2, "action": "fill", "target": {"state_code": "STATE-001", "element_code": empty_element}, "value": ""},
+                {"step_number": 3, "action": "click", "target": {"state_code": "STATE-001", "element_code": "EL-004"}},
+                {"step_number": 4, "action": "assert", "target": {"state_code": "STATE-001", "element_code": empty_element}, "expected": "The field is required"},
+            ],
+        ))
+
+    plan = generate_suite(
+        suite_dir=tmp_path / "suite", generation_id=uuid4(), project_id=ids["project_id"],
+        application_url="https://app.example", cases=cases, states=states,
+    )
+
+    assert all(not script.blocked for script in plan.scripts)
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in plan.suite_dir.rglob("*.spec.ts"))
+    assert 'envCredential("TEST_PASSWORD")' in sources
+    assert 'envCredential("TEST_USERNAME")' in sources
+    assert "TEST_PASSWORD" not in (plan.suite_dir / "execution-inputs.json").read_text(encoding="utf-8")
+
+
+def test_negative_login_derives_an_invalid_input_when_only_positive_data_exists() -> None:
     ids = _ids()
     case = _case(
         ids,
@@ -160,13 +198,12 @@ def test_negative_login_without_negative_fixture_or_assertion_is_blocked(tmp_pat
             },
         ],
     )
-    plan, spec, _auth = _render(tmp_path, case, _login_states())
-    assert plan.scripts[0].blocked is True
-    assert "configure the intended invalid value" in plan.scripts[0].blocked_reason
-    assert '"wrong"' not in spec
+    plan = prepare_execution(case, _login_states())
+    assert plan.blocked_reason is None
+    assert next(step for step in plan.steps if step.get("target", {}).get("element_name") == "Password")["value"] == "wrong"
 
 
-def test_negative_employee_id_with_only_discovery_value_is_blocked(tmp_path) -> None:
+def test_negative_employee_id_replaces_a_discovery_value_with_an_invalid_input() -> None:
     ids = _ids()
     states = _login_states()
     states["STATE-001"].elements[0]["name"] = "Employee ID"
@@ -194,9 +231,9 @@ def test_negative_employee_id_with_only_discovery_value_is_blocked(tmp_path) -> 
             {"step_number": 4, "action": "assert", "target": {"state_code": "STATE-002", "element_code": "EL-010", "element_name": "Welcome"}, "expected": "The sign-in is rejected"},
         ],
     )
-    plan, _spec, _auth = _render(tmp_path, case, states, discovery={"employee id": "E123"})
-    assert plan.scripts[0].blocked is True
-    assert "only positive fixtures" in plan.scripts[0].blocked_reason
+    plan = prepare_execution(case, states, discovery={"employee id": "E123"})
+    assert plan.blocked_reason is None
+    assert next(step for step in plan.steps if step.get("target", {}).get("element_name") == "Employee ID")["value"] == "wrong"
 
 
 def test_forgot_password_does_not_fill_credentials(tmp_path) -> None:

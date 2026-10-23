@@ -76,7 +76,7 @@ export class [[ class_name ]] {
 """
 
 _SPEC = """\
-import { test } from "../../fixtures/auth";
+import { test[% if uses_runtime_credential %], envCredential[% endif %] } from "../../fixtures/auth";
 [% if uses_execution_input %]
 import { executionInput } from "../../data/execution-inputs";
 [% endif %]
@@ -618,7 +618,7 @@ export const test = base.extend<{ publicPage: Page; sessionPage: Page }>({
   },
 });
 
-export function envCredential(name: "TEST_USERNAME" | "TEST_PASSWORD"): string {
+export function envCredential(name: "TEST_USERNAME" | "TEST_PASSWORD" | "TEST_CAPTCHA"): string {
   loadSuiteEnv();
   return process.env[name] ?? "";
 }
