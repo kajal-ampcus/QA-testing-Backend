@@ -266,6 +266,7 @@ async def start_execution_run(
     generation_id: uuid.UUID,
     *,
     run_destructive: bool = False,
+    watch_browser: bool = False,
     script_ids: list[uuid.UUID] | None = None,
 ) -> TriggerExecutionResponse:
     """Queue the Test Execution Agent. The worker runs npx playwright test."""
@@ -338,6 +339,7 @@ async def start_execution_run(
         environment=settings.environment,
         base_url=project.application_url,
         run_destructive=run_destructive,
+        watch_browser=watch_browser,
         status=TestRunStatus.QUEUED,
         summary={},
     )
@@ -348,6 +350,7 @@ async def start_execution_run(
         "generation_id": str(generation_id),
         "suite_dir": str(suite),
         "run_destructive": run_destructive,
+        "watch_browser": watch_browser,
         "script_ids": [str(item) for item in script_ids] if script_ids else None,
         "credential_ref": project.credential_ref,
         "base_url": project.application_url,
@@ -386,6 +389,7 @@ async def trigger_execution(
         project,
         body.generation_id,
         run_destructive=body.run_destructive,
+        watch_browser=body.watch_browser,
         script_ids=body.script_ids,
     )
 
@@ -596,6 +600,7 @@ def _summary(run: TestRun) -> TestRunSummaryOut:
         environment=run.environment,
         base_url=run.base_url,
         run_destructive=run.run_destructive,
+        watch_browser=bool(run.watch_browser),
         status=run.status,
         summary=_counts(raw),
         log=_text(log),

@@ -560,6 +560,13 @@ async function openContext(
   });
   await context.addInitScript(() => {
     const paint = () => {
+      if (document.querySelector("[data-playwright-cursor]")) return;
+      const style = document.createElement("style");
+      style.textContent = `
+        [data-playwright-active] { outline: 3px solid #f97316 !important; outline-offset: 2px !important; }
+        [data-playwright-action] { position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; max-width: 42vw; padding: 8px 12px; border-radius: 6px; background: rgba(15, 23, 42, .9); color: white; font: 600 14px/1.3 system-ui, sans-serif; pointer-events: none; box-shadow: 0 2px 8px rgba(0, 0, 0, .35); }
+      `;
+      document.head.appendChild(style);
       const cursor = document.createElement("div");
       cursor.setAttribute("data-playwright-cursor", "true");
       cursor.style.position = "fixed";
@@ -573,6 +580,19 @@ async function openContext(
       cursor.style.background = "rgba(220, 38, 38, 0.9)";
       cursor.style.pointerEvents = "none";
       document.documentElement.appendChild(cursor);
+      const action = document.createElement("div");
+      action.setAttribute("data-playwright-action", "true");
+      action.textContent = "Waiting for test action";
+      document.documentElement.appendChild(action);
+      let active: HTMLElement | null = null;
+      const describe = (node: HTMLElement) => node.getAttribute("aria-label") || node.getAttribute("name") || node.getAttribute("placeholder") || node.id || (node as HTMLInputElement).labels?.[0]?.textContent?.trim() || node.textContent?.trim().slice(0, 80) || node.tagName.toLowerCase();
+      const show = (verb: string, node: EventTarget | null) => {
+        if (!(node instanceof HTMLElement)) return;
+        if (active && active !== node) active.removeAttribute("data-playwright-active");
+        active = node;
+        active.setAttribute("data-playwright-active", "true");
+        action.textContent = `${verb}: ${describe(node)}`;
+      };
       const move = (event: MouseEvent) => {
         cursor.style.left = `${event.clientX}px`;
         cursor.style.top = `${event.clientY}px`;
@@ -584,6 +604,9 @@ async function openContext(
       document.addEventListener("mouseup", () => {
         cursor.style.transform = "scale(1)";
       }, true);
+      document.addEventListener("click", (event) => show("Clicking", event.target), true);
+      document.addEventListener("focusin", (event) => show("Typing in", event.target), true);
+      document.addEventListener("input", (event) => show("Entering value in", event.target), true);
     };
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", paint, { once: true });

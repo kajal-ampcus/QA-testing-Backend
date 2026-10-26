@@ -70,6 +70,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
         generation_id = UUID(str(payload["generation_id"]))
         suite_dir = Path(str(payload["suite_dir"]))
         run_destructive = bool(payload.get("run_destructive"))
+        watch_browser = bool(payload.get("watch_browser"))
         requested = payload.get("script_ids")
         requested_ids = [UUID(str(item)) for item in requested] if requested else None
 
@@ -102,7 +103,8 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
 
         self.execution_repo.mark_running(run)
         await self.execution_repo.session.commit()
-        await claim_live_display(str(request.project_id), str(run.id))
+        if watch_browser:
+            await claim_live_display(str(request.project_id), str(run.id))
         try:
             try:
                 live = await self._run_live(
@@ -125,7 +127,8 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                     await self.execution_repo.session.flush()
                 raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
         finally:
-            await release_live_display(str(run.id))
+            if watch_browser:
+                await release_live_display(str(run.id))
 
         await self._reload_status(run)
         if run.status == TestRunStatus.CANCELLED:
@@ -251,6 +254,7 @@ class TestExecutionAgent(BaseAgent[AgentOutputEnvelope]):
                 base_url=payload.get("base_url"),
                 credential_ref=ref,
                 run_destructive=bool(payload.get("run_destructive")),
+                watch_browser=bool(payload.get("watch_browser")),
                 timeout=int(payload.get("timeout") or 900),
                 runner=payload.get("subprocess_runner"),
                 run_id=run.id,

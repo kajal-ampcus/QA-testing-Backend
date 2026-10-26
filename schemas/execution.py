@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 class TriggerExecutionRequest(BaseModel):
     generation_id: UUID
     run_destructive: bool = False
+    watch_browser: bool = False
     script_ids: list[UUID] | None = None
 
 
@@ -79,6 +80,7 @@ class TestRunSummaryOut(BaseModel):
     environment: str
     base_url: str | None = None
     run_destructive: bool
+    watch_browser: bool = False
     status: str
     summary: dict[str, int] = Field(default_factory=dict)
     log: str | None = None

@@ -35,6 +35,7 @@ class TestRun(Base):
     environment: Mapped[str] = mapped_column(String(30), nullable=False, default="development")
     base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     run_destructive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    watch_browser: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=TestRunStatus.QUEUED
     )

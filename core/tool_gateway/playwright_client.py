@@ -136,6 +136,24 @@ export default defineConfig({
 });
 """
 
+_HEADLESS_OVERLAY = """\
+import { defineConfig } from "@playwright/test";
+import base from "./playwright.config";
+
+export default defineConfig({
+  ...base,
+  fullyParallel: false,
+  workers: 1,
+  retries: 0,
+  reporter: [
+    ["json", { outputFile: "test-results/playwright-report.json" }],
+    ["./execution-progress.cjs"],
+    ["list"],
+  ],
+  use: { ...(base.use || {}), headless: true, screenshot: "on", video: "on", trace: "on" },
+});
+"""
+
 # Visible window on the machine that has a desktop. Keeps the suite's slowMo
 # and maximized window from playwright.config.ts.
 _HEADED_OVERLAY = """\
@@ -183,6 +201,7 @@ class PlaywrightClient:
         base_url: str | None,
         credential_ref: str | None,
         run_destructive: bool,
+        watch_browser: bool = False,
         timeout: int = 900,
         runner: Any | None = None,
         on_output: Callable[[str], Awaitable[None]] | None = None,
@@ -194,6 +213,7 @@ class PlaywrightClient:
             base_url=base_url,
             credential_ref=credential_ref,
             run_destructive=run_destructive,
+            watch_browser=watch_browser,
         )
         if input_dir:
             env["EXECUTION_INPUT_DIR"] = input_dir
@@ -214,11 +234,13 @@ class PlaywrightClient:
         base_url: str | None,
         credential_ref: str | None,
         run_destructive: bool,
+        watch_browser: bool = False,
     ) -> dict[str, str]:
         env = {
             **os.environ,
             "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1",
             "RUN_DESTRUCTIVE": "true" if run_destructive else "false",
+            "WATCH_BROWSER": "true" if watch_browser else "false",
         }
         if base_url:
             env["BASE_URL"] = base_url
@@ -434,7 +456,10 @@ async def execute_suite(
     refresh_auth_fixture(suite_dir, env)
     headed_host = os.environ.get("EXECUTION_HEADED_HOST", "").strip()
     overlay = suite_dir / _OVERLAY_NAME
-    overlay.write_text(_HEADED_OVERLAY if headed_host else _LIVE_OVERLAY, encoding="utf-8")
+    overlay.write_text(
+        _HEADED_OVERLAY if headed_host else (_LIVE_OVERLAY if env.get("WATCH_BROWSER") == "true" else _HEADLESS_OVERLAY),
+        encoding="utf-8",
+    )
     (suite_dir / _PROGRESS_NAME).write_text(_PROGRESS_REPORTER, encoding="utf-8")
     (suite_dir / "test-results").mkdir(exist_ok=True)
     results_path = suite_dir / _LIVE_RESULTS_RELATIVE
