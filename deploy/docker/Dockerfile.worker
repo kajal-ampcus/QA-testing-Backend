@@ -45,7 +45,13 @@ COPY core/ core/
 COPY domain/ domain/
 COPY schemas/ schemas/
 COPY infra/ infra/
-RUN pip install --no-cache-dir .
+ENV PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10
+
+RUN python -m pip install \
+    --no-cache-dir \
+    --prefer-binary \
+    .
 # Keep Playwright's browser cache in a predictable location for the worker.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 # Install browser and MCP at build time; no runtime package downloads.
