@@ -31,6 +31,7 @@ from apps.api.routers.v1.reports import router as reports_router
 from apps.api.routers.v1.saved_inputs import router as saved_inputs_router
 from apps.api.routers.v1.requirements import router as requirements_router
 from apps.api.routers.v1.test_cases import router as test_cases_router
+from apps.api.routers.v1.form_test_data import router as form_test_data_router
 from apps.api.settings import ApiSettings
 from infra.logging_config import configure_logging
 
@@ -45,7 +46,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Content-Type", "Accept", "Authorization", "X-API-Key"],
     )
     app.add_middleware(RequestLoggingMiddleware)
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(executions_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(agent_activity_router, prefix="/api/v1")
+    app.include_router(form_test_data_router, prefix="/api/v1")
 
     return app
 
