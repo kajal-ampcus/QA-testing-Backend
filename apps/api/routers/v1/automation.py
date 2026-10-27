@@ -59,6 +59,7 @@ from infra.db.models.automation import AutomationScript
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement
 from infra.db.models.test_case import TestCase, TestCaseVersion
+from infra.db.models.form_test_data import FormTestData
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
@@ -242,6 +243,23 @@ async def generate_automation(
         for state in full_map.states
     }
     case_payload = [_case_payload(case, version, full_map.version) for case, version in to_write]
+    fixture_ids = [uuid.UUID(item["test_case_id"]) for item in case_payload]
+    if fixture_ids:
+        fixtures = await session.scalars(
+            select(FormTestData).where(
+                FormTestData.project_id == project_id,
+                FormTestData.test_case_id.in_(fixture_ids),
+                FormTestData.active.is_(True),
+            )
+        )
+        fixture_by_case = {str(row.test_case_id): row for row in fixtures}
+        for item in case_payload:
+            fixture = fixture_by_case.get(item["test_case_id"])
+            if fixture is not None:
+                # Explicit case assignment wins over generated inline fixtures.
+                item["test_data"] = dict(fixture.test_data or {})
+                if fixture.expected_result:
+                    item["expected_result"] = fixture.expected_result
     accounts = {item.get("credential_ref") for item in case_payload}
     saved_recovery = (full_map.diagnostic_evidence or {}).get("automation_recovery") or {}
     if len(accounts) == 1:

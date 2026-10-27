@@ -29,6 +29,7 @@ from infra.db.models import (  # noqa: F401
     discovery_evidence_review,
     discovery_form_answer,
     execution,
+    form_test_data,
     project,
     requirement,
     test_case,

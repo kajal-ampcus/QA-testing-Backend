@@ -22,6 +22,8 @@ from domain.enums import ApprovalStatus, RequirementStatus, TestCaseStatus
 from infra.db.models.agent_run import AgentRun
 from infra.db.models.approval import Approval
 from infra.db.models.project import Project
+from infra.db.models.discovery_credential import DiscoveryCredential
+from infra.db.models.test_case import TestCase
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.requirement_repo import RequirementRepository
 from infra.db.repositories.test_case_repo import TestCaseRepository
@@ -40,6 +42,7 @@ class GenerateTestCasesRequest(BaseModel):
     selected_area_ids: list[str] = Field(default_factory=list)
     selected_module_ids: list[str] = Field(default_factory=list)
     selected_branch_keys: list[str] = Field(default_factory=list, max_length=50)
+    selected_state_codes: list[str] = Field(default_factory=list, max_length=500)
     # Explicit user action: retire the current graph's cases and create a new
     # draft set, including cases whose earlier versions were approved.
     regenerate: bool = False
@@ -122,6 +125,7 @@ class TestCaseOut(BaseModel):
     application_map_id: uuid.UUID
     status: str
     current_version: int
+    credential_ref: str | None = None
     current: TestCaseVersionOut
 
 
@@ -158,6 +162,7 @@ def _to_out(tc, version) -> TestCaseOut:
         application_map_id=tc.application_map_id,
         status=tc.status,
         current_version=tc.current_version,
+        credential_ref=tc.credential_ref,
         current=TestCaseVersionOut(
             version=version.version,
             title=version.title,
@@ -171,6 +176,38 @@ def _to_out(tc, version) -> TestCaseOut:
             confidence=version.confidence,
         ),
     )
+
+
+class TestCaseCredentialBinding(BaseModel):
+    credential_ref: str | None = None
+
+
+@router.patch("/{test_case_id}/credential", response_model=TestCaseOut)
+async def bind_test_case_credential(
+    test_case_id: uuid.UUID,
+    body: TestCaseCredentialBinding,
+    db: AsyncSession = Depends(get_db_session),
+) -> TestCaseOut:
+    """Bind one test case to one login account; null uses the project default."""
+    case = await db.get(TestCase, test_case_id)
+    if case is None:
+        raise HTTPException(404, "Test case not found")
+    if body.credential_ref is not None:
+        account = await db.scalar(
+            select(DiscoveryCredential).where(
+                DiscoveryCredential.project_id == case.project_id,
+                DiscoveryCredential.credential_ref == body.credential_ref,
+                DiscoveryCredential.active.is_(True),
+            )
+        )
+        if account is None:
+            raise HTTPException(422, "Choose an active credential in this project")
+    case.credential_ref = body.credential_ref
+    pair = await TestCaseRepository(db).get_with_current_version(test_case_id)
+    await db.commit()
+    if pair is None:
+        raise HTTPException(404, "Test case version not found")
+    return _to_out(*pair)
 
 
 def _manual_steps(
@@ -318,6 +355,7 @@ async def generate_test_cases(
             "selected_area_ids": body.selected_area_ids,
             "selected_module_ids": body.selected_module_ids,
             "selected_branch_keys": body.selected_branch_keys,
+            "selected_state_codes": body.selected_state_codes,
             "regenerate": body.regenerate,
             **({"credential_ref": project.credential_ref} if project.credential_ref else {}),
         },
@@ -658,8 +696,6 @@ async def delete_test_case(
     pair = await tc_repo.get_with_current_version(test_case_id, for_update=True)
     if pair is None:
         raise HTTPException(status_code=404, detail="Test case not found")
-    if pair[0].status == TestCaseStatus.APPROVED:
-        raise HTTPException(status_code=409, detail="Approved test cases cannot be deleted")
     await tc_repo.delete(pair[0])
     await db.commit()
     return Response(status_code=204)

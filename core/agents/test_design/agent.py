@@ -538,6 +538,14 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         selected_branch_keys = request.payload.get("selected_branch_keys", [])
         if selected_branch_keys:
             selected_fingerprints = _branch_fingerprints(app_map.discovery_checkpoint or {}, selected_branch_keys)
+        selected_codes = set(request.payload.get("selected_state_codes", []))
+        if selected_codes:
+            known_codes = {state.state_code for state in app_map.states}
+            if selected_codes - known_codes:
+                raise ValueError("Selected states are no longer in this application map. Refresh and select again.")
+            selected_fingerprints = {
+                state.fingerprint for state in app_map.states if state.state_code in selected_codes
+            }
         previously_generated: set[str] = set()
         if generation_scope == "ungenerated":
             previously_generated = await self._map_repo.generated_fingerprints(
@@ -618,7 +626,8 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
         if batch_valid:
             if regenerate and not regeneration_retired:
                 await self._test_case_repo.supersede_for_regeneration(
-                    requirement_id, app_map.id
+                    requirement_id, app_map.id,
+                    state_codes={state.state_code for state in scoped_states} if selected_fingerprints is not None or generation_scope == "ungenerated" else None,
                 )
                 regeneration_retired = True
             valid_cases.extend(batch_valid)
@@ -700,7 +709,8 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                     if llm_valid:
                         if regenerate and not regeneration_retired:
                             await self._test_case_repo.supersede_for_regeneration(
-                                requirement_id, app_map.id
+                                requirement_id, app_map.id,
+                                state_codes={state.state_code for state in scoped_states} if selected_fingerprints is not None or generation_scope == "ungenerated" else None,
                             )
                             regeneration_retired = True
                         valid_cases.extend(llm_valid)

@@ -6,7 +6,7 @@ TC-code allocation. Does not commit internally — caller owns the transaction.
 import uuid
 from typing import Any
 
-from sqlalchemy import Integer, cast, delete, func, select, update
+from sqlalchemy import Integer, cast, func, select, update
 from sqlalchemy.orm import selectinload
 
 from domain.enums import ApprovalStatus, TestCaseStatus
@@ -200,66 +200,66 @@ class TestCaseRepository(BaseRepository):
             .execution_options(synchronize_session=False)
         )
 
-    async def supersede_for_regeneration(
-        self, requirement_id: uuid.UUID, application_map_id: uuid.UUID
-    ) -> None:
-        """Retire a graph's active cases before an explicit regeneration.
+        await self.session.execute(
+            update(TestCase).where(TestCase.id.in_(stale_ids))
+            .values(status=TestCaseStatus.OUTDATED)
+            .execution_options(synchronize_session=False)
+        )
 
-        Historical approvals remain intact for audit purposes; the replacement
-        cases are newly created DRAFTs and must go through review again.
-        """
-        active_ids = select(TestCase.id).where(
-            TestCase.requirement_id == requirement_id,
-            TestCase.application_map_id == application_map_id,
-            TestCase.status != TestCaseStatus.OUTDATED,
-        )
+    async def _retire_cases(self, ids: list[uuid.UUID], reason: str) -> None:
+        if not ids:
+            return
+        from domain.enums import AutomationReviewStatus
+        from infra.db.models.automation import AutomationScript
+        from infra.db.repositories.automation_repo import AutomationRepository
+
         await self.session.execute(
-            update(Approval)
-            .where(
-                Approval.target_type == "test_case",
-                Approval.target_id.in_(active_ids),
+            update(Approval).where(
+                Approval.target_type == "test_case", Approval.target_id.in_(ids),
                 Approval.status == ApprovalStatus.PENDING,
-            )
-            .values(
-                status=ApprovalStatus.REJECTED,
-                decided_by="system",
-                reason="Superseded by explicit test-case regeneration",
-                decided_at=func.now(),
-            )
+            ).values(status=ApprovalStatus.REJECTED, decided_by="system",
+                     reason=reason, decided_at=func.now())
             .execution_options(synchronize_session=False)
         )
+        # Preserve executed evidence and approval history; prevent old scripts
+        # from being eligible for subsequent execution.
+        scripts = (await self.session.execute(
+            select(AutomationScript).where(AutomationScript.test_case_id.in_(ids))
+        )).scalars().all()
+        automation = AutomationRepository(self.session)
+        for script in scripts:
+            if script.review_status != AutomationReviewStatus.BLOCKED:
+                automation.append_version(script, AutomationReviewStatus.BLOCKED)
         await self.session.execute(
-            update(TestCase)
-            .where(
-                TestCase.requirement_id == requirement_id,
-                TestCase.application_map_id == application_map_id,
-                TestCase.status != TestCaseStatus.OUTDATED,
-            )
+            update(TestCase).where(TestCase.id.in_(ids))
             .values(status=TestCaseStatus.OUTDATED)
             .execution_options(synchronize_session=False)
         )
-        await self.session.execute(
-            update(TestCase)
-            .where(
-                TestCase.requirement_id == requirement_id,
-                TestCase.requirement_version < current_version,
-            )
-            .values(status=TestCaseStatus.OUTDATED)
-            .execution_options(synchronize_session=False)
-        )
+
+    async def supersede_for_regeneration(
+        self, requirement_id: uuid.UUID, application_map_id: uuid.UUID,
+        state_codes: set[str] | None = None,
+    ) -> None:
+        """Retire only cases touching the selected states, retaining audit history."""
+        rows = (await self.session.execute(
+            select(TestCase, TestCaseVersion).join(TestCaseVersion,
+                (TestCaseVersion.test_case_id == TestCase.id) &
+                (TestCaseVersion.version == TestCase.current_version))
+            .where(TestCase.requirement_id == requirement_id,
+                   TestCase.application_map_id == application_map_id,
+                   TestCase.status != TestCaseStatus.OUTDATED)
+        )).all()
+        ids = [case.id for case, version in rows
+               if state_codes is None or any(
+                   (step.get("target") or {}).get("state_code") in state_codes
+                   for step in (version.steps or [])
+               )]
+        await self._retire_cases(ids, "Superseded by explicit test-case regeneration")
 
     async def delete(self, test_case: TestCase) -> None:
-        await self.session.execute(
-            delete(Approval).where(
-                Approval.target_type == "test_case", Approval.target_id == test_case.id
-            )
-        )
-        await self.session.execute(
-            delete(TestCaseVersion).where(TestCaseVersion.test_case_id == test_case.id)
-        )
-        # Core delete: ORM delete would lazy-load `versions`, which async sessions forbid.
-        await self.session.execute(delete(TestCase).where(TestCase.id == test_case.id))
-        self.session.expunge(test_case)
+        """Remove from active cases without breaking automation/evidence references."""
+        await self._retire_cases([test_case.id], "Test case deleted by user")
+        test_case.status = TestCaseStatus.OUTDATED
 
     async def list_for_project(
         self, project_id: uuid.UUID
