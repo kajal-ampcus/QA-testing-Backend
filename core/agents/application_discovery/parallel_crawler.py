@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urldefrag, urljoin, urlparse
 
@@ -28,6 +28,7 @@ from core.agents.application_discovery.crawler import (
     _parse_elements,
     _relevance_score,
 )
+from core.agents.application_discovery.dropdowns import explore_dropdowns
 from core.agents.application_discovery.fingerprint import (
     auth_flow_label,
     canonical_route,
@@ -42,8 +43,6 @@ from core.agents.application_discovery.fingerprint import (
     repeated_in_page_control,
     unlabeled_collection_icons,
 )
-from core.agents.application_discovery.dropdowns import explore_dropdowns
-from core.agents.application_discovery.login_choices import login_choices, login_group_key
 from core.agents.application_discovery.form_inputs import (
     InvalidCredentialsError,
     LoginInputRequired,
@@ -55,6 +54,7 @@ from core.agents.application_discovery.form_inputs import (
     normalize_name,
     public_field,
 )
+from core.agents.application_discovery.login_choices import login_choices, login_group_key
 from core.agents.application_discovery.screen_delta import classify_screen
 from core.policy_safety.destructive_action_lexicon import classify_risk
 from core.tool_gateway.gateway import BrowserInspection, SecurityVerificationRequiredError
@@ -430,7 +430,7 @@ class ParallelCrawler:
                 action["error"] = str(event["error"])[:240]
             existing = next((index for index, item in enumerate(self._action_log) if item.get("id") == action_id), None)
             if existing is None:
-                action["timestamp"] = datetime.now(timezone.utc).isoformat()
+                action["timestamp"] = datetime.now(UTC).isoformat()
                 self._action_log.append(action)
             else:
                 action["timestamp"] = self._action_log[existing].get("timestamp")
@@ -575,7 +575,7 @@ class ParallelCrawler:
         if self._project_id is None:
             return
         for request in list(self._input_requests.values()):
-            if request.get("kind") == "login" or request.get("status") != "approved":
+            if request.get("status") not in {"approved", "submitted"}:
                 continue
             if bool(request.get("skip_auth")) != skip_auth:
                 continue
@@ -622,6 +622,12 @@ class ParallelCrawler:
                 request.pop("validation_error", None)
                 await queue.put(job)
                 await self._set_job_status(job, "pending")
+                continue
+            # Login answers select an account; they do not authorize filling
+            # a generic form. Guided account promotion was handled above.
+            if request.get("kind") == "login":
+                continue
+            if request.get("status") != "approved":
                 continue
             if not request_id or self._fill_already_queued(request_id):
                 continue
@@ -1593,7 +1599,7 @@ class ParallelCrawler:
                                         self._budget,
                                         previous=self._previous_dropdowns,
                                         explored=self._dropdowns,
-                                        record_change=lambda shot, step: crawler._record_state(
+                                        record_change=lambda shot, step, recorded_path=recorded_path: crawler._record_state(
                                             shot, [*recorded_path, step], on_state_discovered
                                         ),
                                     )

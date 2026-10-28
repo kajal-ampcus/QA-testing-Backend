@@ -73,6 +73,16 @@ async def test_missing_tool_after_truncation_is_retried(client):
     assert create.await_count == 2
 
 
+async def test_vision_input_is_forwarded_as_image_content(client):
+    create = AsyncMock(return_value=completion())
+    client._client.chat.completions.create = create
+    await client.call_structured("system", "inspect", {"type": "object"}, "generate_test_cases", 1000,
+                                 images=["data:image/png;base64,aGVsbG8="])
+    content = create.call_args.kwargs["messages"][1]["content"]
+    assert content == [{"type": "text", "text": "inspect"},
+                       {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}]
+
+
 async def test_gemini_receives_inline_test_case_schema(client):
     from core.agents.test_design.schemas import TestCaseBatch
 

@@ -21,12 +21,11 @@ from core.agents.test_design.schemas import StepTarget, TestCaseSpec, TestStep
 
 _FILLABLE = {"textbox", "searchbox", "spinbutton", "combobox"}
 _CLICKABLE = {"button", "link", "checkbox", "radio"}
-_COVERABLE = _FILLABLE | _CLICKABLE
 _SUBMIT = re.compile(r"\b(submit|send|save|log.?in|sign.?in|continue|next)\b", re.I)
 _CONTROL_LABEL = re.compile(r"observed_link='([^']*)'|name='([^']*)'", re.I)
 _CLICK_NAME = re.compile(r"^click\s+([^()]+)$", re.I)
 _NEGATIVE_INTENT = re.compile(
-    r"\b(invalid|incorrect|missing|required|reject|prevent|deny|denied|unauthori[sz]ed|"
+    r"\b(invalid|incorrect|missing|required|mandatory|blank|reject|prevent|deny|denied|unauthori[sz]ed|"
     r"must not|cannot|can't|does not|do not|without|error|fail|closed|expired|cancelled)\b",
     re.I,
 )
@@ -40,7 +39,7 @@ _EDGE_INTENT = re.compile(
 def _observed(state: dict[str, Any]) -> list[dict[str, Any]]:
     # Destructive controls (delete, pay, ...) never go into generated drafts;
     # a tester must add those cases deliberately.
-    return [
+    observed = [
         element
         for element in state.get("elements", [])
         if element.get("element_code")
@@ -48,6 +47,18 @@ def _observed(state: dict[str, Any]) -> list[dict[str, Any]]:
         and element.get("visible") is not False
         and element.get("risk") != "DESTRUCTIVE"
     ]
+    # Header/footer copies of the same named link express one navigation
+    # behavior. Keep different destinations and non-link controls separate.
+    seen_links: set[tuple[str, str]] = set()
+    unique = []
+    for element in observed:
+        if element.get("role") == "link" and element.get("url"):
+            identity = (str(element.get("name") or "").strip(), str(element["url"]))
+            if identity in seen_links:
+                continue
+            seen_links.add(identity)
+        unique.append(element)
+    return unique
 
 
 def _usable(element: dict[str, Any], roles: set[str]) -> bool:
@@ -106,6 +117,10 @@ def _rank_states(states: list[dict[str, Any]], ac: dict[str, Any], title: str) -
 
 def _url_path(state: dict[str, Any]) -> str:
     pattern = str(state.get("url_pattern") or "/")
+    if re.match(r"^https?://", pattern, re.I):
+        from urllib.parse import urlsplit
+
+        pattern = urlsplit(pattern).path or "/"
     match = re.search(r"/[A-Za-z0-9_/-]*", pattern)
     return match.group(0) if match else "/"
 
@@ -124,8 +139,18 @@ def _best_click(elements: list[dict[str, Any]], text: str, *, criterion: str | N
     if not pool:
         return None
     intent = criterion if criterion is not None else text
+    requested = re.search(r"\bclick(?:ing)?\s+(?:the\s+)?(.+?)(?=\s+(?:on|from|opens?|redirects?|button|link)\b|,|$)", intent, re.I)
+    if requested:
+        named = [element for element in pool if _norm_label(str(element.get('name') or '')) == _norm_label(requested.group(1))]
+        if len(named) == 1:
+            return named[0]
+    if re.search(r"\b(click\w*|open\w*|navigate\w*|redirect\w*)\b", intent, re.I) and re.search(r"\blogin\s+(page|form|screen)\b", intent, re.I) and not re.search(r"\bforgot\s+password\b", intent, re.I):
+        entry = next((element for element in pool if element.get("role") == "link" and
+                      re.search(r"/(login|sign-in|signin)/?(?:[?#].*)?$", str(element.get("url") or ""), re.I)), None)
+        if entry is not None:
+            return entry
     if (
-        re.search(r"\b(authentication|credentials|log\s*in|sign\s*in)\b", intent, re.I)
+        re.search(r"\b(authenticat\w*|credentials|log\s*in|sign\s*in)\b", intent, re.I)
         and re.search(r"\b(successful|successfully|valid)\b", intent, re.I)
         and not _NEGATIVE_INTENT.search(intent)
     ):
@@ -178,7 +203,7 @@ def _result_content_element(
     resort and only used when the destination page has no readable content.
     """
     observed = _observed(state)
-    for roles in ({"heading"}, {"statictext", "paragraph"}):
+    for roles in ({"alert", "status"}, {"heading"}, {"statictext", "paragraph"}):
         candidates = [
             element
             for element in observed
@@ -189,6 +214,9 @@ def _result_content_element(
             return sorted(
                 candidates, key=lambda element: _name_score(element, text), reverse=True
             )[0]
+    if re.search(r"\b(authentication|credentials|log\s*in|sign\s*in)\b", text, re.I):
+        return next((element for element in observed if re.fullmatch(
+            r"log\s*out|sign\s*out", str(element.get("name") or ""), re.I)), None)
     return None
 
 
@@ -270,7 +298,10 @@ def _result_state(
             if state["state_code"] != start["state_code"]
             and (state.get("reached_via") or [])[:len(prefix)] == prefix
             and re.search(r"role=authentication(?:,|\))", str((state.get("reached_via") or [""])[-1]))]
-        if len(authenticated) == 1:
+        # Rediscovery can record the same authenticated page more than once.
+        # Accept one destination route, but never guess between distinct routes.
+        destinations = {(_route(str(state.get("url_pattern") or "")), state.get("account_context") or "") for state in authenticated}
+        if authenticated and len(destinations) == 1 and all(route for route, _ in destinations):
             return authenticated[0], 0.8
     if len(name) >= 2:
         for state in states:
@@ -383,7 +414,11 @@ def _build_case(
                 )
             )
             continue
-        key, _name, value = _fill_value(element, category=category)
+        # Isolate an explicitly named invalid field; keep setup fields valid.
+        field_category = category
+        if category == "NEGATIVE" and not _named_in_text(element, str(ac.get("text") or "")):
+            field_category = "POSITIVE"
+        key, _name, value = _fill_value(element, category=field_category)
         test_data[key] = value
         steps.append(
             TestStep(
@@ -458,95 +493,6 @@ def _build_case(
     )
 
 
-def _coverage_ac(acceptance_criteria: list[dict[str, Any]], state: dict[str, Any], element: dict[str, Any]) -> str:
-    """Attach map coverage to the most relevant approved criterion.
-
-    Test cases retain requirement traceability, while their scenario and target
-    come from the browser-observed application map.
-    """
-    context = " ".join((str(state.get("url_pattern") or ""), str(element.get("name") or "")))
-    terms = set(re.findall(r"[a-zA-Z0-9]{3,}", context.lower()))
-    ranked = []
-    for ac in acceptance_criteria:
-        ac_terms = set(re.findall(r"[a-zA-Z0-9]{3,}", str(ac.get("text") or "").lower()))
-        ranked.append((len(terms & ac_terms), str(ac["id"])))
-    return max(ranked, key=lambda item: item[0])[1]
-
-
-def _page_label(state: dict[str, Any]) -> str:
-    path = _url_path(state).strip("/")
-    return re.sub(r"[-_]+", " ", path).title() or "Application"
-
-
-def generate_discovery_coverage_cases(
-    acceptance_criteria: list[dict[str, Any]], states: list[dict[str, Any]]
-) -> list[TestCaseSpec]:
-    """Create bounded tester-style coverage directly from observed controls.
-
-    This complements AC-led scenarios. It never invents a click result: a
-    navigation case is emitted only when discovery recorded its destination.
-    Other interactive components receive a page-level availability assertion;
-    required inputs additionally receive blank and one-character checks.
-    """
-    if not acceptance_criteria:
-        return []
-    cases: list[TestCaseSpec] = []
-    for state in states:
-        for element in _observed(state):
-            if not _usable(element, _COVERABLE):
-                continue
-            name = str(element.get("name") or element.get("text") or "control").strip()
-            if not name:
-                continue
-            ac_id = _coverage_ac(acceptance_criteria, state, element)
-            role = str(element.get("role") or "control")
-            target = _target(state, element)
-            result, confidence = _result_state(states, state, element if role in _CLICKABLE else None)
-            if role in _CLICKABLE and result["state_code"] != state["state_code"]:
-                assert_target, assertion, expected = _content_assertion(result, name)
-                cases.append(TestCaseSpec(
-                    title=f"{_page_label(state)}: navigate using {name}",
-                    objective="Verify the observed control reaches its discovered destination.",
-                    category="POSITIVE", preconditions=[f"Browser is on {_url_path(state)}"],
-                    steps=[
-                        TestStep(step_number=1, action="navigate", target=_target(state)),
-                        TestStep(step_number=2, action="click", target=target),
-                        TestStep(step_number=3, action="assert", target=assert_target,
-                                 expected=expected, assertion=assertion),
-                    ], expected_result=expected, test_data={}, traceability=[ac_id], confidence=confidence,
-                ))
-                continue
-            validation = element.get("validation") or {}
-            if role in _FILLABLE and validation.get("required"):
-                code = str(element.get("element_code") or "")
-                for category, value, suffix, expected, kind in (
-                    ("NEGATIVE", "", "empty required input", "Required-field validation reports this field as missing.", "required"),
-                    ("EDGE_CASE", "a", "one-character boundary", "Required-field validation no longer reports this field as missing; other validation rules may still reject the value.", "visible"),
-                ):
-                    cases.append(TestCaseSpec(
-                        title=f"{_page_label(state)}: {name} {suffix}",
-                        objective="Verify the observed required-field constraint.", category=category,
-                        preconditions=[f"Browser is on {_url_path(state)}"],
-                        steps=[TestStep(step_number=1, action="navigate", target=_target(state)),
-                               TestStep(step_number=2, action="fill", target=target, value="{field_value}"),
-                               TestStep(step_number=3, action="assert", target=target, expected=expected,
-                                        assertion={"kind": kind, "target": code})],
-                        expected_result=expected, test_data={"field_value": value}, traceability=[ac_id], confidence=0.8,
-                    ))
-                continue
-            expected = f"{name} is visible and available"
-            cases.append(TestCaseSpec(
-                title=f"{_page_label(state)}: {name} is available",
-                objective="Verify the observed interactive component is available to the user.",
-                category="POSITIVE", preconditions=[f"Browser is on {_url_path(state)}"],
-                steps=[TestStep(step_number=1, action="navigate", target=_target(state)),
-                       TestStep(step_number=2, action="assert", target=target, expected=expected,
-                                assertion={"kind": "enabled", "target": str(element.get("element_code") or "")})],
-                expected_result=expected, test_data={}, traceability=[ac_id], confidence=0.8,
-            ))
-    return cases
-
-
 def generate_cases_from_map(
     acceptance_criteria: list[dict[str, Any]],
     states: list[dict[str, Any]],
@@ -554,91 +500,12 @@ def generate_cases_from_map(
     requested_categories: dict[str, set[str]] | None = None,
     include_discovery_coverage: bool = False,
 ) -> list[TestCaseSpec]:
-    """Return only evidence-supported drafts; never manufacture category pairs."""
-    if not states:
-        return []
-    cases: list[TestCaseSpec] = []
-    for ac in acceptance_criteria:
-        ranked_states = _rank_states(states, ac, requirement_title)
-        wanted = requested_categories.get(ac["id"]) if requested_categories else None
-        # Required-field checks do not need a server submission or a fabricated
-        # error page. Assert only the observed required constraint, not complete
-        # validity (a non-empty value may still violate format or credentials).
-        criterion = str(ac.get("text") or "")
-        if re.search(r"\b(required|mandatory|missing|empty)\b", criterion, re.I):
-            seen_fields: set[tuple[str, str]] = set()
-            for state in ranked_states:
-                generated_for_state = False
-                for element in _observed(state):
-                    name = str(element.get("name") or "")
-                    identity = (state["state_code"], str(element.get("element_code")))
-                    terms = [word for word in re.findall(r"[a-z]+", name.lower())
-                             if word not in {"enter", "your", "the", "answer"}]
-                    if (identity in seen_fields or element.get("role") not in {"textbox", "searchbox"}
-                        or not (element.get("validation") or {}).get("required")
-                        or not any(re.search(r"\b" + re.escape(word) + r"\b", criterion, re.I) for word in terms)):
-                        continue
-                    seen_fields.add(identity)
-                    for category, value, expected in (
-                        ("NEGATIVE", "", "Required-field validation reports this field as missing."),
-                        ("EDGE_CASE", "a", "Required-field validation no longer reports this field as missing; other validation rules may still reject the value."),
-                    ):
-                        if wanted and category not in wanted:
-                            continue
-                        cases.append(TestCaseSpec(
-                            title=f"{name}: {'empty required input' if category == 'NEGATIVE' else 'one-character required boundary'}",
-                            objective="Verify only the observed required-field constraint.",
-                            category=category,
-                            preconditions=[f"Browser is on {_url_path(state)}"],
-                            steps=[
-                                TestStep(step_number=1, action="navigate", target=_target(state)),
-                                TestStep(step_number=2, action="fill", target=_target(state, element), value="{field_value}"),
-                                TestStep(step_number=3, action="assert", target=_target(state, element), expected=expected,
-                                         assertion={"kind": "required" if category == "NEGATIVE" else "visible",
-                                                    "target": str(element.get("element_code") or "")}),
-                            ],
-                            expected_result=expected, test_data={"field_value": value},
-                            traceability=[str(ac["id"])], confidence=0.8,
-                        ))
-                        generated_for_state = True
-                # A required-field AC belongs to one page. Do not duplicate it
-                # on later pages just because those pages reuse an ID/email
-                # field with a similar label.
-                if generated_for_state:
-                    break
-        categories = sorted(wanted) if wanted else _default_categories(ac)
-        for category in categories:
-            if category not in {"POSITIVE", "NEGATIVE", "EDGE_CASE"}:
-                continue
-            start = ranked_states[0]
-            spec = None
-            for candidate in ranked_states:
-                spec = _build_case(
-                    ac=ac,
-                    category=category,
-                    start=candidate,
-                    states=states,
-                    title=requirement_title,
-                )
-                if spec is not None:
-                    start = candidate
-                    break
-            if spec is not None:
-                cases.append(spec)
-            if category == "POSITIVE":
-                alternate = _build_case(
-                    ac=ac,
-                    category=category,
-                    start=start,
-                    states=states,
-                    title=requirement_title,
-                    dropdown_variant=1,
-                )
-                if alternate is not None:
-                    cases.append(alternate)
-    # Whole-graph generation must not be limited to the wording of the ACs.
-    # Add observed component coverage unless the caller explicitly requested a
-    # small category-repair batch.
-    if include_discovery_coverage and not requested_categories:
-        cases.extend(generate_discovery_coverage_cases(acceptance_criteria, states))
-    return cases
+    """Compatibility entry point for requirement-driven scenario planning.
+
+    The old include_discovery_coverage argument remains accepted; observed UI
+    is now used only where it supports the requirement, never as a site inventory.
+    """
+    from core.agents.test_design.scenarios import plan_scenarios
+
+    return plan_scenarios(acceptance_criteria, states, requirement_title,
+                          requested_categories=requested_categories).cases

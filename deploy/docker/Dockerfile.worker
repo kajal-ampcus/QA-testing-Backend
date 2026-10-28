@@ -52,17 +52,24 @@ RUN python -m pip install \
     --no-cache-dir \
     --prefer-binary \
     .
+RUN python -c "import pathlib,tomllib; pathlib.Path('/tmp/qa-dependencies.txt').write_text('\n'.join(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']))"
+RUN --mount=type=cache,target=/root/.cache/pip pip install --timeout 120 --retries 5 -r /tmp/qa-dependencies.txt
 # Keep Playwright's browser cache in a predictable location for the worker.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 # Install browser and MCP at build time; no runtime package downloads.
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
     && mkdir -p /opt/ms-playwright \
-    && npm install --global chrome-devtools-mcp@latest pkce-challenge \
     && playwright install --with-deps chrome \
     && python -c "from pathlib import Path; import shutil; binary=shutil.which('google-chrome-stable') or shutil.which('google-chrome'); assert binary, 'Google Chrome executable was not installed'; target=Path('/usr/local/bin/google-chrome'); target.unlink(missing_ok=True); target.symlink_to(Path(binary).resolve()); print(target, '->', Path(binary).resolve())" \
     && chmod -R a+rX /opt/ms-playwright \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
+COPY apps/ apps/
+COPY core/ core/
+COPY domain/ domain/
+COPY schemas/ schemas/
+COPY infra/ infra/
+RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps --timeout 120 --retries 5 .
 COPY scripts/docker_entrypoint.py scripts/run_worker.py scripts/
 RUN useradd --create-home --uid 10001 qa \
     && mkdir -p /app/artifacts/discovery /app/artifacts/automation /app/logs \

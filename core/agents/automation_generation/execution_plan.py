@@ -77,6 +77,9 @@ def prepare_execution(
     steps = _copy_steps(case.steps)
     data = dict(case.test_data or {})
     starting = classify_start(case, states)
+    if any((step.get('assertion') or {}).get('kind') == 'manual' for step in steps):
+        return _blocked(starting, steps, data,
+            'Manual verification required: map an observed automated outcome and configure real test fixtures before generating automation.')
     text = _objective(case)
     start = _start_state(case, states)
     steps, mapping_issues = ground_steps(steps, states, data, discovery)
@@ -85,6 +88,16 @@ def prepare_execution(
     start_conflict = _start_conflict(case, start)
     if start_conflict:
         return _blocked(starting, steps, data, start_conflict)
+    assertions = [step for step in steps if step.get("action") == "assert"]
+    native_check = assertions and all((step.get("assertion") or {}).get("kind") in {
+        "validity", "attribute", "accessible_name",
+    } for step in assertions)
+    if native_check and not any(step.get("action") == "click" for step in steps):
+        # These approved checks deliberately inspect a native rule without
+        # submitting a form. Prose-based recovery must not insert login clicks,
+        # replace boundary data, or demand unrelated CAPTCHA/credentials.
+        return ExecutionPlan(starting_state=starting, fixture=_fixture(starting),
+                             authenticated=starting == "AUTHENTICATED", steps=_renumber(steps), test_data=data)
     destructive = _destructive(steps, states)
     kind = _primary_kind(text, case.category, start, steps, states)
 
