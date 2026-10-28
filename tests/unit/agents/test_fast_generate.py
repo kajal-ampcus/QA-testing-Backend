@@ -4,6 +4,7 @@ from core.agents.test_design.fast_generate import generate_cases_from_map
 from core.agents.test_design.validation import validate_case
 from infra.db.repositories.test_case_repo import case_signature
 
+
 STATES = [
     {
         "state_code": "STATE-001",
@@ -167,7 +168,7 @@ def test_fast_generate_does_not_manufacture_positive_negative_pairs() -> None:
         assert case.traceability == ["AC-1"]
 
 
-def test_discovery_coverage_includes_observed_controls_and_required_input_variants() -> None:
+def test_observed_controls_only_add_coverage_when_the_requirement_mentions_them() -> None:
     states = [
         {
             "state_code": "STATE-LOGIN", "url_pattern": "/login", "reached_via": [],
@@ -181,15 +182,22 @@ def test_discovery_coverage_includes_observed_controls_and_required_input_varian
          "reached_via": ["click(role=link,name='Forgot Password')"], "elements": []},
     ]
     cases = generate_cases_from_map(
-        [{"id": "AC-1", "text": "Users can use the login and password recovery pages"}], states, "Authentication",
+        [{"id": "AC-1", "text": "Click Forgot Password opens the recovery page"},
+         {"id": "AC-2", "text": "Employee ID is mandatory"},
+         {"id": "AC-3", "text": "Remember me is available"}], states, "Authentication",
         include_discovery_coverage=True,
     )
     titles = {case.title for case in cases}
-    assert any("navigate using Forgot Password" in title for title in titles)
-    assert any("Remember me is available" in title for title in titles)
-    assert any("Employee ID empty required input" in title for title in titles)
+    recovery_navigation = [
+        case for case in cases
+        if any(step.action == "click" and step.target.element_code == "EL-FORGOT" for step in case.steps)
+        and case.steps[-1].target.state_code == "STATE-FORGOT"
+    ]
+    assert len(recovery_navigation) == 1
+    assert any("Remember me checkbox is visible" in title for title in titles)
+    assert any("Employee ID: empty required input" in title for title in titles)
     assert any(case.category == "EDGE_CASE" and "Employee ID" in case.title for case in cases)
-    assert all(not validate_case(case, states, {"AC-1"}) for case in cases)
+    assert all(not validate_case(case, states, {"AC-1", "AC-2", "AC-3"}) for case in cases)
 
 
 def test_duplicate_signature_ignores_category_relabelling() -> None:
@@ -251,13 +259,17 @@ def test_link_destination_is_not_taken_from_a_word_inside_another_url() -> None:
         assert case.steps[-1].target.state_code == "STATE-015"
 
 
-def test_positive_case_without_observed_result_is_not_generated() -> None:
+def test_positive_case_without_observed_result_is_manual_not_an_invented_dashboard_assertion() -> None:
     states = [
         STATES[0],
         {**STATES[1], "reached_via": ["navigate(url='/dashboard',observed_link='Home')"]},
     ]
     acs = [{"id": "AC-1", "text": "User can log in with valid credentials"}]
-    assert generate_cases_from_map(acs, states, "Login") == []
+    cases = generate_cases_from_map(acs, states, "Login")
+    assert len(cases) == 1
+    assert cases[0].steps[-1].assertion['kind'] == 'manual'
+    assert cases[0].steps[-1].target.state_code == 'STATE-001'
+    assert cases[0].expected_result == acs[0]['text']
 
 
 def test_destructive_controls_are_never_used() -> None:
@@ -338,7 +350,7 @@ def test_visible_ui_case_asserts_the_matching_observed_element() -> None:
     assert assertion.expected == "Cafinity logo is visible"
 
 
-def test_negative_case_requires_an_observed_rejection_state() -> None:
+def test_observed_error_does_not_prove_arbitrary_credential_combinations() -> None:
     states = [
         STATES[0],
         {
@@ -356,9 +368,10 @@ def test_negative_case_requires_an_observed_rejection_state() -> None:
     cases = generate_cases_from_map(
         [{"id": "AC-1", "text": "Invalid credentials are rejected"}], states, "Login"
     )
-    assert len(cases) == 1
-    assert cases[0].category == "NEGATIVE"
-    assert cases[0].steps[-1].target.state_code == "STATE-ERROR"
+    assert len(cases) == 3  # invalid identifier, password, and both
+    assert all(case.category == "NEGATIVE" for case in cases)
+    assert all(case.steps[-1].assertion['kind'] == 'manual' for case in cases)
+    assert len({case.steps[-1].assertion['fields'] for case in cases}) == 3
 
 
 def test_unmapped_result_does_not_create_a_placeholder_case() -> None:

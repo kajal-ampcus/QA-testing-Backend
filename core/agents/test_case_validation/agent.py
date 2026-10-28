@@ -24,8 +24,9 @@ class TestCaseValidationAgent(BaseAgent[ValidationVerdict]):
         states: list[dict[str, Any]],
         ac_ids: set[str],
         ac_texts: dict[str, str] | None = None,
+        *, strict: bool = False, assertion_sources: list[str] | None = None,
     ) -> list[str]:
-        return self.validate(case, states, ac_ids, ac_texts).issues
+        return self.validate(case, states, ac_ids, ac_texts, strict=strict, assertion_sources=assertion_sources).issues
 
     def validate(
         self,
@@ -33,8 +34,9 @@ class TestCaseValidationAgent(BaseAgent[ValidationVerdict]):
         states: list[dict[str, Any]],
         ac_ids: set[str],
         ac_texts: dict[str, str] | None = None,
+        *, strict: bool = False, assertion_sources: list[str] | None = None,
     ) -> ValidationVerdict:
-        issues = validate_case(case, states, ac_ids, ac_texts)
+        issues = validate_case(case, states, ac_ids, ac_texts, strict=strict, assertion_sources=assertion_sources)
         by_code = {state["state_code"]: state for state in states}
         element_ok = all(
             (
@@ -55,11 +57,14 @@ class TestCaseValidationAgent(BaseAgent[ValidationVerdict]):
             "element_exists_in_map": element_ok,
             "traceability_known": not (set(case.traceability) - ac_ids),
         }
+        assertions = [step for step in case.steps if step.action == 'assert']
+        manual_count = sum((step.assertion or {}).get('kind') == 'manual' for step in assertions)
+        checks['automation_oracle_observed'] = manual_count == 0
         passed = not issues
         confidence = compute_confidence(
             evidence_count=len(case.steps) + len(case.traceability),
             check_pass_rate=(sum(1 for ok in checks.values() if ok) / len(checks)),
-            inference_share=0.0 if passed else 0.4,
+            inference_share=manual_count / len(assertions) if manual_count else (0.0 if passed else 0.4),
         )
         return ValidationVerdict(
             passed=passed, issues=issues, checks=checks, confidence=confidence

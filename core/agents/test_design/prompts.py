@@ -27,7 +27,7 @@ RULE 1 — ONLY reference elements that exist in the application map.
   asserting the current URL) that don't reference a single element.
 
 RULE 2 — Cover each AC only with meaningful, evidence-supported cases.
-  - Every AC id must appear in at least one test case's traceability list.
+  - Map each generated case to the AC behavior it actually verifies. Unsupported ACs remain uncovered.
   - Do NOT automatically create positive/negative pairs.
   - Generate POSITIVE only for a successful user outcome stated by the AC.
   - Generate NEGATIVE only when the AC or requirement supplies a concrete
@@ -43,6 +43,19 @@ RULE 2 — Cover each AC only with meaningful, evidence-supported cases.
     e.g. title="Login with valid credentials", category="POSITIVE".
 
 RULE 2A - Apply a coverage matrix to each observed page.
+  Enumerate the scenarios BEFORE writing cases. A category already having one
+  case does not mean that category or AC is fully covered.
+  For a required form, independently consider each missing field, pairwise
+  missing fields, and all fields blank; keep remaining inputs valid.
+  For credential rejection, independently vary the identifier, password, and
+  both when supported by the requirement. Keep any CAPTCHA valid so it cannot
+  mask credential rejection; test an invalid CAPTCHA separately.
+  Check each observed optional control and transition separately (role tabs,
+  password reveal, recovery, refresh, remember-me, keyboard submission), but
+  do not assume unobserved controls or undocumented persistence/security rules.
+  Do not treat a native required marker as a test of submitting a blank form.
+  Compare cases by starting state, actions, input classes and asserted outcome,
+  merging requirement mappings for equivalent behavior rather than repeating it.
   Look for distinct, observable scenarios across functional success,
   invalid/required input validation, boundaries and special-character handling,
   navigation/state changes, visible UI controls, keyboard/accessibility,
@@ -53,8 +66,8 @@ RULE 2A - Apply a coverage matrix to each observed page.
   controls and resulting states were observed. CAPTCHA, timeout, lockout, SLA,
   breakpoint, browser, and security tests additionally require explicit
   requirement text and observable evidence or configured test support.
-  Prefer two to four compact cases when an AC contains independently observable
-  behaviours; one well-grounded case is correct for a narrow AC.
+  Generate each distinct supported behavior, regardless of count. Do not pad a suite
+  with availability checks for unrelated controls or substitute them for functional tests.
 
 RULE 3 — Test data must be concrete and named.
   - Use named test data sets in steps (e.g. value="{valid_email}").
@@ -85,8 +98,8 @@ RULE 5 — Preconditions must be explicit.
 
 RULE 6 — Confidence scoring:
   - 0.9: all steps reference observed DOM elements
-  - 0.7: some steps inferred (e.g. error message text not observed in map)
-  - 0.5: AC cannot be mapped to any observed state
+  - Never infer error messages, validation limits, or destination behavior.
+  - Unsupported scenarios are omitted and reported as gaps, not low-confidence fiction.
 
 RULE 7 — Output must be STRICT, parseable JSON. This is non-negotiable:
   - NEVER include // or /* */ comments anywhere in the tool call arguments.
@@ -111,10 +124,12 @@ RULE 8 - Use observed hrefs and target states, never guess destination paths.
 
 RULE 9 — Keep the tool payload small so generation stays fast:
   - If TARGETED COVERAGE is present, generate ONLY those categories.
-  - Otherwise, choose only the category supported by each AC's wording.
-  - Each case traces exactly one AC id. An AC can have up to four distinct
-    evidence-supported cases.
-  - At most 6 steps per case. Short title. One-sentence objective.
+  - Otherwise, cover all supported scenarios in the requested obligation.
+  - There is no minimum or maximum number of cases per AC. Return an empty list
+    when no measurable case is supported. Never invent an opposite category.
+  - Use as many atomic steps as the behavior requires. Do not truncate a flow.
+  - Security, accessibility, boundaries and edge cases require a stated rule and
+    measurable observed support; existing category values remain unchanged.
   - Do not emit extra categories, long preconditions, or commentary.
 
 Return ONLY the tool call result. No prose."""
@@ -136,21 +151,18 @@ def build_user_prompt(
 
     states_lines = []
     for state in app_map_states:
-        dom_elements = [e for e in state.get("elements", []) if e.get("source") == "OBSERVED_DOM"]
+        dom_elements = [e for e in state.get("elements", []) if e.get("source") in {None, "OBSERVED_DOM"}]
         compact_elements = []
-        for element in dom_elements[:6]:
+        for element in dom_elements:
             compact = {
                 key: element[key]
                 for key in (
-                    "element_code", "role", "name", "text", "url", "type",
+                    "element_code", "role", "name", "text", "url", "type", "input_type",
                     "disabled", "checked", "selected",
-                    "required", "readonly",
+                    "required", "readonly", "validation", "description", "risk",
                 )
                 if key in element and element[key] is not None
             }
-            for key in ("name", "text", "url"):
-                if isinstance(compact.get(key), str):
-                    compact[key] = compact[key][:100]
             compact_elements.append(compact)
         el_lines = "\n".join(
             "      " + json.dumps(e, ensure_ascii=False, separators=(",", ":"))
@@ -159,6 +171,8 @@ def build_user_prompt(
         states_lines.append(
             f"  {state['state_code']}  url={str(state['url_pattern'])[:300]}\n"
             f"    reached_via: {str(state.get('reached_via', []))[:500]}\n"
+            f"    screenshot_evidence_ref: {state.get('evidence_ref') or 'unavailable'}\n"
+            f"    screenshot_analysis: {state.get('screenshot_analysis') or 'No pixel analysis available; use DOM evidence only.'}\n"
             f"    elements:\n{el_lines}"
         )
 
@@ -185,23 +199,11 @@ def build_user_prompt(
             + ". Do not regenerate categories that already exist.\n"
         )
 
-    expected_cases = 0
-    if targeted_by_ac:
-        expected_cases = sum(len(categories) for categories in targeted_by_ac.values())
-    elif required_categories:
-        expected_cases = len(acceptance_criteria) * len(required_categories)
-    else:
-        expected_cases = len(acceptance_criteria)
-    if targeted_by_ac or required_categories:
-        generate_line = (
-            f"Generate exactly {expected_cases} compact test case(s) matching TARGETED "
-            "COVERAGE only. Do not generate other categories."
-        )
-    else:
-        generate_line = (
-            "For each acceptance criterion, generate one to four distinct cases only where "
-            "the AC and observed map support them. Do not invent an opposite category."
-        )
+    generate_line = (
+        "Generate all distinct, relevant, evidence-supported scenarios for this task. "
+        "There is no fixed case count. Return an empty list if unsupported. "
+        "When TARGETED COVERAGE is provided, restrict categories without imposing a quota."
+    )
     return f"""REQUIREMENT
 ===========
 Title: {requirement_title}
@@ -216,5 +218,5 @@ APPLICATION MAP  (base_url={base_url})
 {category_instruction}
 
 {generate_line}
-Each case traceability list must contain exactly one AC id. At most 6 steps
-per case. Reference only state_codes and element_codes from the APPLICATION MAP above."""
+Each case must map to the AC behavior it tests. Include explicit preconditions,
+test_data, ordered atomic steps, and a measurable expected result. Reference only state_codes and element_codes from the APPLICATION MAP above."""

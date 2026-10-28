@@ -104,11 +104,17 @@ class OpenAICompatibleClient(LLMClient):
         tool_schema: dict[str, Any],
         tool_name: str,
         max_tokens: int = 2000,
+        images: list[str] | None = None,
     ) -> LLMStructuredResult:
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+        if images:
+            messages[1] = {"role": "user", "content": [
+                {"type": "text", "text": user_prompt},
+                *[{"type": "image_url", "image_url": {"url": url}} for url in images],
+            ]}
 
         # Inline $ref for providers that don't resolve JSON Schema references
         if self._needs_schema_inline:

@@ -36,15 +36,15 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 from core.agents.application_discovery.fingerprint import (
     canonical_route,
-    compute_fingerprint,
     collection_count_badge,
+    compute_fingerprint,
     gated_probe_kind,
-    unlabeled_collection_icons,
     is_chrome_label,
     is_collection_mutation_action,
     is_gated_reveal_action,
     is_in_page_content_control,
     repeated_in_page_control,
+    unlabeled_collection_icons,
 )
 from core.policy_safety.destructive_action_lexicon import classify_risk
 from core.tool_gateway.gateway import BrowserInspection
@@ -578,6 +578,7 @@ class Crawler:
                 "role", "name", "url", "input_type", "checked", "selected",
                 "expanded", "disabled", "required", "options", "css_selector",
                 "locator_scope",
+                "min", "max", "minlength", "maxlength", "pattern", "step", "readonly", "invalid",
             }}
             for el in raw_elements
             if el.get("role") not in {"image", "StaticText", "InlineTextBox"}
@@ -615,6 +616,7 @@ class Crawler:
                         "disabled",
                         "description",
                         "options",
+                        "min", "max", "minlength", "maxlength", "pattern", "step", "invalid",
                     )
                     if key in el
                 },

@@ -137,6 +137,7 @@ class BulkReviewResponse(BaseModel):
 
 
 class GenerateTestCasesResponse(BaseModel):
+    coverage: dict[str, Any] = Field(default_factory=dict)
     outcome: str = "generated"
     message: str = ""
     ac_evidence: list[dict[str, str]] = Field(default_factory=list)
@@ -403,6 +404,7 @@ async def generate_test_cases(
     test_case_outs = [_to_out(tc, v) for tc, v in pairs if tc.id in created_ids]
 
     return GenerateTestCasesResponse(
+        coverage=result.coverage,
         outcome=result.outcome,
         message=result.message,
         ac_evidence=result.ac_evidence,

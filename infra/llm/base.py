@@ -36,6 +36,7 @@ class LLMClient(ABC):
         tool_schema: dict[str, Any],
         tool_name: str,
         max_tokens: int = 2000,
+        images: list[str] | None = None,
     ) -> LLMStructuredResult:
         """Forces the model to respond via a single structured tool/function
         call matching tool_schema. Implementations must raise rather than
