@@ -34,6 +34,23 @@ _VERSION_FIELDS = (
 
 class TestCaseRepository(BaseRepository):
 
+    async def find_semantic_duplicate(self, requirement_id: uuid.UUID, version_data: dict):
+        from domain.semantic_duplicates import find_semantic_duplicate
+        cache = getattr(self, "_duplicate_pairs", None)
+        if cache is None:
+            self._duplicate_pairs = cache = {}
+        if requirement_id not in cache:
+            pairs = await self.list_for_requirement(requirement_id)
+            current = await self.session.scalar(select(Requirement.current_version).where(Requirement.id == requirement_id))
+            cache[requirement_id] = [(tc, v) for tc, v in pairs if tc.status != TestCaseStatus.OUTDATED
+                                    and tc.requirement_version == current]
+        pairs = cache[requirement_id]
+        def summary(data):
+            return {key: data.get(key) for key in ("title", "objective", "expected_result", "preconditions", "steps")}
+        candidates = [{"id": str(tc.id), **summary({field: getattr(v, field) for field in _VERSION_FIELDS})} for tc, v in pairs]
+        found = await find_semantic_duplicate(summary(version_data), candidates)
+        return next(((tc, v) for tc, v in pairs if str(tc.id) == found), None)
+
     async def next_tc_code(self, project_id: uuid.UUID) -> str:
         # Serialize code allocation within a project until the caller commits;
         # without the lock, concurrent generations collide on the unique code.
@@ -75,6 +92,9 @@ class TestCaseRepository(BaseRepository):
         version = self._new_version(test_case.id, 1, version_data)
         self.session.add(version)
         await self.session.flush()
+        cache = getattr(self, "_duplicate_pairs", {})
+        if requirement_id in cache:
+            cache[requirement_id].append((test_case, version))
         return test_case, version
 
     @staticmethod

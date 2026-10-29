@@ -464,6 +464,16 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 skipped += 1
                 continue
             known_signatures.add(signature)
+            semantic_match = await self._test_case_repo.find_semantic_duplicate(requirement_id, version_data)
+            if semantic_match is not None:
+                tc, version = semantic_match
+                extra = [ac for ac in tc_spec.traceability if ac not in (version.traceability or [])]
+                if extra:
+                    await self._test_case_repo.merge_traceability(tc.id, version.id, extra)
+                    merged_count += 1
+                    merged_acs.extend(extra)
+                skipped += 1
+                continue
             tc_code = await self._test_case_repo.next_tc_code(project_id)
             tc, _ = await self._test_case_repo.create(
                 project_id=project_id,

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,13 +57,33 @@ class CreateTestCaseRequest(BaseModel):
     objective: str = Field(min_length=3, max_length=800)
     expected_result: str = Field(min_length=3, max_length=2000)
     category: Literal["POSITIVE", "NEGATIVE", "EDGE_CASE"] = "EDGE_CASE"
-    traceability: list[str] = Field(min_length=1, max_length=20)
+    traceability: list[str] = Field(default_factory=list, max_length=20)
     preconditions: list[str] = Field(default_factory=list)
     step_notes: list[str] = Field(
         default_factory=list,
         description="Optional tester notes; each line becomes a step after navigate.",
     )
     start_state_code: str | None = None
+    skip_existing: bool = True
+    manual_entry: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_short_objective(cls, data: Any) -> Any:
+        # Older workbook clients send module labels such as "UI" verbatim.
+        if isinstance(data, dict) and isinstance(data.get("objective"), str):
+            objective = data["objective"].strip()
+            if len(objective) < 3:
+                data = dict(data)
+                data["objective"] = f"Verify {objective}: {data.get('title', '')}" if objective else f"Verify: {data.get('title', '')}"
+        return data
+
+
+
+class ManualTestCaseSpec(TestCaseSpec):
+    """Manual drafts may be outside the written acceptance criteria."""
+
+    traceability: list[str] = Field(default_factory=list, max_length=20)
 
 
 class TestCaseRevisionRequest(BaseModel):
@@ -74,7 +94,7 @@ class TestCaseRevisionRequest(BaseModel):
     objective: str = Field(min_length=3, max_length=800)
     expected_result: str = Field(min_length=3, max_length=2000)
     category: Literal["POSITIVE", "NEGATIVE", "EDGE_CASE"]
-    traceability: list[str] = Field(min_length=1, max_length=20)
+    traceability: list[str] = Field(default_factory=list, max_length=20)
     preconditions: list[str] = Field(default_factory=list)
     steps: list[TestStep] = Field(min_length=1, max_length=20)
     test_data: dict[str, Any] = Field(default_factory=dict)
@@ -117,6 +137,7 @@ class TestCaseVersionOut(BaseModel):
 
 
 class TestCaseOut(BaseModel):
+    already_exists: bool = False
     id: uuid.UUID
     tc_code: str
     project_id: uuid.UUID
@@ -209,6 +230,18 @@ async def bind_test_case_credential(
     if pair is None:
         raise HTTPException(404, "Test case version not found")
     return _to_out(*pair)
+
+
+def _import_identity(title: str, expected: str, category: str, preconditions: list[str], steps: list[dict]) -> tuple:
+    """Match imported scenarios despite casing, spacing, or objective enrichment."""
+    def normalized(value: str) -> str:
+        return " ".join(value.split()).casefold()
+
+    return (normalized(title), normalized(expected), normalized(category),
+            tuple(normalized(item) for item in preconditions or [] if item.strip()),
+            tuple((step.get("action"), normalized(str(step.get("expected") or "")),
+                   normalized(str(step.get("value") or "")))
+                  for step in steps if step.get("action") != "navigate"))
 
 
 def _manual_steps(
@@ -580,6 +613,39 @@ async def create_test_case(
         )
 
     preconditions = [item.strip() for item in body.preconditions if item.strip()]
+    if body.skip_existing:
+        # Keep the check and insert in one transaction, including concurrent uploads.
+        await tc_repo.lock_generation(requirement.id)
+        identity = _import_identity(body.title, body.expected_result, body.category, preconditions,
+                                    _manual_steps(state_code=start_state, expected_result=body.expected_result, step_notes=body.step_notes))
+        for existing, saved in await tc_repo.list_for_requirement(requirement.id):
+            if existing.status == TestCaseStatus.OUTDATED or existing.requirement_version != requirement.current_version:
+                continue
+            saved_identity = _import_identity(saved.title, saved.expected_result, saved.category, saved.preconditions, saved.steps)
+            # The compact manual form has no step notes. Match the scenario
+            # against generated/imported cases even when they have detailed steps.
+            same_manual_scenario = (
+                saved_identity[0] == identity[0] if body.manual_entry else
+                not body.step_notes and not body.preconditions and saved_identity[:3] == identity[:3]
+            )
+            if saved_identity == identity or same_manual_scenario:
+                out = _to_out(existing, saved).model_copy(update={"already_exists": True})
+                await db.commit()
+                return out
+        try:
+            found = await tc_repo.find_semantic_duplicate(requirement.id, {
+                "title": body.title, "objective": body.objective,
+                "expected_result": body.expected_result, "preconditions": body.preconditions,
+                "steps": _manual_steps(state_code=start_state, expected_result=body.expected_result, step_notes=body.step_notes),
+            })
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Duplicate comparison is unavailable. No test case was added; please retry.") from exc
+        if found:
+            out = _to_out(*found).model_copy(update={"already_exists": True})
+            await db.commit()
+            return out
     tc_code = await tc_repo.next_tc_code(project_id)
     test_case, current = await tc_repo.create(
         project_id=project_id,
@@ -659,7 +725,7 @@ async def revise_test_case(
         "confidence": 1.0,
     }
     try:
-        spec = TestCaseSpec.model_validate(version_data)
+        spec = ManualTestCaseSpec.model_validate(version_data)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
     map_states = [
