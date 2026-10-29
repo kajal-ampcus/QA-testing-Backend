@@ -54,6 +54,18 @@ from domain.enums import EvidenceSource, RiskLevel
 logger = logging.getLogger(__name__)
 
 
+def _login_metadata(element: dict[str, Any], route: str) -> dict[str, str]:
+    """Describe authentication controls without recording their values."""
+    text = " ".join(str(element.get(key) or "") for key in ("name", "role", "type", "input_type"))
+    if re.search(r"\b(password|passphrase|pin)\b", text, re.I) or str(element.get("input_type") or "").lower() == "password":
+        return {"field_role": "password", "credential_binding": "password", "login_route": route}
+    if re.search(r"\b(employee id|username|user name|user id|login id|e-?mail)\b", text, re.I):
+        return {"field_role": "login_identifier", "credential_binding": "username", "login_route": route}
+    if re.search(r"\bcaptcha\b", text, re.I):
+        return {"field_role": "captcha", "credential_binding": "captcha", "login_route": route}
+    return {}
+
+
 @dataclass
 class CrawlBudget:
     max_pages: int = 150
@@ -622,6 +634,7 @@ class Crawler:
                 },
                 "risk": classify_risk(el["role"], el["name"]).value,
                 "source": EvidenceSource.OBSERVED_DOM.value,
+                **_login_metadata(el, state_url),
             }
             for i, el in enumerate(raw_elements, start=1)
         ]

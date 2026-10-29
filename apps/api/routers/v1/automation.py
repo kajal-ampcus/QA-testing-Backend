@@ -57,6 +57,7 @@ from infra.db.models.application_map import ApplicationMap
 from infra.db.models.approval import Approval
 from infra.db.models.automation import AutomationScript
 from infra.db.models.project import Project
+from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.requirement import Requirement
 from infra.db.models.test_case import TestCase, TestCaseVersion
 from infra.db.models.form_test_data import FormTestData
@@ -243,6 +244,7 @@ async def generate_automation(
         for state in full_map.states
     }
     case_payload = [_case_payload(case, version, full_map.version) for case, version in to_write]
+    await _validate_case_credentials(session, project, case_payload)
     fixture_ids = [uuid.UUID(item["test_case_id"]) for item in case_payload]
     if fixture_ids:
         fixtures = await session.scalars(
@@ -592,6 +594,35 @@ async def download_generation(
     )
 
 
+def _block_code(reason: str) -> str:
+    text = reason.lower()
+    if "credential" in text and ("missing" in text or "configured" in text):
+        return "MISSING_CREDENTIAL"
+    if "expired" in text:
+        return "EXPIRED_CREDENTIAL"
+    if "captcha" in text:
+        return "UNRESOLVED_CAPTCHA_PREREQUISITE"
+    if "assertion" in text or "expected result" in text or "manual verification" in text:
+        return "MISSING_VALIDATION_EVIDENCE"
+    if "error" in text or "rejection" in text:
+        return "AMBIGUOUS_REJECTION_OUTCOME"
+    if "test value" in text or "configured value" in text:
+        return "MISSING_NEGATIVE_FIXTURE"
+    return "BLOCKED"
+
+
+def _block_recommendation(reason: str) -> str:
+    code = _block_code(reason)
+    return {
+        "MISSING_CREDENTIAL": "Select an active discovery account and regenerate the test case.",
+        "EXPIRED_CREDENTIAL": "Replace the expired discovery account and regenerate the test case.",
+        "MISSING_NEGATIVE_FIXTURE": "Configure the non-secret scenario fixture and regenerate.",
+        "MISSING_VALIDATION_EVIDENCE": "Rediscover the validation outcome and map its assertion target.",
+        "AMBIGUOUS_REJECTION_OUTCOME": "Rediscover the rejection state and select a unique error element.",
+        "UNRESOLVED_CAPTCHA_PREREQUISITE": "Configure the approved test-environment CAPTCHA mechanism.",
+    }.get(code, "Inspect the named step and rediscover or configure the required input.")
+
+
 def _detail(
     rows: list[AutomationScript],
     summary: dict,
@@ -612,6 +643,8 @@ def _detail(
             test_case_code=row.test_case_code,
             test_case_version=row.test_case_version,
             reason=str((row.review_findings or {}).get("blocked_reason") or "Blocked."),
+            code=_block_code(str((row.review_findings or {}).get("blocked_reason") or "")),
+            recommendation=_block_recommendation(str((row.review_findings or {}).get("blocked_reason") or "")),
         )
         for row in rows
         if (row.review_findings or {}).get("blocked_reason")
@@ -757,6 +790,26 @@ def _case_payload(case: TestCase, version: TestCaseVersion, map_version: int) ->
         "category": version.category,
         "objective": version.objective,
     }
+
+
+async def _validate_case_credentials(session: AsyncSession, project: Project, cases: list[dict]) -> None:
+    """Validate account ownership/lifecycle before generation touches a suite."""
+    refs = {str(case.get("credential_ref")) for case in cases if case.get("credential_ref")}
+    if not refs:
+        return
+    rows = list(await session.scalars(select(DiscoveryCredential).where(
+        DiscoveryCredential.project_id == project.id,
+        DiscoveryCredential.credential_ref.in_(refs),
+    )))
+    by_ref = {row.credential_ref: row for row in rows}
+    for ref in refs:
+        credential = by_ref.get(ref)
+        if credential is None or not credential.active:
+            raise HTTPException(409, detail=f"MISSING_CREDENTIAL: {ref} is missing or inactive")
+        if credential.expires_at and credential.expires_at <= datetime.now(UTC):
+            raise HTTPException(409, detail=f"EXPIRED_CREDENTIAL: {ref} has expired")
+        if credential.credential_type != "login":
+            raise HTTPException(409, detail=f"CREDENTIAL_ACCOUNT_MISMATCH: {ref} is not a login credential")
 
 
 def _forbidden(cases: list[dict]) -> set[str]:

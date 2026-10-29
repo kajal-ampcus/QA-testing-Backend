@@ -69,3 +69,6 @@ class DiscoveryCredential(Base):
         DateTime(timezone=True),
         server_default=func.now(),
     )
+
+    # A null value means the test account has no scheduled expiry.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

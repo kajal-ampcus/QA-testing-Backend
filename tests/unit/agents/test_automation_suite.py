@@ -171,10 +171,12 @@ def test_select_step_uses_discovered_label_for_native_and_custom_controls(tmp_pa
     )
     page = (plan.suite_dir / "pages" / "state-001.page.ts").read_text(encoding="utf-8")
     data = (plan.suite_dir / "data" / "testdata.ts").read_text(encoding="utf-8")
+    spec = next(plan.suite_dir.rglob("*.spec.ts")).read_text(encoding="utf-8")
     assert "selectOption({ label: value })" in page
     assert 'getByRole("option", { name: value, exact: true })' in page
     assert "optionEl0100" in data
     assert "Retail" not in data
+    assert 'import { testData } from "../../data/testdata";' in spec
 
 
 def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:

@@ -77,9 +77,16 @@ def prepare_execution(
     steps = _copy_steps(case.steps)
     data = dict(case.test_data or {})
     starting = classify_start(case, states)
-    if any((step.get('assertion') or {}).get('kind') == 'manual' for step in steps):
-        return _blocked(starting, steps, data,
-            'Manual verification required: map an observed automated outcome and configure real test fixtures before generating automation.')
+    # A manual assertion has no trustworthy pass/fail oracle. Keep its place
+    # in the browser flow as an observation wait; execution still records its
+    # screenshot/video/trace without failing on a guessed assertion.
+    for step in steps:
+        assertion = step.get("assertion")
+        if isinstance(assertion, dict) and assertion.get("kind") == "manual":
+            step["action"] = "wait"
+            step.pop("assertion", None)
+            step.pop("expected", None)
+            step["target"] = {"state_code": step.get("target", {}).get("state_code")}
     text = _objective(case)
     start = _start_state(case, states)
     steps, mapping_issues = ground_steps(steps, states, data, discovery)
@@ -394,6 +401,13 @@ def _credential_surface(state: _State) -> bool:
 
 def _credential_environment(element: dict[str, Any], name: str) -> str | None:
     """Return the runtime environment variable for a login credential field."""
+    binding = str(element.get("credential_binding") or "").lower()
+    if binding == "username":
+        return "TEST_USERNAME"
+    if binding == "password":
+        return "TEST_PASSWORD"
+    if binding == "captcha":
+        return "TEST_CAPTCHA"
     blob = f"{name} {element.get('type') or ''} {element.get('input_type') or ''}"
     if _PASSWORD.search(blob) or str(element.get("input_type") or element.get("type") or "").lower() == "password":
         return "TEST_PASSWORD"

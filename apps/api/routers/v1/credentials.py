@@ -35,6 +35,7 @@ class CredentialCreateRequest(BaseModel):
     credential_type: Literal["login"] = "login"
     tags: list[str] = Field(default_factory=list)
     set_as_project_default: bool = True
+    expires_at: datetime | None = None
 
     @field_validator('label','role','username')
     @classmethod
@@ -73,10 +74,11 @@ class CredentialCreateResponse(BaseModel):
     test_type: str
     credential_type: str
     tags: list[str]
+    expires_at: datetime | None = None
 
 
 def response(row,project):
-    return CredentialCreateResponse(credential_ref=row.credential_ref,label=row.label,role=row.role,is_default=project.credential_ref==row.credential_ref,created_at=row.created_at,login_group=row.login_group,login_route=row.login_route, test_type=row.test_type, credential_type=row.credential_type, tags=row.tags or [],)
+    return CredentialCreateResponse(credential_ref=row.credential_ref,label=row.label,role=row.role,is_default=project.credential_ref==row.credential_ref,created_at=row.created_at,login_group=row.login_group,login_route=row.login_route, test_type=row.test_type, credential_type=row.credential_type, tags=row.tags or [], expires_at=row.expires_at)
 
 async def project_for(session,project_id):
     project=await session.get(Project,project_id)
@@ -139,6 +141,7 @@ async def upsert_credential(session: AsyncSession, project: Project, body: Crede
         )
         row.login_route = route
         row.login_group = group
+        row.expires_at = body.expires_at
         session.add(row)
     else:
         row.label = body.label
@@ -149,6 +152,7 @@ async def upsert_credential(session: AsyncSession, project: Project, body: Crede
         row.tags = body.tags
         row.login_route = route
         row.login_group = group
+        row.expires_at = body.expires_at
 
     # Repair legacy duplicate active rows for this exact login identity while
     # preserving all references and keeping the saved secret in encrypted form.
@@ -229,6 +233,7 @@ async def revise_credential(project_id:uuid.UUID,credential_ref:str,body:Credent
     )
     row.login_route = str(body.login_url or old.login_route or project.application_url or "")
     row.login_group = login_group_key(row.login_route, body.role)
+    row.expires_at = body.expires_at if body.expires_at is not None else old.expires_at
     old.active=False
     session.add(row)
     await session.execute(

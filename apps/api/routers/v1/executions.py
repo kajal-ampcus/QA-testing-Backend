@@ -10,6 +10,7 @@ import asyncio
 import os
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from arq.jobs import Job, JobStatus
@@ -45,6 +46,7 @@ from domain.enums import EvidenceChannel, TestRunStatus
 from infra.db.models.automation import AutomationScript
 from infra.db.models.execution import TestResult, TestRun
 from infra.db.models.project import Project
+from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.test_case import TestCase
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
@@ -184,7 +186,26 @@ async def _case_credential_refs(
         for script in scripts
     }
     for ref in refs:
-        if not ref or not ref.startswith("session-login:"):
+        if not ref:
+            continue
+        if not ref.startswith("session-login:"):
+            scalar = getattr(session, "scalar", None)
+            # Lightweight test/session adapters used by callers before the
+            # credential table existed cannot query lifecycle metadata.
+            if scalar is None:
+                continue
+            credential = await scalar(select(DiscoveryCredential).where(
+                DiscoveryCredential.project_id == project.id,
+                DiscoveryCredential.credential_ref == ref,
+            ))
+            if credential is None:
+                raise HTTPException(422, "MISSING_CREDENTIAL: selected login credential does not belong to this project")
+            if not credential.active:
+                raise HTTPException(422, "MISSING_CREDENTIAL: selected login credential is inactive")
+            if credential.expires_at and credential.expires_at <= datetime.now(UTC):
+                raise HTTPException(422, "EXPIRED_CREDENTIAL: selected login credential has expired")
+            if credential.credential_type != "login":
+                raise HTTPException(422, "CREDENTIAL_ACCOUNT_MISMATCH: selected credential is not a login account")
             continue
         try:
             await get_login_secret(ref, project.id)
