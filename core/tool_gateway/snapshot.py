@@ -44,6 +44,8 @@ def parse_elements(snapshot: object) -> list[dict[str, Any]]:
         node: dict[str, Any] = {"uid": uid, "role": role, "name": name}
         tail = line[match.end() :]
         for key, value in _ATTRIBUTE.findall(tail):
+            if key == "value":
+                node["has_value"] = value != ""
             if key != "value" or role not in {"textbox", "searchbox"}:
                 node[key] = value
         for flag in ("disabled", "checked", "selected", "expanded", "required", "readonly"):

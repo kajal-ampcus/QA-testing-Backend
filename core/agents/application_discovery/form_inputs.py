@@ -127,7 +127,25 @@ def describe_field(element: dict[str, Any]) -> dict[str, Any]:
         "input_type": input_type or "text",
         "required": bool(element.get("required")) or is_otp_field(name),
         "options": list(options) if isinstance(options, list) and options else None,
+        **({"option_items": element["option_items"]} if element.get("option_items") else {}),
     }
+
+
+def discovery_form(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Include optional controls for reuse without changing legacy form keys."""
+    legacy = blocking_form(elements)
+    nodes = [dict(node) for node in elements if _fillable(node)]
+    submit = legacy["submit"] if legacy else _safe_submit(elements)
+    if not nodes or not submit:
+        return None
+    kind = legacy["kind"] if legacy else "form"
+    if kind == "login":
+        for node in nodes:
+            if is_username_field(node) or is_password_field(node):
+                node["required"] = True
+    return {"kind": kind, "fields": [describe_field(node) for node in nodes],
+            "nodes": nodes, "submit": submit,
+            "form_key": form_key_for(legacy["fields"] if legacy else [describe_field(node) for node in nodes])}
 
 
 def _fillable(element: dict[str, Any]) -> bool:

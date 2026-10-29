@@ -8,6 +8,7 @@ _FRONTIER = (
     "reveal_probed", "collection_follow_queued",
     "progress", "pending_nodes", "failed_nodes", "in_progress_nodes",
     "live_view", "action_log", "credential_update_required",
+    "route_state",
 )
 
 

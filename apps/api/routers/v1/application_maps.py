@@ -798,15 +798,10 @@ async def submit_input_request(
         await session.commit()
         return SubmitInputRequestResponse(id=request_id, status="approved", selected_branches=[raw["key"]], credential_ref=credential_ref)
 
-    await save_form_answers(
-        app_map.project_id,
-        page_key,
-        form_key,
-        durable,
-        credential_ref=credential_ref,
-        labels=labels,
-        session_values=session_values,
-    )
+    # New resolver-backed authentication prompts use the account vault as the
+    # durable source. Keep legacy checkpoint replay compatible; challenges still
+    # travel through the existing temporary/session input mechanism.
+    vault_owned = target.get("kind") == "login" and credential_ref and "resolution_fields" in target
     if target.get("kind") == "login" and credential_ref and not created_credential:
         updates = [
             {"name": str(expected[key].get("name") or key), "value": value}
@@ -816,6 +811,16 @@ async def submit_input_request(
             await merge_login_fields(credential_ref, app_map.project_id, updates)
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await save_form_answers(
+        app_map.project_id,
+        page_key,
+        form_key,
+        {} if vault_owned else durable,
+        credential_ref=credential_ref,
+        labels=labels,
+        session_values=session_values,
+        **({"remove_values": set(durable)} if vault_owned else {}),
+    )
     target["submission_approved"] = body.approve_submission
     target["status"] = "approved"
     checkpoint["input_requests"] = requests

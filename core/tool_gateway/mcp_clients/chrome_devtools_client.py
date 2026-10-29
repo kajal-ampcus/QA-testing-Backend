@@ -1363,6 +1363,12 @@ class ChromeDevToolsClient:
                 input_type: el.getAttribute('type'),
                 control_group: el.parentElement ? xpathOf(el.parentElement) : null,
                 required: !!el.required,
+                readonly: !!el.readOnly,
+                has_value: el.type === 'checkbox' || el.type === 'radio' ? !!el.checked : !!el.value,
+                checked: el.type === 'checkbox' || el.type === 'radio' ? !!el.checked : null,
+                radio_group: el.type === 'radio' ? (el.name || null) : null,
+                min: el.min || null,
+                max: el.max || null,
                 disabled: !!el.disabled,
                 visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
                 url: el.href || null,
@@ -2073,34 +2079,29 @@ class ChromeDevToolsClient:
         filled_uids: set[str],
     ) -> list[dict[str, Any]]:
         """Fill saved extra fields. Return required fields that still have no value."""
-        saved = saved_field_values(secret)
-        unanswered: list[dict[str, Any]] = []
-        for element in parse_elements(text):
-            role = str(element.get("role") or "")
-            if role not in {"textbox", "searchbox", "spinbutton", "combobox", "input"}:
-                continue
-            name = str(element.get("name") or "")
-            uid = str(element.get("uid") or "")
-            if not name.strip() or not uid or uid in filled_uids or is_captcha_field(name):
-                continue
-            described = describe_field(element)
-            if described["role"] == "input":
-                described["role"] = "textbox"
-                described["key"] = f"textbox:{described['key'].split(':', 1)[-1]}"
-            if not described["required"]:
-                continue
-            value = value_for_field(described, saved, secret)
-            if value:
-                await self._fill_authentication_field(
-                    uid,
-                    value,
-                    [name],
-                    {role, "textbox", "input", "combobox", "searchbox"},
-                    name,
-                )
-                continue
-            unanswered.append(described)
-        return unanswered
+        from core.agents.application_discovery.form_inputs import discovery_form
+        from core.agents.application_discovery.fingerprint import canonical_route
+        from core.tool_gateway.form_resolution import (
+            FormContext, account_candidates, apply_values, resolve_candidates, resolve_form,
+        )
+
+        nodes = await self.inspect_elements(await self.take_snapshot())
+        form = discovery_form(nodes)
+        if form is None:
+            return []
+        fields = [node for node in form["nodes"] if str(node.get("uid") or "") not in filled_uids]
+        page_url = next((node.get("url") for node in nodes if node.get("role") == "RootWebArea"), None)
+        page_key = canonical_route(str(page_url or secret.get("login_url") or ""))
+        if self._project_id is None:
+            # Legacy gateway callers already resolved this secret above. They
+            # cannot access project answers or fixtures without a project scope.
+            resolved = resolve_candidates(fields, account_candidates(secret, fields))
+        else:
+            resolved = await resolve_form(FormContext(self._project_id, page_key, form["form_key"],
+                self._credential_ref, login=True, page_url=str(page_url or secret.get("login_url") or "")), fields)
+        applied = await apply_values(self, fields, resolved.values, authentication=True)
+        return resolved.missing + [describe_field(node) for node in fields if node.get("required")
+            and describe_field(node)["key"] in resolved.values and describe_field(node)["key"] not in applied]
 
     async def authenticate(self) -> None:
         """
@@ -2337,28 +2338,8 @@ class ChromeDevToolsClient:
                 )
 
             # ── Fill credentials ────────────────────────────────────────────
-            username_value = _saved_control_value(
-                controls, username_uid, secret, fallback=secret["username"]
-            )
-            password_value = _saved_control_value(
-                controls, password_uid, secret, fallback=secret["password"]
-            )
-            await self._fill_authentication_field(
-                username_uid,
-                username_value,
-                username_names,
-                {"textbox", "input", "combobox", "searchbox"},
-                "username field",
-            )
-            await self._fill_authentication_field(
-                password_uid,
-                password_value,
-                password_names,
-                {"textbox", "input"},
-                "password field",
-            )
             unanswered = await self._fill_additional_login_fields(
-                text, secret, {username_uid, password_uid}
+                text, secret, set()
             )
             if unanswered:
                 raise LoginInputRequired(

@@ -61,9 +61,23 @@ def clean_document_title(title: str) -> str:
 
 
 def canonical_route(url: str) -> str:
-    """Path plus SPA hash route, with record ids stripped."""
+    """Stable route identity that retains meaningful screen state.
+
+    Transport/security parameters are intentionally omitted.  All other query
+    values remain because applications commonly use them for tabs, filters and
+    workflow state.  Navigation paths are deliberately not part of this key.
+    """
     parsed = urlparse(url)
     path = normalize_url_pattern(url)
+    parameters = [
+        (key, "{id}" if _QUERY_ID_VALUE.fullmatch(value) else value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not re.search(r"token|session|nonce|csrf|password|secret|utm_|timestamp", key, re.I)
+    ]
+    if parameters:
+        # Normalize key order, but retain ordering of repeated keys: repeated
+        # query values are commonly an ordered filter/selection state.
+        path += "?" + urlencode(sorted(parameters, key=lambda item: item[0]))
     fragment = parsed.fragment
     if fragment.startswith(("/", "!/")):
         hashed = _UUID_SEGMENT.sub("/{id}", fragment)
@@ -107,6 +121,8 @@ def observed_page_label(nodes: list[dict], url: str = "", fallback: str = "Page"
 def functional_page_key(url: str, nodes: list[dict]) -> str:
     """Identity of a working screen, not a DOM snapshot or catalog item."""
     section = page_section_route(url)
+    route = canonical_route(url)
+    meaningful_state = route[len(normalize_url_pattern(url)):]
     dialog = next(
         (
             clean_document_title(str(node.get("name", "")))
@@ -118,8 +134,47 @@ def functional_page_key(url: str, nodes: list[dict]) -> str:
         "",
     )
     if section == "/":
-        return f"{section}::{observed_page_label(nodes, url).casefold()}::{dialog.casefold()}"
-    return f"{section}::{dialog.casefold()}"
+        return f"{section}{meaningful_state}::{observed_page_label(nodes, url).casefold()}::{dialog.casefold()}"
+    return f"{section}{meaningful_state}::{dialog.casefold()}"
+
+
+def shared_component_keys(nodes: list[dict]) -> list[str]:
+    """Stable shell controls recorded once as metadata, never as page nodes."""
+    components: set[str] = set()
+    for node in nodes:
+        scope = str(node.get("locator_scope") or node.get("landmark") or "").casefold()
+        if not re.search(r"\b(header|footer|navigation|banner|contentinfo|nav)\b", scope):
+            continue
+        role = str(node.get("role") or "")
+        name = " ".join(str(node.get("name") or "").split()).casefold()
+        destination = canonical_route(str(node["url"])) if node.get("url") else ""
+        if role and (name or destination):
+            components.add(f"{scope}|{role}|{name}|{destination}")
+    return sorted(components)
+
+
+def page_content_signature(nodes: list[dict]) -> str:
+    """Content-only signal for deciding whether a canonical page merits replay."""
+    shared = set(shared_component_keys(nodes))
+    meaningful: list[dict[str, object]] = []
+    for node in nodes:
+        scope = str(node.get("locator_scope") or node.get("landmark") or "").casefold()
+        role = str(node.get("role") or "")
+        name = " ".join(str(node.get("name") or "").split())
+        destination = canonical_route(str(node["url"])) if node.get("url") else ""
+        key = f"{scope}|{role}|{name.casefold()}|{destination}"
+        if key in shared or role in {"RootWebArea", "image", "StaticText", "InlineTextBox"}:
+            continue
+        meaningful.append({
+            "role": role,
+            "name": name,
+            "url": destination,
+            "input_type": str(node.get("input_type") or ""),
+            "required": bool(node.get("required")),
+            "options": node.get("options") or [],
+        })
+    raw = "\n".join(sorted(repr(item) for item in meaningful))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
 def auth_flow_label(kind: str) -> str:
@@ -194,7 +249,8 @@ _GATED_COLLECTION_SECTIONS = {
 def page_section_route(url: str) -> str:
     """Application page identity: /menu/boiled-egg stays Menu, /dashboard/users stays Users."""
     route = canonical_route(url)
-    path, _, hashpart = route.partition("#")
+    path_and_query, _, hashpart = route.partition("#")
+    path, _, _query = path_and_query.partition("?")
     segments = [part for part in path.split("/") if part]
     if not segments and hashpart.startswith(("/", "!/")):
         segments = [part for part in hashpart.lstrip("!").split("/") if part]
@@ -360,7 +416,10 @@ def normalize_url_pattern(url: str) -> str:
     path = urlparse(url).path or "/"
     path = _UUID_SEGMENT.sub("/{id}", path)
     path = _NUMERIC_ID_SEGMENT.sub("/{id}", path)
-    return path
+    # Servers and SPA routers commonly treat /orders and /orders/ as the
+    # same destination. Root remains /, while meaningful query/hash state is
+    # handled by canonical_route.
+    return path.rstrip("/") or "/"
 
 
 def structural_hash(snapshot_text: str) -> str:
@@ -381,20 +440,7 @@ def structural_hash(snapshot_text: str) -> str:
 
 
 def compute_fingerprint(url: str, snapshot_text: str) -> str:
-    url_part = normalize_url_pattern(url)
-    parsed = urlparse(url)
-    # Preserve SPA hash routes and query-driven screens, excluding transport secrets.
-    if parsed.fragment.startswith(("/", "!/")):
-        url_part += "#" + parsed.fragment
-    # Record ids in the query (?id=123, ?user=<uuid>) are dynamic like path ids;
-    # keeping them would give every record its own state.
-    parameters = [
-        (key, "{id}" if _QUERY_ID_VALUE.fullmatch(value) else value)
-        for key, value in parse_qsl(parsed.query)
-        if not re.search(r"token|session|nonce|csrf|password|secret|utm_|timestamp", key, re.I)
-    ]
-    if parameters:
-        url_part += "?" + urlencode(sorted(parameters))
+    url_part = canonical_route(url)
     structure_part = structural_hash(snapshot_text)
     combined = f"{url_part}::{structure_part}"
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()

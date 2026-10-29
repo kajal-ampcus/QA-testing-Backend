@@ -146,6 +146,7 @@ async def save_form_answers(
     credential_ref: str | None = None,
     labels: dict[str, str] | None = None,
     session_values: dict[str, str] | None = None,
+    remove_values: set[str] | None = None,
 ) -> None:
     durable, discovered_session = split_saved_values(values, [
         {"key": key, "name": (labels or {}).get(key, key)} for key in values
@@ -168,7 +169,11 @@ async def save_form_answers(
             )
         ).scalar_one_or_none()
         previous = decrypt_json_secret(row.encrypted_values) if row is not None else {}
+        if row is None and not durable and not (session_values or discovered_session):
+            return
         stored_fields = _durable_fields(previous)
+        for key in remove_values or ():
+            stored_fields.pop(key, None)
         stored_fields.update(durable)
         if session_values is not None:
             stored_session = session_values

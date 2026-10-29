@@ -1,11 +1,14 @@
 """Record ids in URLs must not split one screen into many states."""
 
 from core.agents.application_discovery.fingerprint import (
+    canonical_route,
     compute_fingerprint,
     functional_page_key,
     is_in_page_content_control,
     observed_page_label,
     page_section_route,
+    page_content_signature,
+    shared_component_keys,
 )
 
 SNAPSHOT = 'uid=1_0 RootWebArea "Order" url="x"\nuid=1_1 heading "Order"'
@@ -24,6 +27,43 @@ def test_meaningful_query_values_still_distinguish_states() -> None:
     assert compute_fingerprint("https://a.test/list?tab=open", SNAPSHOT) != compute_fingerprint(
         "https://a.test/list?tab=closed", SNAPSHOT
     )
+
+
+def test_canonical_route_drops_transport_parameters_but_keeps_screen_state() -> None:
+    first = "https://a.test/orders?tab=open&utm_source=email&token=one"
+    second = "https://a.test/orders?token=two&tab=open&utm_source=ad"
+    assert canonical_route(first) == "/orders?tab=open"
+    assert canonical_route(first) == canonical_route(second)
+    assert canonical_route("https://a.test/orders/") == canonical_route("https://a.test/orders")
+    assert canonical_route("https://a.test/orders?tab=closed") == "/orders?tab=closed"
+    assert canonical_route("https://a.test/#/orders/123") == "/#/orders/{id}"
+
+
+def test_functional_key_keeps_meaningful_query_state() -> None:
+    nodes = [
+        {"role": "RootWebArea", "name": "Orders", "url": "https://a.test/orders?tab=open"},
+        {"role": "heading", "name": "Orders"},
+    ]
+    assert functional_page_key("https://a.test/orders?tab=open", nodes) != functional_page_key(
+        "https://a.test/orders?tab=closed", nodes
+    )
+
+
+def test_shared_shell_controls_do_not_change_content_signature() -> None:
+    first = [
+        {"role": "RootWebArea", "name": "Orders", "url": "https://a.test/orders"},
+        {"role": "link", "name": "Home", "url": "/", "locator_scope": "navigation"},
+        {"role": "link", "name": "Help", "url": "/help", "locator_scope": "footer"},
+        {"role": "button", "name": "Create order"},
+    ]
+    second = [
+        *first[:1],
+        {"role": "link", "name": "Home", "url": "/", "locator_scope": "navigation"},
+        {"role": "link", "name": "Privacy", "url": "/privacy", "locator_scope": "footer"},
+        *first[3:],
+    ]
+    assert shared_component_keys(first)
+    assert page_content_signature(first) == page_content_signature(second)
 
 
 def test_sidebar_menu_noise_shares_one_functional_page() -> None:

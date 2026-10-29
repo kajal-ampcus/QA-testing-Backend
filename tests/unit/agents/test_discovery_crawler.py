@@ -86,6 +86,38 @@ class FakeBrowser:
         return ""
 
 
+class EquivalentRouteBrowser(FakeBrowser):
+    """Two header links reach one canonical route; tab state is meaningful."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.url = "https://sample.test/"
+
+    async def navigate_page(self, url: str) -> None:
+        # The legacy endpoint redirects to the same query-driven Orders view.
+        self.url = (
+            "https://sample.test/orders?tab=open"
+            if url.endswith("/legacy-orders")
+            else url
+        )
+        self.page = "orders" if "/orders" in self.url else "root"
+
+    async def take_snapshot(self) -> list[TextBlock]:
+        if self.page == "root":
+            return [TextBlock(
+                'uid=1_0 RootWebArea "Sample" url="https://sample.test/"\n'
+                'uid=1_1 link "Open orders" url="/orders?tab=open&utm_source=header"\n'
+                'uid=1_2 link "Orders menu" url="/orders?utm_source=nav&tab=open"\n'
+                'uid=1_3 link "Closed orders" url="/orders?tab=closed"\n'
+                'uid=1_4 link "Legacy orders" url="/legacy-orders"'
+            )]
+        return [TextBlock(
+            f'uid=2_0 RootWebArea "Orders" url="{self.url}"\n'
+            'uid=2_1 heading "Orders"\n'
+            'uid=2_2 button "Create order"'
+        )]
+
+
 class SecurityVerificationBrowser(FakeBrowser):
     async def wait_until_ready(self) -> None:
         raise SecurityVerificationRequiredError("Cloudflare verification is still active")
@@ -284,6 +316,44 @@ async def test_parallel_crawler_uses_isolated_pool_and_preserves_flow_edges() ->
     assert len(graph["nodes"]) == 2
     assert len(graph["edges"]) == 1
     assert graph["edges"][0]["action"] == "click(role=button,name='Details')"
+
+
+@pytest.mark.asyncio
+async def test_parallel_crawler_reuses_canonical_node_and_preserves_link_edges() -> None:
+    @asynccontextmanager
+    async def browser_context():
+        yield EquivalentRouteBrowser()
+
+    states: list[dict[str, Any]] = []
+
+    async def record(state: dict[str, Any]) -> None:
+        states.append(state)
+
+    crawler = ParallelCrawler(
+        browser_context,
+        CrawlBudget(max_pages=10, max_depth=2),
+        [],
+        login_url=None,
+        authenticate=False,
+        worker_limit=1,
+    )
+    status = await crawler.crawl("https://sample.test/", record)
+
+    assert status == "COMPLETE"
+    graph = crawler.coverage["app_flow_graph"]
+    open_orders = [node for node in graph["nodes"] if node["canonical_route"] == "/orders?tab=open"]
+    assert len(open_orders) == 1
+    assert {node["canonical_route"] for node in graph["nodes"]} == {
+        "/", "/orders?tab=open", "/orders?tab=closed"
+    }
+    incoming = [edge for edge in graph["edges"] if edge["child_fingerprint"] == open_orders[0]["fingerprint"]]
+    assert {
+        "navigate(url='https://sample.test/orders?tab=open&utm_source=header',observed_link='Open orders')",
+        "navigate(url='https://sample.test/orders?utm_source=nav&tab=open',observed_link='Orders menu')",
+        "navigate(url='https://sample.test/legacy-orders',observed_link='Legacy orders')",
+    } <= {edge["action"] for edge in incoming}
+    assert crawler.coverage["progress"]["visited_routes"] == 3
+    assert {state["url_pattern"] for state in states} == {"/", "/orders?tab=open", "/orders?tab=closed"}
 
 
 @pytest.mark.asyncio

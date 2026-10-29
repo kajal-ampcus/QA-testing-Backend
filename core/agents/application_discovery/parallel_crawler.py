@@ -39,7 +39,9 @@ from core.agents.application_discovery.fingerprint import (
     is_gated_reveal_action,
     is_in_page_content_control,
     observed_page_label,
+    page_content_signature,
     repeated_in_page_control,
+    shared_component_keys,
     unlabeled_collection_icons,
 )
 from core.agents.application_discovery.dropdowns import explore_dropdowns
@@ -50,6 +52,8 @@ from core.agents.application_discovery.form_inputs import (
     answers_cover,
     blocking_form,
     challenges_ready,
+    describe_field,
+    discovery_form,
     form_key_for,
     is_credential_rejection,
     normalize_name,
@@ -57,6 +61,7 @@ from core.agents.application_discovery.form_inputs import (
 )
 from core.agents.application_discovery.screen_delta import classify_screen
 from core.policy_safety.destructive_action_lexicon import classify_risk
+from core.tool_gateway.form_resolution import FormContext, apply_values, populated, resolve_form
 from core.tool_gateway.gateway import BrowserInspection, SecurityVerificationRequiredError
 from core.tool_gateway.snapshot import parse_elements, snapshot_text
 from domain.enums import RiskLevel
@@ -200,6 +205,7 @@ class ParallelCrawler:
         self._job_states: dict[str, dict[str, Any]] = {}
         self._seen: set[str] = set()
         self._page_keys: dict[str, str] = {}
+        self._route_state: dict[str, dict[str, Any]] = {}
         self._live_view: dict[str, Any] | None = None
         self._action_log: list[dict[str, Any]] = []
         self._expanded: set[str] = set()
@@ -252,7 +258,7 @@ class ParallelCrawler:
     def _job_key(cls, job: DiscoveryJob) -> str:
         phase = "public" if job.skip_auth else "authenticated"
         path = "/".join(
-            f"{step.role}:{step.name}:{step.url or ''}:{step.field_key if step.sensitive else (step.value or '')}:{step.occurrence}"
+            f"{step.role}:{step.name}:{canonical_route(step.url) if step.url else ''}:{step.field_key if step.sensitive else (step.value or '')}:{step.occurrence}"
             for step in job.path
         )
         return f"{phase}|{path}|expand={job.force_expand}|input={job.input_request_id or ''}"
@@ -296,6 +302,22 @@ class ParallelCrawler:
             for node in self._nodes.values()
             if node.get("functional_key")
         }
+        self._route_state = {
+            str(key): dict(value)
+            for key, value in self._checkpoint.get("route_state", {}).items()
+            if isinstance(value, dict)
+        }
+        for node in self._nodes.values():
+            route = str(node.get("canonical_route") or node.get("url_pattern") or "")
+            if route:
+                # Older checkpoints have no authentication/context key. Keep
+                # that legacy observation isolated so it cannot make a later
+                # public or account-specific route look already visited.
+                self._route_state.setdefault(f"legacy:{route}", {
+                    "status": "visited",
+                    "canonical_page_id": node.get("canonical_page_id") or node.get("functional_key"),
+                    "fingerprint": node["fingerprint"],
+                })
         self._live_view = self._checkpoint.get("live_view")
         self._action_log = [
             item for item in self._checkpoint.get("action_log", [])
@@ -377,6 +399,7 @@ class ParallelCrawler:
             },
             "jobs": jobs,
             "completed_nodes": sorted(self._expanded),
+            "route_state": self._route_state,
             "pending_nodes": [job for job in jobs if job["status"] == "pending"],
             "failed_nodes": [job for job in jobs if job["status"] == "failed"],
             "in_progress_nodes": [job for job in jobs if job["status"] == "in_progress"],
@@ -465,7 +488,64 @@ class ParallelCrawler:
             "pending_input_requests": sum(
                 1 for item in self._input_requests.values() if item.get("status") == "pending"
             ),
+            "visited_routes": sum(
+                1 for route in self._route_state.values() if route.get("status") == "visited"
+            ),
+            "pending_routes": sum(
+                1 for route in self._route_state.values() if route.get("status") == "pending"
+            ),
         }
+
+    def _route_key(self, url: str, authenticated: bool) -> str:
+        context = f"authenticated:{self._credential_ref or 'public'}" if authenticated else "public"
+        return f"{context}:{canonical_route(url)}"
+
+    def _observe_canonical_page(
+        self,
+        fingerprint: str,
+        page_key: str,
+        live_url: str,
+        nodes: list[dict[str, Any]],
+        authenticated: bool,
+        observed_fingerprint: str | None = None,
+    ) -> bool:
+        """Record route/context metadata and return whether content changed.
+
+        A route can have several navigation paths and still refer to one page.
+        Page content signatures allow a real in-page state change to be expanded
+        without allocating a second graph node for shell-only variation.
+        """
+        route_key = self._route_key(live_url, authenticated)
+        route = canonical_route(live_url)
+        signature = page_content_signature(nodes)
+        shared = shared_component_keys(nodes)
+        state = self._route_state.setdefault(route_key, {})
+        previous = set(state.get("content_signatures") or [])
+        changed = bool(previous and signature not in previous)
+        state.update(
+            status="visited",
+            canonical_route=route,
+            canonical_page_id=page_key,
+            fingerprint=fingerprint,
+            authentication_context=(self._credential_ref if authenticated else None),
+            content_signatures=sorted(previous | {signature}),
+        )
+        node = self._nodes.get(fingerprint)
+        if node is not None:
+            variants = set(node.get("route_variants") or [])
+            signatures = set(node.get("content_signatures") or [])
+            components = set(node.get("shared_components") or [])
+            node.update(
+                canonical_page_id=page_key,
+                canonical_route=route,
+                route_variants=sorted(variants | {route}),
+                observed_fingerprints=sorted(
+                    set(node.get("observed_fingerprints") or []) | {observed_fingerprint or fingerprint}
+                ),
+                content_signatures=sorted(signatures | {signature}),
+                shared_components=sorted(components | set(shared)),
+            )
+        return changed
 
     async def _sync_input_requests(self) -> None:
         if self._project_id is None:
@@ -504,8 +584,13 @@ class ParallelCrawler:
 
     def _fill_job(self, request: dict[str, Any], answers: dict[str, str]) -> DiscoveryJob:
         path = [ClickStep(**step) for step in request.get("navigation_path") or []]
-        for field_info in request.get("fields") or []:
+        for field_info in request.get("resolution_fields", request.get("fields")) or []:
             key = str(field_info.get("key") or "")
+            if field_info.get("preserve_existing"):
+                if field_info.get("required"):
+                    path.append(ClickStep("preserve_input", str(field_info.get("name") or ""),
+                                          field_key=key, sensitive=True))
+                continue
             value = answers.get(key)
             if value:
                 input_type = str(field_info.get("input_type") or "").lower()
@@ -536,14 +621,16 @@ class ParallelCrawler:
             return
         request = self._input_requests.get(job.input_request_id or "")
         for step in job.path:
+            if step.role == "preserve_input":
+                continue
             if not step.sensitive or not step.field_key:
                 continue
             source = next((item for item in reversed(list(self._input_requests.values()))
-                if any(field.get("key") == step.field_key for field in item.get("fields", []))
+                if any(field.get("key") == step.field_key for field in item.get("resolution_fields", item.get("fields", [])))
                 and [self._serialize_step(part) for part in job.path[:len(item.get("navigation_path") or [])]] == (item.get("navigation_path") or [])
                 and item.get("status") in {"applied", "approved", "submitted"}), None)
             if source:
-                answers = await get_form_answers(self._project_id, source["page_key"], source["form_key"], source.get("credential_ref"), login=source.get("kind") == "login")
+                answers = await self._request_answers(source)
                 challenges = await get_session_answers(self._project_id, source["page_key"], source["form_key"], source.get("credential_ref"))
                 step.value = {**(answers or {}), **(challenges or {})}.get(step.field_key)
                 if step.value is None:
@@ -571,11 +658,29 @@ class ParallelCrawler:
             if step.sensitive and step.field_key:
                 step.value = merged.get(step.field_key)
 
+    async def _request_answers(self, request: dict[str, Any]) -> dict[str, str]:
+        fields = request.get("resolution_fields")
+        if fields is None:
+            return await get_form_answers(self._project_id, request["page_key"], request["form_key"],
+                request.get("credential_ref"), login=request.get("kind") == "login") or {}
+        resolved = await resolve_form(FormContext(self._project_id, request["page_key"], request["form_key"],
+            request.get("credential_ref"), login=request.get("kind") == "login",
+            page_url=request.get("page_url")), fields)
+        # An explicit answer to this approved prompt resolves its conflict.
+        # It does not make unrelated optional/source conflicts eligible.
+        explicit = await get_form_answers(self._project_id, request["page_key"], request["form_key"],
+            request.get("credential_ref"), login=request.get("kind") == "login") or {}
+        if request.get("status") in {"approved", "submitted", "applied"}:
+            for field in request.get("fields", []):
+                if field["key"] in explicit:
+                    resolved.values[field["key"]] = explicit[field["key"]]
+        return resolved.values
+
     async def _enqueue_answered_forms(self, queue: asyncio.PriorityQueue[DiscoveryJob], skip_auth: bool) -> None:
         if self._project_id is None:
             return
         for request in list(self._input_requests.values()):
-            if request.get("kind") == "login" or request.get("status") != "approved":
+            if request.get("status") not in {"approved", "submitted"}:
                 continue
             if bool(request.get("skip_auth")) != skip_auth:
                 continue
@@ -623,16 +728,14 @@ class ParallelCrawler:
                 await queue.put(job)
                 await self._set_job_status(job, "pending")
                 continue
+            if request.get("kind") == "login":
+                continue  # Login submission jobs are scheduled by the input API.
             if not request_id or self._fill_already_queued(request_id):
                 continue
-            answers = await get_form_answers(
-                self._project_id,
-                str(request.get("page_key") or ""),
-                str(request.get("form_key") or ""),
-                self._credential_ref,
-                login=request.get("kind") == "login",
-            )
-            if not answers or not answers_cover(list(request.get("fields") or []), answers):
+            answers = await self._request_answers(request)
+            required = [field for field in request.get("resolution_fields", request.get("fields", []))
+                        if field.get("required") and not field.get("preserve_existing")]
+            if required and not answers_cover(required, answers):
                 continue
             session_values = await get_session_answers(
                 self._project_id,
@@ -640,9 +743,7 @@ class ParallelCrawler:
                 str(request.get("form_key") or ""),
                 self._credential_ref,
             )
-            if not challenges_ready(
-                list(request.get("fields") or []), answers, session_values or {}
-            ):
+            if required and not challenges_ready(required, answers, session_values or {}):
                 continue
             job = self._fill_job(request, answers)
             await queue.put(job)
@@ -682,7 +783,7 @@ class ParallelCrawler:
             "fields": [public_field(field_info) for field_info in fields],
             "submit": submit,
             "skip_auth": skip_auth,
-            "credential_ref": self._credential_ref if kind == "login" else None,
+            "credential_ref": self._credential_ref,
         }
         self._input_requests[request_id] = request
         return request
@@ -697,6 +798,7 @@ class ParallelCrawler:
         page_key: str,
         page_title: str,
         screenshot_ref: str | None,
+        client: BrowserInspection | None = None,
     ) -> None:
         previous = self._input_requests.get(job.input_request_id or "")
         if previous and previous.get("status") != "applied":
@@ -720,44 +822,29 @@ class ParallelCrawler:
             request["choices"] = choices
             await self._save_checkpoint(force=True)
             return
-        form = blocking_form(nodes)
+        form = discovery_form(nodes)
         if form is None:
             return
         if form["kind"] == "login" and self._authenticate:
             return
         stable_page = page_key or canonical_route(live_url)
-        form_key = form_key_for(form["fields"])
+        form_key = form["form_key"]
         if form["kind"] == "login":
             form_key = "session:" + form_key
         if selected:
             form_key += ":" + selected["selected_choice"]["id"]
-        answers = None
-        if self._project_id is not None and (form["kind"] != "login" or self._credential_ref):
-            answers = await get_form_answers(
-                self._project_id,
-                stable_page,
-                form_key,
-                self._credential_ref,
-                login=form["kind"] == "login",
-            )
-        if form["kind"] == "login" and answers and answers_cover(form["fields"], answers):
-            request = self._store_input_request(
-                kind=form["kind"],
-                page_url=live_url,
-                page_title=page_title,
-                page_key=stable_page,
-                form_key=form_key,
-                fields=form["fields"],
-                submit=form["submit"],
-                path=job.path,
-                skip_auth=skip_auth,
-                screenshot_ref=screenshot_ref,
-                status="submitted",
-            )
-            if not self._fill_already_queued(str(request["id"])):
-                fill_job = self._fill_job(request, answers)
-                await queue.put(fill_job)
-                await self._set_job_status(fill_job, "pending")
+        missing = [field for field in form["fields"] if field["required"]]
+        for field_info, node in zip(form["fields"], form["nodes"], strict=True):
+            if populated(node):
+                field_info["preserve_existing"] = True
+        if self._project_id is not None and client is not None:
+            resolved = await resolve_form(FormContext(self._project_id, stable_page, form_key,
+                self._credential_ref, login=form["kind"] == "login", page_url=live_url), form["nodes"])
+            applied = await apply_values(client, form["nodes"], resolved.values)
+            missing = resolved.missing + [field for field in form["fields"]
+                if field["required"] and field["key"] in resolved.values and field["key"] not in applied]
+        # Optional-only forms can be populated without introducing a new prompt.
+        if not any(field["required"] for field in form["fields"]):
             return
         if self._request_for(stable_page, form_key) is not None:
             return
@@ -767,13 +854,15 @@ class ParallelCrawler:
             page_title=page_title,
             page_key=stable_page,
             form_key=form_key,
-            fields=form["fields"],
+            fields=missing,
             submit=form["submit"],
             path=job.path,
             skip_auth=skip_auth,
             screenshot_ref=screenshot_ref,
             status="pending",
         )
+        # Descriptors only. Re-resolve on replay; never duplicate values in jobs.
+        request["resolution_fields"] = form["fields"]
         if form["kind"] == "login":
             choice = selected.get("selected_choice") if selected else None
             request["login_group"] = choice["id"] if choice else login_group_key(live_url, "Sign in")
@@ -788,29 +877,9 @@ class ParallelCrawler:
         answers: dict[str, str],
         submit: dict[str, str] | None,
     ) -> object | None:
-        snapshot = await client.take_snapshot()
-        elements = parse_elements(snapshot)
-        for field_info in fields:
-            value = answers.get(str(field_info.get("key") or ""))
-            if not value:
-                continue
-            match = next(
-                (
-                    element
-                    for element in elements
-                    if element.get("role") == field_info.get("role")
-                    and normalize_name(str(element.get("name") or ""))
-                    == normalize_name(str(field_info.get("name") or ""))
-                ),
-                None,
-            )
-            if match is None or not match.get("uid"):
-                return None
-            if hasattr(client, "set_next_action_context"):
-                client.set_next_action_context(
-                    f"Enter text in {field_info.get('name') or 'form field'}", sensitive=True
-                )
-            await client.fill(str(match["uid"]), value)
+        applied = await apply_values(client, fields, answers, authentication=True)
+        if any(field["key"] in answers and field["key"] not in applied for field in fields):
+            return None
         snapshot = await client.take_snapshot()
         elements = parse_elements(snapshot)
         submit_match = None
@@ -859,6 +928,26 @@ class ParallelCrawler:
         page_url = self._login_url or base_url
         page_key = canonical_route(page_url)
         form_key = form_key_for(exc.fields)
+        resolution_fields = [dict(field) for field in exc.fields]
+        if self._project_id is not None:
+            snapshot = await client.take_snapshot()
+            live = await client.inspect_elements(snapshot) if hasattr(client, "inspect_elements") else parse_elements(snapshot)
+            page_url = str(next((node.get("url") for node in live if node.get("role") == "RootWebArea"), None) or page_url)
+            page_key = canonical_route(page_url)
+            keys = {field["key"] for field in exc.fields}
+            fields = [dict(node, required=True) for node in live if describe_field(node)["key"] in keys]
+            resolved = await resolve_form(FormContext(self._project_id, page_key, form_key,
+                self._credential_ref, login=True, page_url=page_url), fields)
+            applied = await apply_values(client, fields, resolved.values)
+            present = {describe_field(node)["key"] for node in fields if populated(node)}
+            unresolved = [field for field in exc.fields if field["key"] not in applied | present]
+            if not unresolved and not exc.otp and exc.submit:
+                result = await self._fill_current_form(client, [], {}, exc.submit)
+                if result is not None:
+                    self._login_input_blocked = False
+                return result
+            # Keep the original key so previously saved responses remain eligible.
+            exc.fields = unresolved
         screenshot_ref = None
         with suppress(Exception):
             screenshot_ref = str(await client.take_screenshot())
@@ -875,6 +964,7 @@ class ParallelCrawler:
             screenshot_ref=screenshot_ref,
             status="pending",
         )
+        request["resolution_fields"] = resolution_fields
         await self._save_checkpoint(force=True)
         if not exc.otp or self._project_id is None:
             return None
@@ -1349,8 +1439,10 @@ class ParallelCrawler:
                 continue
             values = [None]
             for value in values:
-                canonical = destination.rstrip("/") if destination else None
-                identity = canonical or name or str(element.get("description") or "")
+                canonical = canonical_route(destination) if destination else None
+                # Keep separately labelled incoming edges while canonicalizing
+                # equivalent destinations for route deduplication.
+                identity = f"{canonical}|{name}" if canonical else (name or str(element.get("description") or ""))
                 key = (parent_fingerprint, role, identity, str(value), occurrence)
                 async with self._lock:
                     if key in self._queued_actions:
@@ -1397,6 +1489,16 @@ class ParallelCrawler:
                     parent_fingerprint=parent_fingerprint,
                     module_id=child_module,
                 )
+                if destination:
+                    route_key = self._route_key(destination, not skip_auth)
+                    existing_route = self._route_state.get(route_key, {})
+                    if existing_route.get("status") != "visited":
+                        self._route_state[route_key] = {
+                            **existing_route,
+                            "status": "pending",
+                            "canonical_route": canonical_route(destination),
+                            "authentication_context": self._credential_ref if not skip_auth else None,
+                        }
                 if self._job_key(child_job) in self._job_states:
                     continue
                 if self._discovery_mode == "guided":
@@ -1600,6 +1702,7 @@ class ParallelCrawler:
                                     self._dropdowns.extend(found)
                                     crawler._dropdown_overlay = found  # type: ignore[attr-defined]
                             fingerprint, nodes = await crawler._record_state(snapshot, recorded_path, capture)
+                            observed_fingerprint = fingerprint
                             authenticated_state = any(step.role == "authentication" for step in recorded_path)
                             if authenticated_state and fingerprint and self._credential_ref:
                                 fingerprint = hashlib.sha256(f"{self._credential_ref}:{fingerprint}".encode()).hexdigest()
@@ -1666,7 +1769,7 @@ class ParallelCrawler:
                             if not fingerprint:
                                 await self._consider_form(
                                     queue, nodes, job, skip_auth, live_url, page_key,
-                                    str(root.get("name") or ""), screenshot_ref,
+                                    str(root.get("name") or ""), screenshot_ref, client,
                                 )
                                 live_screenshot = await self._capture_live_screenshot(
                                     client, screenshot_ref
@@ -1712,12 +1815,28 @@ class ParallelCrawler:
                                             "fingerprint": fingerprint,
                                             "url_pattern": state["url_pattern"],
                                             "functional_key": page_key,
+                                            "canonical_page_id": page_key,
+                                            "canonical_route": canonical_route(live_url),
+                                            "route_variants": [canonical_route(live_url)],
+                                            "observed_fingerprints": [observed_fingerprint],
+                                            "content_signatures": [],
+                                            "shared_components": [],
                                             "label": observed_page_label(nodes, live_url),
                                             "area_id": area_id,
                                             "module_id": job.module_id,
                                         }
                                     if area_id not in self._area_roots:
                                         self._area_roots[area_id] = fingerprint
+                                content_changed = self._observe_canonical_page(
+                                    fingerprint,
+                                    page_key,
+                                    live_url,
+                                    nodes,
+                                    not skip_auth
+                                    or (request is not None and request.get("kind") == "login")
+                                    or any(step.role == "authentication" for step in job.path),
+                                    observed_fingerprint,
+                                )
                                 selected_flows = self._authenticate_source_flows()
                                 if area_id == "authenticated" and not job.path:
                                     self._edges.update(
@@ -1734,7 +1853,7 @@ class ParallelCrawler:
                                     job.path and is_gated_reveal_action(job.path[-1].name)
                                 )
                                 should_expand = fingerprint not in self._expanding and (
-                                    fingerprint not in self._expanded or reveal_replay or job.force_expand
+                                    fingerprint not in self._expanded or reveal_replay or job.force_expand or content_changed
                                 )
                                 if should_expand:
                                     self._expanding.add(fingerprint)
@@ -1761,6 +1880,7 @@ class ParallelCrawler:
                                 page_key,
                                 str(root.get("name") or ""),
                                 screenshot_ref,
+                                client,
                             )
                             if should_expand:
                                 expansion_complete = await self._enqueue_children(
@@ -2070,6 +2190,7 @@ class ParallelCrawler:
                 fingerprint, nodes = await crawler._record_state(await client.take_snapshot(), [], capture)
                 if not fingerprint or not captured:
                     raise RuntimeError("Entry page has no observable state")
+                observed_fingerprint = fingerprint
                 state = captured[0]
                 if authenticated and self._credential_ref:
                     fingerprint = hashlib.sha256(f"{self._credential_ref}:{fingerprint}".encode()).hexdigest()
@@ -2086,8 +2207,12 @@ class ParallelCrawler:
                 # the unauthenticated login page recorded immediately before it.
                 if page_key and authenticated:
                     page_key = f"authenticated::{self._credential_ref or 'public'}::{page_key}"
-                if page_key:
-                    self._page_keys.setdefault(page_key, fingerprint)
+                canonical = self._page_keys.get(page_key)
+                if canonical:
+                    fingerprint = canonical
+                    state["fingerprint"] = fingerprint
+                elif page_key:
+                    self._page_keys[page_key] = fingerprint
                 live_screenshot = await self._capture_live_screenshot(
                     client, state.get("evidence_ref")
                 )
@@ -2108,9 +2233,23 @@ class ParallelCrawler:
                         "fingerprint": fingerprint,
                         "url_pattern": state["url_pattern"],
                         "functional_key": page_key,
+                        "canonical_page_id": page_key,
+                        "canonical_route": canonical_route(live_url),
+                        "route_variants": [canonical_route(live_url)],
+                        "observed_fingerprints": [observed_fingerprint],
+                        "content_signatures": [],
+                        "shared_components": [],
                         "label": observed_page_label(nodes, live_url),
                         "area_id": area,
                     }
+                self._observe_canonical_page(
+                    fingerprint,
+                    page_key,
+                    live_url,
+                    nodes,
+                    authenticated,
+                    observed_fingerprint,
+                )
                 if parent and parent != fingerprint:
                     self._edges.add((parent, fingerprint, action))
                 parent = fingerprint

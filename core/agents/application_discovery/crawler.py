@@ -32,7 +32,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import urljoin, urlparse
 
 from core.agents.application_discovery.fingerprint import (
     canonical_route,
@@ -509,6 +509,24 @@ class Crawler:
         """Apply a path from the caller's current browser/session state."""
 
         for step in path:
+            if step.role == "preserve_input":
+                from core.agents.application_discovery.form_inputs import describe_field
+                from core.tool_gateway.form_resolution import populated
+                current = await self._client.take_snapshot()
+                observed = (await self._client.inspect_elements(current)
+                            if hasattr(self._client, "inspect_elements") else _parse_elements(current))
+                matches = [node for node in observed if describe_field(node)["key"] == step.field_key]
+                if len(matches) != 1 or not populated(matches[0]):
+                    raise RuntimeError("A previously populated input is now empty; inspect the form again")
+                continue
+            if step.sensitive and step.field_key and step.value is not None:
+                from core.tool_gateway.form_resolution import apply_values
+                applied = await apply_values(self._client,
+                    [{"role": step.role, "name": step.name}], {step.field_key: step.value})
+                if step.field_key not in applied:
+                    raise RuntimeError("Saved input no longer matches the live control; inspect the form again")
+                snapshot = await self._client.take_snapshot()
+                continue
             # Old checkpoints may still contain widget steps from before these
             # controls were excluded from the discovery frontier.
             if _is_transient_widget_control(step.role, step.name):
@@ -780,9 +798,12 @@ class Crawler:
                             absolute, base_url
                         ):
                             continue
-                        if urldefrag(absolute)[0] == urldefrag(current_url)[0] and "#" in absolute:
+                        # A conventional anchor does not make a new screen,
+                        # whereas an SPA hash route does.  Compare the stable
+                        # route identity instead of defragmenting both URLs.
+                        if canonical_route(absolute) == canonical_route(current_url):
                             continue
-                        canonical_destination = urldefrag(absolute)[0].rstrip("/") or absolute
+                        canonical_destination = canonical_route(absolute)
                         if canonical_destination in queued_link_destinations:
                             continue
                         queued_link_destinations.add(canonical_destination)
