@@ -45,12 +45,13 @@ def test_missing_groq_model_is_detected() -> None:
     assert not _is_missing_model_error(Exception("rate limit 429"))
 
 
-def test_batch_schema_caps_payload_size() -> None:
+def test_batch_schema_does_not_impose_case_or_step_quotas() -> None:
     schema = CaseBatch.model_json_schema()
     test_cases = schema["properties"]["test_cases"]
-    assert test_cases["maxItems"] == 4
+    assert "maxItems" not in test_cases
+    assert test_cases["minItems"] == 0
     steps = CaseSpec.model_json_schema()["properties"]["steps"]
-    assert steps["maxItems"] == 8
+    assert "maxItems" not in steps
 
 
 def test_prompt_asks_for_compact_batches() -> None:
@@ -65,9 +66,8 @@ def test_prompt_asks_for_compact_batches() -> None:
         base_url="https://example.test",
     )
     lowered = prompt.lower()
-    assert "for each acceptance criterion" in lowered
-    assert "one to four distinct cases" in lowered
-    assert "do not invent an opposite category" in lowered
+    assert "no fixed case count" in lowered
+    assert "empty list if unsupported" in lowered
     targeted = build_user_prompt(
         requirement_title="Login",
         requirement_description="Users can sign in",
@@ -77,7 +77,7 @@ def test_prompt_asks_for_compact_batches() -> None:
         targeted_by_ac={"AC-1": ["POSITIVE"]},
     )
     assert "targeted coverage" in targeted.lower()
-    assert "exactly 1 compact test case" in targeted.lower()
+    assert "without imposing a quota" in targeted.lower()
 
 
 def test_generation_jobs_do_not_force_category_pairs() -> None:

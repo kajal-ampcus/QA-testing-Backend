@@ -22,6 +22,8 @@ class BlockedCaseOut(BaseModel):
     test_case_code: str
     test_case_version: int
     reason: str
+    code: str = "BLOCKED"
+    recommendation: str = "Inspect the named step and rediscover or configure the required input."
 
 
 class ScriptOut(BaseModel):

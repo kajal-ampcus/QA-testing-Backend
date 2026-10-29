@@ -64,3 +64,15 @@ async def test_missing_tool_call_eventually_fails(client: AnthropicClient) -> No
     )
     with pytest.raises(RuntimeError, match="did not return"):
         await call(client)
+
+
+@pytest.mark.asyncio
+async def test_vision_input_preserves_image_during_truncation_retry(client: AnthropicClient):
+    create = AsyncMock(side_effect=[message("max_tokens"), message()])
+    client._client.messages.create = create
+    await client.call_structured("system", "inspect", {"type": "object"}, "extract", 1000,
+                                 images=["data:image/png;base64,aGVsbG8="])
+    for invocation in create.call_args_list:
+        content = invocation.kwargs["messages"][0]["content"]
+        assert content[0]["type"] == "text"
+        assert content[1]["source"] == {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}

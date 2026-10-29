@@ -57,6 +57,8 @@ class TestStep(BaseModel):
             '{"kind": "visible"|"enabled"|"text"|"required"|"invalid"|"url", '
             '"target": "EL-012", "text": "literal expected text"}. '
             "Automation translates this directly and never guesses from prose."
+            " For a requirement-backed manual draft use kind='manual', text, requirement_text and basis; "
+            "these drafts are blocked from automated execution until an observed assertion replaces it."
         ),
     )
 
@@ -79,7 +81,7 @@ class TestCaseSpec(BaseModel):
     preconditions: list[str] = Field(
         description="What must be true before this test runs, e.g. 'User is on /login page'"
     )
-    steps: list[TestStep] = Field(min_length=1, max_length=8)
+    steps: list[TestStep] = Field(min_length=1)
     expected_result: str = Field(
         description="What the tester should observe after all steps complete"
     )
@@ -113,10 +115,9 @@ class TestCaseBatch(BaseModel):
     """Root object the LLM must return — a list of test case specs."""
 
     test_cases: list[TestCaseSpec] = Field(
-        min_length=1,
-        max_length=4,
+        min_length=0,
         description=(
-            "Compact batch of evidence-supported cases; categories are not paired automatically."
+            "All distinct evidence-supported scenarios in this task. Empty if unsupported; no fixed count."
         ),
     )
 
@@ -127,6 +128,7 @@ class TestDesignResult(BaseModel):
     """Agent.run()'s return type: envelope + the generated specs before DB persistence."""
 
     envelope: AgentOutputEnvelope
+    coverage: dict[str, Any] = Field(default_factory=dict)
     outcome: str = "generated"
     validation_issues: list[str] = Field(default_factory=list)
     message: str = ""

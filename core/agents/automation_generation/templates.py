@@ -77,6 +77,9 @@ export class [[ class_name ]] {
 
 _SPEC = """\
 import { test[% if uses_runtime_credential %], envCredential[% endif %] } from "../../fixtures/auth";
+[% if uses_test_data %]
+import { testData } from "../../data/testdata";
+[% endif %]
 [% if uses_execution_input %]
 import { executionInput } from "../../data/execution-inputs";
 [% endif %]

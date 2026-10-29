@@ -8,6 +8,8 @@ COPY --from=node /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 COPY pyproject.toml README.md ./
+RUN python -c "import pathlib,tomllib; pathlib.Path('/tmp/qa-dependencies.txt').write_text('\n'.join(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']))"
+RUN --mount=type=cache,target=/root/.cache/pip pip install --timeout 120 --retries 5 -r /tmp/qa-dependencies.txt
 COPY apps/ apps/
 COPY core/ core/
 COPY domain/ domain/
@@ -22,6 +24,7 @@ RUN python -m pip install \
     --no-cache-dir \
     --prefer-binary \
     .
+RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps --timeout 120 --retries 5 .
 COPY alembic.ini ./
 COPY alembic/ alembic/
 COPY scripts/docker_entrypoint.py scripts/docker_entrypoint.py

@@ -77,6 +77,16 @@ def prepare_execution(
     steps = _copy_steps(case.steps)
     data = dict(case.test_data or {})
     starting = classify_start(case, states)
+    # A manual assertion has no trustworthy pass/fail oracle. Keep its place
+    # in the browser flow as an observation wait; execution still records its
+    # screenshot/video/trace without failing on a guessed assertion.
+    for step in steps:
+        assertion = step.get("assertion")
+        if isinstance(assertion, dict) and assertion.get("kind") == "manual":
+            step["action"] = "wait"
+            step.pop("assertion", None)
+            step.pop("expected", None)
+            step["target"] = {"state_code": step.get("target", {}).get("state_code")}
     text = _objective(case)
     start = _start_state(case, states)
     steps, mapping_issues = ground_steps(steps, states, data, discovery)
@@ -85,6 +95,16 @@ def prepare_execution(
     start_conflict = _start_conflict(case, start)
     if start_conflict:
         return _blocked(starting, steps, data, start_conflict)
+    assertions = [step for step in steps if step.get("action") == "assert"]
+    native_check = assertions and all((step.get("assertion") or {}).get("kind") in {
+        "validity", "attribute", "accessible_name",
+    } for step in assertions)
+    if native_check and not any(step.get("action") == "click" for step in steps):
+        # These approved checks deliberately inspect a native rule without
+        # submitting a form. Prose-based recovery must not insert login clicks,
+        # replace boundary data, or demand unrelated CAPTCHA/credentials.
+        return ExecutionPlan(starting_state=starting, fixture=_fixture(starting),
+                             authenticated=starting == "AUTHENTICATED", steps=_renumber(steps), test_data=data)
     destructive = _destructive(steps, states)
     kind = _primary_kind(text, case.category, start, steps, states)
 
@@ -381,6 +401,13 @@ def _credential_surface(state: _State) -> bool:
 
 def _credential_environment(element: dict[str, Any], name: str) -> str | None:
     """Return the runtime environment variable for a login credential field."""
+    binding = str(element.get("credential_binding") or "").lower()
+    if binding == "username":
+        return "TEST_USERNAME"
+    if binding == "password":
+        return "TEST_PASSWORD"
+    if binding == "captcha":
+        return "TEST_CAPTCHA"
     blob = f"{name} {element.get('type') or ''} {element.get('input_type') or ''}"
     if _PASSWORD.search(blob) or str(element.get("input_type") or element.get("type") or "").lower() == "password":
         return "TEST_PASSWORD"

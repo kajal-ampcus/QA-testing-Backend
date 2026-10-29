@@ -36,15 +36,15 @@ from urllib.parse import urljoin, urlparse
 
 from core.agents.application_discovery.fingerprint import (
     canonical_route,
-    compute_fingerprint,
     collection_count_badge,
+    compute_fingerprint,
     gated_probe_kind,
-    unlabeled_collection_icons,
     is_chrome_label,
     is_collection_mutation_action,
     is_gated_reveal_action,
     is_in_page_content_control,
     repeated_in_page_control,
+    unlabeled_collection_icons,
 )
 from core.policy_safety.destructive_action_lexicon import classify_risk
 from core.tool_gateway.gateway import BrowserInspection
@@ -52,6 +52,18 @@ from core.tool_gateway.snapshot import parse_elements
 from domain.enums import EvidenceSource, RiskLevel
 
 logger = logging.getLogger(__name__)
+
+
+def _login_metadata(element: dict[str, Any], route: str) -> dict[str, str]:
+    """Describe authentication controls without recording their values."""
+    text = " ".join(str(element.get(key) or "") for key in ("name", "role", "type", "input_type"))
+    if re.search(r"\b(password|passphrase|pin)\b", text, re.I) or str(element.get("input_type") or "").lower() == "password":
+        return {"field_role": "password", "credential_binding": "password", "login_route": route}
+    if re.search(r"\b(employee id|username|user name|user id|login id|e-?mail)\b", text, re.I):
+        return {"field_role": "login_identifier", "credential_binding": "username", "login_route": route}
+    if re.search(r"\bcaptcha\b", text, re.I):
+        return {"field_role": "captcha", "credential_binding": "captcha", "login_route": route}
+    return {}
 
 
 @dataclass
@@ -596,6 +608,7 @@ class Crawler:
                 "role", "name", "url", "input_type", "checked", "selected",
                 "expanded", "disabled", "required", "options", "css_selector",
                 "locator_scope",
+                "min", "max", "minlength", "maxlength", "pattern", "step", "readonly", "invalid",
             }}
             for el in raw_elements
             if el.get("role") not in {"image", "StaticText", "InlineTextBox"}
@@ -633,11 +646,13 @@ class Crawler:
                         "disabled",
                         "description",
                         "options",
+                        "min", "max", "minlength", "maxlength", "pattern", "step", "invalid",
                     )
                     if key in el
                 },
                 "risk": classify_risk(el["role"], el["name"]).value,
                 "source": EvidenceSource.OBSERVED_DOM.value,
+                **_login_metadata(el, state_url),
             }
             for i, el in enumerate(raw_elements, start=1)
         ]

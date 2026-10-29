@@ -37,6 +37,7 @@ class AnthropicClient(LLMClient):
         tool_schema: dict[str, Any],
         tool_name: str,
         max_tokens: int = 2000,
+        images: list[str] | None = None,
     ) -> LLMStructuredResult:
         """A truncated tool call (stop_reason=max_tokens) carries partial input,
         so it is retried with a doubled budget; a response without the tool
@@ -46,12 +47,20 @@ class AnthropicClient(LLMClient):
         input_tokens = output_tokens = 0
 
         async def _do_call() -> Message:
+            content = user_content
+            if images:
+                content = [{"type": "text", "text": user_content}]
+                for url in images:
+                    header, data = url.split(",", 1)
+                    content.append({"type": "image", "source": {
+                        "type": "base64", "media_type": header.removeprefix("data:").removesuffix(";base64"), "data": data,
+                    }})
             async with get_llm_semaphore():
                 return await self._client.messages.create(
                     model=self.model,
                     max_tokens=budget,
                     system=system_prompt,
-                    messages=[{"role": "user", "content": user_content}],
+                    messages=[{"role": "user", "content": content}],
                     tools=[
                         {
                             "name": tool_name,

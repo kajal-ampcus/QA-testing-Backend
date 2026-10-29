@@ -10,8 +10,12 @@ from sqlalchemy import Integer, cast, func, select, update
 from sqlalchemy.orm import selectinload
 
 from domain.enums import ApprovalStatus, TestCaseStatus
+from domain.test_case_identity import case_signature as case_signature
+from domain.test_case_identity import discovery_account_context
+from infra.db.models.application_map import ApplicationMap, ApplicationMapState
 from infra.db.models.approval import Approval
 from infra.db.models.project import Project
+from infra.db.models.requirement import Requirement
 from infra.db.models.test_case import TestCase, TestCaseVersion
 from infra.db.repositories.base_repo import BaseRepository
 
@@ -27,25 +31,6 @@ _VERSION_FIELDS = (
 )
 
 
-def case_signature(version_data: dict[str, Any]) -> tuple[Any, ...]:
-    """Semantic identity used to avoid saving relabelled copies.
-
-    Category and traceability are deliberately excluded: identical actions and
-    assertions are duplicates even when one case is traced to a second AC or
-    labelled with a different category.
-    """
-    return (
-        tuple(
-            (
-                step.get("action"),
-                (step.get("target") or {}).get("state_code"),
-                (step.get("target") or {}).get("element_code"),
-                step.get("value"),
-                step.get("expected"),
-            )
-            for step in version_data.get("steps", [])
-        ),
-    )
 
 class TestCaseRepository(BaseRepository):
 
@@ -148,23 +133,57 @@ class TestCaseRepository(BaseRepository):
         map version is the same scenario, not a new one.
         """
         pairs = await self.list_for_requirement(requirement_id)
+        current_version = await self.session.scalar(select(Requirement.current_version).where(Requirement.id == requirement_id))
+        contexts = await self._map_contexts(pairs)
         return {
-            case_signature({field: getattr(version, field) for field in _VERSION_FIELDS})
+            case_signature({field: getattr(version, field) for field in _VERSION_FIELDS}, contexts.get(tc.application_map_id))
             for tc, version in pairs
-            if tc.status != TestCaseStatus.OUTDATED
+            if tc.status not in {TestCaseStatus.OUTDATED, TestCaseStatus.REJECTED}
+            and (current_version is None or tc.requirement_version == current_version)
         }
 
     async def find_by_signature(
         self, requirement_id: uuid.UUID, signature: tuple[Any, ...]
     ) -> tuple[TestCase, TestCaseVersion] | None:
         """Locate the saved case that already expresses this scenario."""
-        for tc, version in await self.list_for_requirement(requirement_id):
-            if tc.status == TestCaseStatus.OUTDATED:
+        pairs = await self.list_for_requirement(requirement_id)
+        current_version = await self.session.scalar(select(Requirement.current_version).where(Requirement.id == requirement_id))
+        contexts = await self._map_contexts(pairs)
+        for tc, version in pairs:
+            if tc.status in {TestCaseStatus.OUTDATED, TestCaseStatus.REJECTED}:
+                continue
+            if current_version is not None and tc.requirement_version != current_version:
                 continue
             data = {field: getattr(version, field) for field in _VERSION_FIELDS}
-            if case_signature(data) == signature:
+            if case_signature(data, contexts.get(tc.application_map_id)) == signature:
                 return tc, version
         return None
+
+    async def lock_generation(self, requirement_id: uuid.UUID) -> int | None:
+        """Serialize signature-check + insert across independent generation runs."""
+        result = await self.session.execute(select(Requirement.current_version).where(Requirement.id == requirement_id).with_for_update())
+        return result.scalar_one_or_none()
+
+    async def generation_contexts(self, requirement_id: uuid.UUID) -> list[tuple[Any, Any, list[dict[str, Any]]]]:
+        pairs = await self.list_for_requirement(requirement_id)
+        contexts = await self._map_contexts(pairs)
+        return [(case, version, contexts.get(case.application_map_id, [])) for case, version in pairs]
+
+    async def _map_contexts(self, pairs: list) -> dict[uuid.UUID, list[dict[str, Any]]]:
+        ids = {case.application_map_id for case, _ in pairs if case.application_map_id}
+        if not ids:
+            return {}
+        result = await self.session.execute(select(ApplicationMapState, ApplicationMap).join(
+            ApplicationMap, ApplicationMap.id == ApplicationMapState.application_map_id
+        ).where(ApplicationMapState.application_map_id.in_(ids)))
+        contexts: dict[uuid.UUID, list[dict[str, Any]]] = {}
+        for state, app_map in result.all():
+            nodes = (app_map.coverage or {}).get("app_flow_graph", {}).get("nodes", [])
+            account_context = discovery_account_context(state.fingerprint, state.reached_via, nodes)
+            contexts.setdefault(state.application_map_id, []).append({
+                "state_code": state.state_code, "url_pattern": state.url_pattern,
+                "reached_via": state.reached_via, "elements": state.elements, "account_context": account_context})
+        return contexts
 
     async def merge_traceability(
         self, test_case_id: uuid.UUID, version_id: uuid.UUID, extra_acs: list[str]
@@ -201,7 +220,8 @@ class TestCaseRepository(BaseRepository):
         )
 
         await self.session.execute(
-            update(TestCase).where(TestCase.id.in_(stale_ids))
+            update(TestCase)
+            .where(TestCase.requirement_id == requirement_id, TestCase.requirement_version < current_version)
             .values(status=TestCaseStatus.OUTDATED)
             .execution_options(synchronize_session=False)
         )
@@ -231,7 +251,8 @@ class TestCaseRepository(BaseRepository):
             if script.review_status != AutomationReviewStatus.BLOCKED:
                 automation.append_version(script, AutomationReviewStatus.BLOCKED)
         await self.session.execute(
-            update(TestCase).where(TestCase.id.in_(ids))
+            update(TestCase)
+            .where(TestCase.id.in_(ids))
             .values(status=TestCaseStatus.OUTDATED)
             .execution_options(synchronize_session=False)
         )

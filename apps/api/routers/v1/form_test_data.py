@@ -310,14 +310,31 @@ async def import_form_test_data(
                     str(expected).strip() if expected is not None else None
                 )
 
+                raw_case_id = raw.get("test_case_id")
+                test_case_code = str(raw.get("test_case_code") or "").strip()
+                if raw_case_id and test_case_code:
+                    raise ValueError("Provide either test_case_id or test_case_code, not both")
+                if test_case_code:
+                    matched_case = await session.scalar(
+                        select(TestCase).where(
+                            TestCase.project_id == project_id,
+                            TestCase.tc_code == test_case_code,
+                        )
+                    )
+                    if matched_case is None:
+                        raise ValueError(
+                            f"No test case with code {test_case_code!r} exists in this project"
+                        )
+                    test_case_id = matched_case.id
+                elif raw_case_id:
+                    test_case_id = uuid.UUID(str(raw_case_id))
+                else:
+                    test_case_id = None
+
                 payload = FormTestDataCreate(
                     label=label,
                     form_group=form_group,
-                    test_case_id=(
-                        uuid.UUID(str(raw["test_case_id"]))
-                        if raw.get("test_case_id")
-                        else None
-                    ),
+                    test_case_id=test_case_id,
                     test_type=test_type,
                     test_data=test_data,
                     expected_result=expected_result,

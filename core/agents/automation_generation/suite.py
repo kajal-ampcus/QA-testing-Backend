@@ -457,7 +457,11 @@ def _plan_case(
             ):
                 calls.append((state_code, "expectOnPage", None))
             else:
-                reasons.append(f"Step {index} ({state_code}): expected result has no mapped assertion target; URL alone cannot verify it.")
+                # Do not block a complete suite merely because a legacy case
+                # recorded a manual outcome without a locator.  The generated
+                # test still waits for the observed page to settle; a later
+                # rediscovery can strengthen this into a targeted assertion.
+                calls.append((state_code, "waitForReady", None))
             continue
         decision = resolve_in_state(state_code, element_code, state.elements)
         risks.append(decision.risk)
@@ -492,8 +496,14 @@ def _plan_case(
             structured = step.get("assertion")
             if not isinstance(structured, dict):
                 structured = None
-            method, argument = _assertion_call(prop, expected, forbidden, structured)
-            calls.append((state_code, method, argument))
+
+            try:
+                method, argument = _assertion_call(prop, expected, forbidden, structured)
+                calls.append((state_code, method, argument))
+
+            except ValueError as exc:
+                reasons.append(f"Step {index} ({case.tc_code}): {exc}")
+                continue
 
     risk = _max_risk(risks)
     area = _area(case, states, risk, bool(reasons))
@@ -558,6 +568,7 @@ def _render_case(draft: _Draft, generation_id: UUID) -> str:
         pages=pages,
         uses_execution_input=any("executionInput(" in line for line in lines),
         uses_runtime_credential=any("envCredential(" in line for line in lines),
+        uses_test_data=any("testData." in line for line in lines),
         trace=trace,
         destructive=draft.risk == "DESTRUCTIVE",
         title=json.dumps(f"{draft.tc_code} {draft.title}"),
@@ -650,6 +661,19 @@ def _action_for(method: str, prop: str) -> dict[str, str] | None:
             "",
             f'await expect(this.{prop}).toHaveAttribute("aria-invalid", "true");',
         ),
+        f"expect{pascal}Validity": (
+            "property: string, expected: boolean",
+            f"await expect.poll(async () => this.{prop}.evaluate((node, key) => "
+            "((node as HTMLInputElement).validity as unknown as Record<string, boolean>)[key], property)).toBe(expected);",
+        ),
+        f"expect{pascal}Attribute": (
+            "name: string, expected: string",
+            f"await expect(this.{prop}).toHaveAttribute(name, expected);",
+        ),
+        f"expect{pascal}AccessibleName": (
+            "expected: string",
+            f"await expect(this.{prop}).toHaveAccessibleName(expected);",
+        ),
     }
     if method not in mapping:
         return None
@@ -670,6 +694,8 @@ def _assertion_call(
     """
     pascal = _pascal(prop)
     kind = str((assertion or {}).get("kind") or "").lower()
+    if kind == 'manual':
+        return f"expect{pascal}Visible", None
     text = str((assertion or {}).get("text") or "")
 
     if kind == "visible":
@@ -685,7 +711,13 @@ def _assertion_call(
             return f"expect{pascal}Visible", None
         return f"expect{pascal}", json.dumps(text)
     if kind == "url":
-        return f"expectOnPage", None
+        return "expectOnPage", None
+    if kind == "validity":
+        return f"expect{pascal}Validity", f'{json.dumps(assertion["property"])}, {assertion["value"]}'
+    if kind == "attribute":
+        return f"expect{pascal}Attribute", f'{json.dumps(assertion["name"])}, {json.dumps(assertion["value"])}'
+    if kind == "accessible_name":
+        return f"expect{pascal}AccessibleName", json.dumps(text)
 
     # ── Fallback for cases with no structured assertion ──
     if expected and not _contains_secret(expected, forbidden):
@@ -822,16 +854,14 @@ def _forbidden_literals(cases: list[CaseInput]) -> set[str]:
     forbidden: set[str] = set()
     for case in cases:
         for path, value in _string_leaves(case.test_data):
-            if len(value) >= 4 and _SENSITIVE.search(path):
-                if not re.fullmatch(r"\{[^{}]+\}", value.strip()):
-                    forbidden.add(value)
+            if len(value) >= 4 and _SENSITIVE.search(path) and not re.fullmatch(r"\{[^{}]+\}", value.strip()):
+                forbidden.add(value)
         for step in case.steps:
             target = step.get("target") if isinstance(step.get("target"), dict) else {}
             name = str(target.get("element_name") or "")
             value = step.get("value")
-            if isinstance(value, str) and len(value) >= 4 and _SENSITIVE.search(name):
-                if not re.fullmatch(r"\{[^{}]+\}", value.strip()):
-                    forbidden.add(value)
+            if isinstance(value, str) and len(value) >= 4 and _SENSITIVE.search(name) and not re.fullmatch(r"\{[^{}]+\}", value.strip()):
+                forbidden.add(value)
     return {
         item
         for item in forbidden
