@@ -154,6 +154,9 @@ def prepare_execution(
                 continue
             name = str(element.get("name") or "")
             value = data.get(name, data.get(name.lower()))
+            configured_key = name if name in data else name.lower()
+            if isinstance(value, str):
+                value = "{" + configured_key + "}"
             if not isinstance(value, str) or not value:
                 key = normalize_name(name)
                 credential_env = _credential_environment(element, name)
@@ -202,6 +205,19 @@ def prepare_execution(
             )
         else:
             return _blocked(starting, steps, data, f"{case.tc_code} has no assertion for its expected result.")
+
+    # A selected account supplies valid login inputs. Scenario targets retain
+    # their explicit invalid/blank values; registration remains form data.
+    if getattr(case, "credential_ref", None) and kind in {"login_success", "login_rejected", "validation"}:
+        fills = [step for step in steps if step.get("action") == "fill"]
+        negative = _negative_target(fills, case, states) if kind == "login_rejected" else None
+        for step in fills:
+            if step is negative or step.get("value") == "":
+                continue
+            element = _element(step, states) or {}
+            environment = _credential_environment(element, _step_name(step, states))
+            if environment in {"TEST_USERNAME", "TEST_PASSWORD"}:
+                step["value"] = "{credential:" + environment + "}"
 
     return ExecutionPlan(
         starting_state=starting,
@@ -264,13 +280,16 @@ def ground_steps(steps, states, data, discovery=None):
                 empty = re.search(r"\b(empty|blank|clear)\b", text, re.I)
                 quotes = re.search(r"""["']([^"']*)["']""", text)
                 field = str(element.get("name") or "")
-                configured = data.get(field, data.get(field.lower()))
+                configured_key = next((key for key in (
+                    f"{code}/{decision.element_code}", field, field.lower()
+                ) if key in data), field)
+                configured = data.get(configured_key)
                 if empty:
                     step["value"] = ""
                 elif quotes:
                     step["value"] = quotes.group(1)
                 elif isinstance(configured, str):
-                    step["value"] = configured
+                    step["value"] = "{" + configured_key + "}"
                 elif normalize_name(field) in (discovery or {}):
                     step["value"] = "{discovery:" + normalize_name(field) + "}"
                 else:

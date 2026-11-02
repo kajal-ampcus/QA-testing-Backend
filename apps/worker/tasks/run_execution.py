@@ -7,6 +7,7 @@ pass/fail judgments.
 
 import asyncio
 import os
+import shutil
 import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -27,8 +28,9 @@ from infra.db.models.agent_run import AgentRun
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
 from infra.db.session import AsyncSessionLocal
-from infra.execution_inputs import prepare_run_inputs
+from infra.execution_inputs import prepare_run_inputs, read_json, write_json
 from infra.object_storage.s3_client import S3Client
+from infra.test_data_service import runtime_form_values
 from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunStatus
 
 
@@ -61,10 +63,24 @@ async def run_execution(
             trigger="manual",
             payload=payload,
         )
+        directory = None
         try:
             directory = prepare_run_inputs(
                 Path(payload["suite_dir"]), uuid.UUID(str(payload["run_id"]))
             )
+            scripts = await automation_repo.list_generation(
+                input_envelope.project_id, uuid.UUID(str(payload["generation_id"]))
+            )
+            selected = set(payload.get("script_ids") or [])
+            if selected:
+                scripts = [script for script in scripts if str(script.id) in selected]
+            manifest = read_json(Path(payload["suite_dir"]) / "manifest.json")
+            defaults = await runtime_form_values(
+                session, input_envelope.project_id, scripts, manifest.get("input_bindings", [])
+            )
+            snapshot = read_json(directory / "snapshot.json")
+            snapshot["values"] = {**defaults, **snapshot.get("values", {})}
+            write_json(directory / "snapshot.json", snapshot)
             input_envelope.payload["input_dir"] = str(directory)
             coordinator = asyncio.create_task(coordinate_inputs(directory))
             try:
@@ -132,6 +148,10 @@ async def run_execution(
             )
             await session.commit()
             raise
+        finally:
+            if directory is not None:
+                # Reports have already captured masked input provenance.
+                shutil.rmtree(directory, ignore_errors=True)
         session.add(
             AgentRun(
                 id=input_envelope.agent_run_id,

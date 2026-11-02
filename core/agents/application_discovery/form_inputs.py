@@ -131,6 +131,27 @@ def describe_field(element: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def observed_page_form(elements: list[dict[str, Any]]) -> dict[str, Any]:
+    """Persist form structure independently of crawl/navigation deduplication.
+
+    Never serialize field values, including values already present in the DOM.
+    """
+    fields = []
+    actions = []
+    for node in elements:
+        scope = str(node.get("locator_scope") or node.get("landmark") or "")
+        if re.search(r"\b(header|footer|nav|banner|contentinfo|navigation|search)\b", scope, re.I):
+            continue
+        if node.get("visible") is False:
+            continue
+        if node.get("role") in _FILLABLE_ROLES or node.get("input_type") == "file":
+            fields.append(describe_field(node))
+        elif node.get("role") == "button" and (node.get("input_type") == "submit"
+                                                or _SUBMIT_NAME.search(str(node.get("name") or ""))):
+            actions.append({"role": "button", "name": str(node.get("name") or "Submit")})
+    return {"fields": fields, "actions": actions if fields else []}
+
+
 def discovery_form(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Include optional controls for reuse without changing legacy form keys."""
     legacy = blocking_form(elements)

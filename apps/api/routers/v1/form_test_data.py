@@ -1,7 +1,6 @@
 import io
 import json
 import uuid
-
 from typing import Literal
 
 from fastapi import (
@@ -18,15 +17,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_db_session
-from schemas.form_test_data import (
-    FormTestDataCreate,
-    FormTestDataUpdate,
-    FormTestDataResponse,
-)
 from infra.db.models.form_test_data import FormTestData
 from infra.db.models.project import Project
 from infra.db.models.test_case import TestCase
-
+from schemas.form_test_data import (
+    FormTestDataCreate,
+    FormTestDataResponse,
+    FormTestDataUpdate,
+)
 
 router = APIRouter(
     prefix="/projects/{project_id}/form-test-data",
@@ -142,6 +140,20 @@ async def list_form_test_data(
         query.order_by(FormTestData.created_at.desc())
     )
     return list(result.all())
+
+
+@router.get("/smart-template")
+async def get_smart_template(
+    project_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+):
+    from infra.test_data_service import smart_template
+
+    await ensure_project(session, project_id)
+    try:
+        return await smart_template(session, project_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/{data_id}", response_model=FormTestDataResponse)
@@ -364,8 +376,6 @@ async def import_form_test_data(
                     )
                 )
 
-            except HTTPException as exc:
-                errors.append({"row": row_number, "error": str(exc.detail)})
             except HTTPException as exc:
                 errors.append({"row": row_number, "error": str(exc.detail)})
             except (ValueError, TypeError, json.JSONDecodeError, ValidationError) as exc:

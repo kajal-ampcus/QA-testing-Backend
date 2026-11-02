@@ -191,8 +191,6 @@ def generate_suite(
         suite_dir / ".env.example",
         templates.render_env_example(base_url=application_url or "", names=sorted(set(env_names))),
     )
-    if not (suite_dir / ".env").is_file():
-        _carry_local_env(suite_dir)
     write(
         suite_dir / "fixtures" / "auth.ts",
         templates.render_auth(base_url=json.dumps(application_url) if application_url else '""'),
@@ -789,6 +787,8 @@ def _input_binding(
         "case_version": case.version,
         "step_number": index,
         "field": name,
+        "data_key": placeholder.group(1) if placeholder else name,
+        "explicit_value": not bool(placeholder),
         "category": case.category or "POSITIVE",
         "objective": objective,
         "negative_target": negative_target,

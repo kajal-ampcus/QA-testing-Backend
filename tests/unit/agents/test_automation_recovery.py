@@ -42,7 +42,7 @@ def test_natural_language_action_and_observed_html_input_type_are_mapped():
     assert not issues
     assert steps[0]["action"] == "fill"
     assert steps[0]["target"]["element_code"] == "E1"
-    assert steps[0]["value"] == "person@example.test"
+    assert steps[0]["value"] == "{Account email}"
 
 
 def test_ambiguous_and_missing_matches_are_rejected():
@@ -152,4 +152,4 @@ def test_required_companion_uses_configured_value_and_preserves_negative():
     plan = prepare_execution(item, {"S1": current})
     assert not plan.blocked_reason
     fills = {step["target"]["element_code"]: step["value"] for step in plan.steps if step["action"] == "fill"}
-    assert fills == {"E1": "configured-user", "E2": ""}
+    assert fills == {"E1": "{username}", "E2": ""}

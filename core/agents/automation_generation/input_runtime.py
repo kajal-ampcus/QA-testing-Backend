@@ -21,10 +21,18 @@ function write(file: string, value: unknown): void {
 export async function executionInput(key: string, fallback: string | null): Promise<string> {
   const directory = process.env.EXECUTION_INPUT_DIR;
   if (!directory) {
+    const saved = read(path.resolve(__dirname, "../config/testdata.json"))?.values?.[key] as Answer | undefined;
+    if (saved) {
+      const binding = read(path.resolve(__dirname, "../manifest.json"))?.input_bindings?.find((item: any) => item.key === key);
+      if (typeof saved.value !== "string" || !["value", "empty"].includes(saved.mode) || (saved.mode === "empty" && !binding?.allow_empty)) {
+        throw new Error(`Invalid local input ${key}`);
+      }
+      return saved.mode === "empty" ? "" : saved.value;
+    }
     if (fallback !== null && fallback !== "") return fallback;
     const binding = read(path.resolve(__dirname, "../manifest.json"))?.input_bindings?.find((item: any) => item.key === key);
     if (fallback === "" && binding?.allow_empty) return "";
-    throw new Error(`Unresolved input ${key}. Run this suite through the execution input coordinator.`);
+    throw new Error(`Unresolved input ${key}. Supply the value in config/testdata.json or the environment.`);
   }
   const binding = read(path.join(directory, "bindings.json"))?.[key];
   if (!binding) throw new Error(`Unknown or stale execution input binding: ${key}`);

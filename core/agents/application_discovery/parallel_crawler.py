@@ -56,10 +56,15 @@ from core.agents.application_discovery.form_inputs import (
     form_key_for,
     is_credential_rejection,
     normalize_name,
+    observed_page_form,
     public_field,
 )
 from core.agents.application_discovery.login_choices import login_choices, login_group_key
 from core.agents.application_discovery.screen_delta import classify_screen
+from core.agents.application_discovery.shared_navigation import (
+    inherited_navigation,
+    navigation_identity,
+)
 from core.policy_safety.destructive_action_lexicon import classify_risk
 from core.tool_gateway.form_resolution import FormContext, apply_values, populated, resolve_form
 from core.tool_gateway.gateway import BrowserInspection, SecurityVerificationRequiredError
@@ -133,6 +138,7 @@ class DiscoveryJob:
     force_expand: bool = field(compare=False, default=False)
     result_fingerprint: str | None = field(compare=False, default=None)
     input_request_id: str | None = field(compare=False, default=None)
+    observed_form: dict[str, Any] | None = field(compare=False, default=None)
 
 
 class ParallelCrawler:
@@ -188,6 +194,7 @@ class ParallelCrawler:
         self._module_inventory_flows: set[str] = set()
         self._area_roots: dict[str, str] = {}
         self._checkpoint = checkpoint or {}
+        self._navigation_catalog = list(self._checkpoint.get("navigation_catalog", []))
         self._on_checkpoint = on_checkpoint
         self._project_id = project_id
         self._credential_ref = credential_ref
@@ -276,6 +283,7 @@ class ParallelCrawler:
             "force_expand": job.force_expand,
             "result_fingerprint": job.result_fingerprint,
             "input_request_id": job.input_request_id,
+            "observed_form": job.observed_form,
         }
 
     def _deserialize_job(self, raw: dict[str, Any]) -> DiscoveryJob:
@@ -289,6 +297,7 @@ class ParallelCrawler:
             force_expand=bool(raw.get("force_expand")),
             result_fingerprint=raw.get("result_fingerprint"),
             input_request_id=raw.get("input_request_id"),
+            observed_form=raw.get("observed_form"),
         )
 
     def _restore_checkpoint(self) -> None:
@@ -365,6 +374,14 @@ class ParallelCrawler:
             ):
                 self._job_states[key] = normalized
         self._selected_branches = {aliases.get(key, key) for key in self._selected_branches}
+        if not self._navigation_catalog:
+            for raw in self._job_states.values():
+                steps = raw.get("path", [])
+                if steps and steps[-1].get("role") == "link" and steps[-1].get("url"):
+                    self._navigation_catalog.append({
+                        "path": steps[:-1], "skip_auth": raw["skip_auth"],
+                        "actions": ["route:" + steps[-1]["url"]],
+                    })
         self._reveal_probed = bool(self._checkpoint.get("reveal_probed"))
         self._collection_follow_queued = bool(self._checkpoint.get("collection_follow_queued"))
         self._input_requests = {
@@ -398,6 +415,7 @@ class ParallelCrawler:
                 "automatic_limits": self._budget.automatic_limits,
             },
             "jobs": jobs,
+            "navigation_catalog": self._navigation_catalog,
             "completed_nodes": sorted(self._expanded),
             "route_state": self._route_state,
             "pending_nodes": [job for job in jobs if job["status"] == "pending"],
@@ -827,7 +845,9 @@ class ParallelCrawler:
             await self._save_checkpoint(force=True)
             return
         form = discovery_form(nodes)
-        if form is None:
+        if form is None or form["kind"] != "login":
+            # General scenario values are collected after test generation.
+            # The observed nodes remain part of the application map.
             return
         if form["kind"] == "login" and self._authenticate:
             return
@@ -1329,6 +1349,41 @@ class ParallelCrawler:
             return False
         root = next((node for node in nodes if node.get("role") == "RootWebArea"), {})
         current_url = root.get("url") or base_url
+        serialized_path = [self._serialize_step(step) for step in path]
+        inherited = inherited_navigation(self._navigation_catalog, serialized_path, skip_auth)
+        actions = {identity for node in nodes if (identity := navigation_identity(node, current_url))}
+        # Legacy checkpoints did not record landmark metadata. A control that
+        # is visibly in the shared shell now and was offered by an ancestor
+        # still belongs to that ancestor (including language/accessibility).
+        for raw in self._job_states.values():
+            steps = raw.get("path", [])
+            if (steps and raw.get("skip_auth") == skip_auth and len(steps) <= len(path)
+                    and steps[:-1] == serialized_path[:len(steps) - 1]):
+                identity = navigation_identity({**steps[-1], "locator_scope": "navigation"}, current_url)
+                if identity in actions:
+                    inherited.add(identity)
+        # Remove repeated menu branches saved by older discovery runs, while
+        # preserving observed states and graph evidence for those pages.
+        redundant = []
+        for raw in self._job_states.values():
+            job_path = raw.get("path", [])
+            if (raw.get("skip_auth") == skip_auth and len(job_path) == len(path) + 1
+                    and job_path[:-1] == serialized_path):
+                step = {**job_path[-1], "locator_scope": "navigation"}
+                if navigation_identity(step, current_url) in inherited & actions:
+                    redundant.append(job_path)
+        for key, raw in list(self._job_states.items()):
+            if raw.get("skip_auth") == skip_auth and any(
+                raw.get("path", []) == prefix for prefix in redundant
+            ):
+                del self._job_states[key]
+                self._selected_branches.discard(key)
+        existing_catalog = next((entry for entry in self._navigation_catalog
+                                 if entry["path"] == serialized_path and entry["skip_auth"] == skip_auth), None)
+        if existing_catalog is None:
+            self._navigation_catalog.append({"path": serialized_path, "skip_auth": skip_auth, "actions": sorted(actions)})
+        else:
+            existing_catalog["actions"] = sorted(actions | set(existing_catalog["actions"]))
         if not self._authenticate and any(
             request.get("kind") == "login_choice"
             and request.get("status") == "pending"
@@ -1349,6 +1404,8 @@ class ParallelCrawler:
                     await self._set_job_status(auth_job, "available")
         for element in nodes:
             role, name = element.get("role", ""), element.get("name", "")
+            if navigation_identity(element, current_url) in inherited:
+                continue
             if _is_transient_widget_control(role, name):
                 continue
             if _is_chrome_navigation_control(role, name, element.get("url")):
@@ -1706,6 +1763,7 @@ class ParallelCrawler:
                                     self._dropdowns.extend(found)
                                     crawler._dropdown_overlay = found  # type: ignore[attr-defined]
                             fingerprint, nodes = await crawler._record_state(snapshot, recorded_path, capture)
+                            job.observed_form = observed_page_form(nodes)
                             observed_fingerprint = fingerprint
                             authenticated_state = any(step.role == "authentication" for step in recorded_path)
                             if authenticated_state and fingerprint and self._credential_ref:

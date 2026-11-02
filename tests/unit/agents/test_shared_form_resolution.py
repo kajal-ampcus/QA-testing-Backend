@@ -197,7 +197,7 @@ async def test_live_fill_preserves_new_values_and_never_toggles_populated_contro
 
 
 @pytest.mark.asyncio
-async def test_discovery_fills_optional_and_prompts_only_missing_without_checkpoint_values(
+async def test_discovery_does_not_collect_general_form_values(
     monkeypatch,
 ):
     from core.agents.application_discovery.crawler import CrawlBudget
@@ -228,24 +228,10 @@ async def test_discovery_fills_optional_and_prompts_only_missing_without_checkpo
         None,
         browser,
     )
-    request = next(iter(crawler._input_requests.values()))
-    assert [field["name"] for field in request["fields"]] == ["City"]
-    assert request["credential_ref"] == "cred:a"
-    assert browser.fills == [("1", "private-name"), ("3", "private-nick")]
-    assert not browser.clicks
+    assert not crawler._input_requests
+    assert browser.fills == [] and browser.clicks == []
+    answer.assert_not_awaited()
     assert "private-" not in str(crawler._checkpoint_payload())
-    # Approval loads both the explicit missing input and the resolved companions.
-    answer.return_value = {
-        "textbox:name": "private-name",
-        "textbox:nickname": "private-nick",
-        "textbox:city": "City",
-    }
-    request["status"] = "approved"
-    resolved = await crawler._request_answers(request)
-    job = crawler._fill_job(request, resolved)
-    await crawler._hydrate_job(job)
-    assert {step.field_key for step in job.path if step.sensitive} == set(resolved)
-    assert "private-" not in str(crawler._serialize_job(job, "pending"))
 
 
 def test_optional_controls_keep_the_existing_required_form_key():
@@ -283,9 +269,9 @@ async def test_preserved_input_replay_checks_presence_without_storing_its_value(
     from core.agents.application_discovery.parallel_crawler import DiscoveryJob, ParallelCrawler
 
     nodes = [
-        control("Name", has_value=True),
-        control("City", uid="2"),
-        {"uid": "3", "role": "button", "name": "Submit"},
+        control("Username", has_value=True),
+        control("Password", uid="2", input_type="password"),
+        {"uid": "3", "role": "button", "name": "Login"},
     ]
     monkeypatch.setattr(
         "infra.db.repositories.form_answer_repo.get_form_answers", AsyncMock(return_value={})
@@ -304,8 +290,8 @@ async def test_preserved_input_replay_checks_presence_without_storing_its_value(
         browser,
     )
     request = next(iter(crawler._input_requests.values()))
-    assert [item["name"] for item in request["fields"]] == ["City"]
-    job = crawler._fill_job(request, {"textbox:city": "Paris"})
+    assert [item["name"] for item in request["fields"]] == ["Password"]
+    job = crawler._fill_job(request, {"textbox:password": "Paris"})
     assert job.path[0].role == "preserve_input"
     replay = Crawler(browser, CrawlBudget(), [])
     await replay._apply_path(await browser.take_snapshot(), job.path[:1])

@@ -13,7 +13,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,21 +49,20 @@ from core.agents.automation_generation.suite import (
     case_ids_to_write,
 )
 from core.agents.automation_review.agent import AutomationReviewAgent
-from infra.db.repositories.form_answer_repo import list_project_answers
 from core.policy_safety.approval_gates import requires_approval
 from domain.enums import ApprovalStatus, AutomationReviewStatus, RiskLevel
 from infra.db.models.agent_run import AgentRun
 from infra.db.models.application_map import ApplicationMap
 from infra.db.models.approval import Approval
 from infra.db.models.automation import AutomationScript
-from infra.db.models.project import Project
 from infra.db.models.discovery_credential import DiscoveryCredential
+from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement
 from infra.db.models.test_case import TestCase, TestCaseVersion
-from infra.db.models.form_test_data import FormTestData
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
+from infra.db.repositories.form_answer_repo import list_project_answers
 from infra.db.repositories.test_case_repo import TestCaseRepository
 from schemas.automation import (
     AutomationGenerationOut,
@@ -244,24 +243,21 @@ async def generate_automation(
         for state in full_map.states
     }
     case_payload = [_case_payload(case, version, full_map.version) for case, version in to_write]
+    for item in case_payload:
+        item["credential_ref"] = item.get("credential_ref") or project.credential_ref
     await _validate_case_credentials(session, project, case_payload)
-    fixture_ids = [uuid.UUID(item["test_case_id"]) for item in case_payload]
-    if fixture_ids:
-        fixtures = await session.scalars(
-            select(FormTestData).where(
-                FormTestData.project_id == project_id,
-                FormTestData.test_case_id.in_(fixture_ids),
-                FormTestData.active.is_(True),
+    from infra.test_data_service import resolve_case_data
+
+    for item in case_payload:
+        try:
+            data, _sources, fixture = await resolve_case_data(
+                session, project_id, uuid.UUID(item["test_case_id"]), item["test_data"]
             )
-        )
-        fixture_by_case = {str(row.test_case_id): row for row in fixtures}
-        for item in case_payload:
-            fixture = fixture_by_case.get(item["test_case_id"])
-            if fixture is not None:
-                # Explicit case assignment wins over generated inline fixtures.
-                item["test_data"] = dict(fixture.test_data or {})
-                if fixture.expected_result:
-                    item["expected_result"] = fixture.expected_result
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        item["test_data"] = data
+        if fixture is not None and fixture.expected_result:
+            item["expected_result"] = fixture.expected_result
     accounts = {item.get("credential_ref") for item in case_payload}
     saved_recovery = (full_map.diagnostic_evidence or {}).get("automation_recovery") or {}
     if len(accounts) == 1:
@@ -574,6 +570,8 @@ async def update_generation_sources(
 async def download_generation(
     project_id: uuid.UUID,
     generation_id: uuid.UUID,
+    include_credentials: bool = False,
+    export_key: str | None = Header(default=None, alias="X-API-Key"),
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
     rows = await _require_generation(session, project_id, generation_id)
@@ -584,7 +582,54 @@ async def download_generation(
     suite = generation_dir(root, project_id, generation_id)
     if not suite.is_dir():
         raise HTTPException(status_code=404, detail="Generated suite files are not available.")
-    payload = build_zip(root, suite)
+    import hmac
+
+    from infra.execution_inputs import read_json
+    from infra.test_data_service import runtime_form_values
+
+    settings = ApiSettings()
+    if include_credentials and (
+        not settings.allow_credential_export or not settings.api_key
+        or not export_key or not hmac.compare_digest(export_key, settings.api_key)
+    ):
+        raise HTTPException(403, "Credential export requires administrator enablement and a valid API key")
+    manifest = read_json(suite / "manifest.json")
+    project = await session.get(Project, project_id)
+    try:
+        resolved = await runtime_form_values(session, project_id, rows, manifest.get("input_bindings", []))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    sensitive = {binding["key"] for binding in manifest.get("input_bindings", []) if binding.get("sensitive")}
+    values = {key: value for key, value in resolved.items() if include_credentials or key not in sensitive}
+    credentials = {}
+    for script in rows:
+        case = await session.get(TestCase, script.test_case_id)
+        if case is None:
+            raise HTTPException(409, "An exported test case no longer exists")
+        if case.current_version != script.test_case_version:
+            raise HTTPException(409, "Regenerate automation after changing a test case")
+        if include_credentials:
+            ref = case.credential_ref or project.credential_ref
+            if ref:
+                await _validate_case_credentials(session, project, [{"credential_ref": ref}])
+                from core.tool_gateway.playwright_client import _encoded_extra_login_fields
+                from core.tool_gateway.secret_resolver import resolve_login
+                secret = await resolve_login(ref, project_id)
+                credentials[Path(script.file_path).name] = {
+                    "TEST_USERNAME": secret.get("username", ""), "TEST_PASSWORD": secret.get("password", ""),
+                    "TEST_LOGIN_URL": secret.get("login_url") or "/login",
+                    "TEST_ACCOUNT_ROLE": secret.get("account_role") or "",
+                    "TEST_LOGIN_FIELDS_B64": _encoded_extra_login_fields(secret),
+                    "TEST_LOGIN_PRELUDE_B64": base64.b64encode(str(secret.get("login_prelude") or "[]").encode()).decode(),
+                    "TEST_LOGIN_CHOICE_B64": base64.b64encode(str(secret.get("login_choice") or "null").encode()).decode(),
+                }
+    config = {
+        "config/testdata.json": json.dumps({"schema_version": 1, "values": values}),
+        "STANDALONE.md": "# Standalone execution\nInstall Node.js, run `npm install`, `npx playwright install`, then `npx playwright test`.\nLocal inputs are in config/testdata.json. No platform API or database is needed.\nCredentials are included only when explicitly selected and authorized. Treat this package as confidential.\nRegenerate the package when assignments change. CAPTCHA/OTP require runtime input.\n",
+    }
+    if include_credentials:
+        config["config/credentials.json"] = json.dumps(credentials)
+    payload = build_zip(root, suite, config=config)
     return Response(
         content=payload,
         media_type="application/zip",

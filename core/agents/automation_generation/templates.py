@@ -190,6 +190,14 @@ function loadSuiteEnv(): void {
   }
 }
 
+function credentialValue(name: string): string {
+  if (process.env[name] !== undefined) return process.env[name]!;
+  const file = path.resolve(__dirname, "../config/credentials.json");
+  if (!fs.existsSync(file)) return "";
+  const config = JSON.parse(fs.readFileSync(file, "utf8"));
+  return config[path.basename(base.info().file)]?.[name] ?? "";
+}
+
 function suiteBaseURL(): string {
   const fromEnv = process.env.BASE_URL?.trim() ?? "";
   const configured = [[ base_url ]];
@@ -383,17 +391,17 @@ function sessionEndControl(page: Page) {
 
 async function enterApplication(page: Page): Promise<void> {
   loadSuiteEnv();
-  const username = process.env.TEST_USERNAME?.trim() ?? "";
-  const password = process.env.TEST_PASSWORD ?? "";
+  const username = credentialValue("TEST_USERNAME").trim();
+  const password = credentialValue("TEST_PASSWORD");
   if (!username || !password) {
     throw new Error("The discovery login is not available. Choose or edit the account on Automation, then generate again.");
   }
-  const loginURL = process.env.TEST_LOGIN_URL?.trim() || "/login";
+  const loginURL = credentialValue("TEST_LOGIN_URL").trim() || "/login";
   await page.goto(loginURL, { waitUntil: "domcontentloaded" });
   await waitOutCaptchaLimit(page);
-  const accountRole = process.env.TEST_ACCOUNT_ROLE || "";
+  const accountRole = credentialValue("TEST_ACCOUNT_ROLE");
   const decodeLogin = (key: string, fallback: unknown): any => {
-    try { return JSON.parse(Buffer.from(process.env[key] || "", "base64").toString("utf8")); }
+    try { return JSON.parse(Buffer.from(credentialValue(key), "base64").toString("utf8")); }
     catch { return fallback; }
   };
   const choice = decodeLogin("TEST_LOGIN_CHOICE_B64", null);
@@ -435,7 +443,7 @@ async function enterApplication(page: Page): Promise<void> {
   // Additional required login inputs discovered for this account (such as
   // tenant/company code) are passed as base64 JSON at runtime. They never
   // appear in generated source or discovery checkpoints.
-  const encodedFields = process.env.TEST_LOGIN_FIELDS_B64?.trim() ?? "";
+  const encodedFields = credentialValue("TEST_LOGIN_FIELDS_B64").trim();
   let extraFields: Record<string, string> = {};
   try {
     const parsed = JSON.parse(Buffer.from(encodedFields, "base64").toString("utf8"));
@@ -646,7 +654,7 @@ export const test = base.extend<{ publicPage: Page; sessionPage: Page }>({
 
 export function envCredential(name: "TEST_USERNAME" | "TEST_PASSWORD" | "TEST_CAPTCHA"): string {
   loadSuiteEnv();
-  return process.env[name] ?? "";
+  return credentialValue(name);
 }
 
 export { expect };
@@ -761,6 +769,8 @@ npx playwright test
 
 _GITIGNORE = """\
 node_modules/
+config/credentials.json
+config/testdata.json
 test-results/
 playwright-report/
 blob-report/

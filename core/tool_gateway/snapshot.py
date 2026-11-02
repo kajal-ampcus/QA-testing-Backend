@@ -28,6 +28,7 @@ def parse_elements(snapshot: object) -> list[dict[str, Any]]:
     if isinstance(snapshot, dict):
         return [dict(node) for node in snapshot.get("elements", [])]
     nodes = []
+    landmarks: list[tuple[int, str]] = []
     for line in snapshot_text(snapshot).splitlines():
         match = _NODE.search(line)
         if match:
@@ -42,6 +43,13 @@ def parse_elements(snapshot: object) -> list[dict[str, Any]]:
         with suppress(json.JSONDecodeError):
             name = json.loads('"' + name + '"')
         node: dict[str, Any] = {"uid": uid, "role": role, "name": name}
+        indent = match.start()
+        while landmarks and landmarks[-1][0] >= indent:
+            landmarks.pop()
+        if landmarks:
+            node["landmark"] = landmarks[-1][1]
+        if role in {"banner", "contentinfo", "navigation", "main", "complementary", "form"}:
+            landmarks.append((indent, role))
         tail = line[match.end() :]
         for key, value in _ATTRIBUTE.findall(tail):
             if key == "value":

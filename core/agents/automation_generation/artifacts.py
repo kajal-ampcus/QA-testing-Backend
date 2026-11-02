@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 _SKIP_DIRS = {"node_modules", "test-results", "playwright-report", "blob-report", ".execution-inputs"}
-_SKIP_FILES = {".env", "execution-inputs.json"}
+_SKIP_FILES = {".env", "execution-inputs.json", "credentials.json", "testdata.json"}
 
 
 class ArtifactPathError(ValueError):
@@ -27,7 +27,7 @@ def generation_dir(root: Path, project_id: UUID, generation_id: UUID) -> Path:
     return ensure_under(root, root / str(project_id) / str(generation_id))
 
 
-def build_zip(root: Path, suite_dir: Path) -> bytes:
+def build_zip(root: Path, suite_dir: Path, *, config: dict[str, str] | None = None) -> bytes:
     suite = ensure_under(root, suite_dir)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -39,7 +39,12 @@ def build_zip(root: Path, suite_dir: Path) -> bytes:
                 continue
             if path.name in _SKIP_FILES:
                 continue
+            ensure_under(suite, path)
             archive.write(path, relative.as_posix())
+        for name, content in (config or {}).items():
+            if name not in {"config/testdata.json", "config/credentials.json", "STANDALONE.md"}:
+                raise ArtifactPathError("Unsupported standalone configuration path")
+            archive.writestr(name, content)
     return buffer.getvalue()
 
 
