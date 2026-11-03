@@ -72,6 +72,10 @@ COPY schemas/ schemas/
 COPY infra/ infra/
 RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps --timeout 120 --retries 5 .
 COPY scripts/docker_entrypoint.py scripts/run_worker.py scripts/
+# Safety net: if the Python playwright package was updated after the apt chromium
+# layer was cached, re-run its own downloader so binary versions always match.
+RUN python -m playwright install chromium
+
 RUN useradd --create-home --uid 10001 qa \
     && mkdir -p /app/artifacts/discovery /app/artifacts/automation /app/logs \
     && chown -R qa:qa /app/artifacts /app/logs

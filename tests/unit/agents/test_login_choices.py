@@ -73,11 +73,21 @@ async def test_guided_round_trip_inspects_selected_role_then_authenticated_pages
         async def take_snapshot(self):
             if self.page == "dashboard":
                 return [TextBlock('uid=2_0 RootWebArea "Dashboard" url="https://portal.test/dashboard"\nuid=2_1 button "Logout"')]
+            if self.page == "users":
+                return [TextBlock('uid=3_0 RootWebArea "Users" url="https://portal.test/users"\nuid=3_1 heading "Users"')]
             return [TextBlock('uid=1_0 RootWebArea "Login" url="https://portal.test/login"\n'
                 'uid=1_1 tab "Member"\nuid=1_2 tab "Supplier"\n'
                 'uid=1_3 textbox "Member ID"\nuid=1_4 textbox "Password"\nuid=1_5 button "Sign in"')]
         async def authenticate(self):
             self.page = "dashboard"
+        async def inspect_elements(self, snapshot):
+            from core.tool_gateway.snapshot import parse_elements
+            nodes = parse_elements(snapshot)
+            if self.page == "dashboard":
+                nodes.append({"uid": "2_2", "role": "link", "name": "Users", "url": "https://portal.test/users"})
+            return nodes
+        async def navigate_page(self, url):
+            self.page = "users" if url.endswith("/users") else "login"
 
     @asynccontextmanager
     async def browser():
@@ -106,3 +116,12 @@ async def test_guided_round_trip_inspects_selected_role_then_authenticated_pages
         credential_ref="cred:supplier", discovery_mode="guided", worker_limit=1, checkpoint=checkpoint, selected_branches=[raw["key"]])
     await third.crawl("https://portal.test/login", record)
     assert any(state["url_pattern"] == "/dashboard" for state in states)
+    checkpoint = third._checkpoint_payload()
+    users = next(job for job in checkpoint["jobs"] if job["path"]
+        and job["path"][-1].get("name") == "Users")
+    assert users["status"] == "available"
+    fourth = ParallelCrawler(browser, CrawlBudget(max_pages=20), [], login_url=None, authenticate=True,
+        credential_ref="cred:supplier", discovery_mode="guided", worker_limit=1,
+        checkpoint=checkpoint, selected_branches=[users["key"]])
+    await fourth.crawl("https://portal.test/login", record)
+    assert any(state["url_pattern"] == "/users" for state in states)

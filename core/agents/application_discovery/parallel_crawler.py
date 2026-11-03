@@ -1332,6 +1332,7 @@ class ParallelCrawler:
         area_id: str,
         module_id: str | None,
         allow_collection_follow: bool = False,
+        authenticated: bool = False,
     ) -> bool:
         if len(path) >= self._budget.max_depth:
             self._depth_limited += 1
@@ -1392,7 +1393,7 @@ class ParallelCrawler:
         ):
             return True
         icons = unlabeled_collection_icons(nodes)
-        if self._discovery_mode == "guided" and self._authenticate:
+        if self._discovery_mode == "guided" and self._authenticate and not authenticated:
             flow = self._detect_auth_flow(parent_fingerprint, {"url_pattern": current_url}, nodes, False)
             if flow and flow["kind"] == "login":
                 auth_job = DiscoveryJob(
@@ -1414,6 +1415,7 @@ class ParallelCrawler:
             login_branch = (
                 self._discovery_mode == "guided"
                 and self._authenticate
+                and not authenticated
                 and skip_auth
                 and role == "button"
                 and not element.get("url")
@@ -1432,10 +1434,14 @@ class ParallelCrawler:
                 if self._job_key(child_job) not in self._job_states:
                     await self._set_job_status(child_job, "available")
                 continue
-            if _is_login_form_chrome(nodes, role, element.get("url")):
+            if not authenticated and _is_login_form_chrome(nodes, role, element.get("url")):
                 self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
                 continue
-            if not self._action_in_scope(area_id, element, len(path), module_id):
+            if authenticated and self._discovery_mode == "guided":
+                in_scope = True
+            else:
+                in_scope = self._action_in_scope(area_id, element, len(path), module_id)
+            if not in_scope:
                 continue
             if role not in {"link", "button", "menuitem", "tab", "radio", "combobox"}:
                 continue
@@ -1764,6 +1770,14 @@ class ParallelCrawler:
                                     crawler._dropdown_overlay = found  # type: ignore[attr-defined]
                             fingerprint, nodes = await crawler._record_state(snapshot, recorded_path, capture)
                             job.observed_form = observed_page_form(nodes)
+                            # Authenticated application menus often render links
+                            # in the DOM without exposing them as accessibility
+                            # nodes. Use the browser's observed DOM metadata when
+                            # building the guided frontier so protected modules
+                            # can be selected after sign-in.
+                            if any(step.role == "authentication" for step in recorded_path) and hasattr(client, "inspect_elements"):
+                                with suppress(Exception):
+                                    nodes = await client.inspect_elements(snapshot)
                             observed_fingerprint = fingerprint
                             authenticated_state = any(step.role == "authentication" for step in recorded_path)
                             if authenticated_state and fingerprint and self._credential_ref:
@@ -1955,6 +1969,9 @@ class ParallelCrawler:
                                     area_id,
                                     job.module_id,
                                     allow_collection_follow=reveal_replay,
+                                    authenticated=not skip_auth
+                                    or (request is not None and request.get("kind") == "login")
+                                    or any(step.role == "authentication" for step in job.path),
                                 )
                                 async with self._lock:
                                     self._expanding.discard(fingerprint)

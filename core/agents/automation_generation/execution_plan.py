@@ -153,10 +153,7 @@ def prepare_execution(
             if str(element.get("role", "")).lower() not in {"textbox", "combobox", "searchbox", "spinbutton"}:
                 continue
             name = str(element.get("name") or "")
-            value = data.get(name, data.get(name.lower()))
-            configured_key = name if name in data else name.lower()
-            if isinstance(value, str):
-                value = "{" + configured_key + "}"
+            value = _resolve_field(data, name)
             if not isinstance(value, str) or not value:
                 key = normalize_name(name)
                 credential_env = _credential_environment(element, name)
@@ -283,7 +280,7 @@ def ground_steps(steps, states, data, discovery=None):
                 configured_key = next((key for key in (
                     f"{code}/{decision.element_code}", field, field.lower()
                 ) if key in data), field)
-                configured = data.get(configured_key)
+                configured = _resolve_field(data, field)
                 if empty:
                     step["value"] = ""
                 elif quotes:
@@ -746,6 +743,38 @@ def _captcha_is_under_test(
             or re.search(r"\b(blank|empty|missing|required|invalid|incorrect|wrong|reject|error|validation)\b", text, re.I)
         )
     )
+
+
+def _resolve_field(data: dict[str, Any], field: str) -> str | None:
+    """Look up a field value from test_data with case-insensitive and normalised-name fallbacks.
+
+    FormTestData keys may differ in case or punctuation from the element names
+    on the discovered application map (e.g. "email" vs "Email", or "search_term"
+    vs "Search Term").  Try the exact name first, then lowercase, then a
+    normalised slug so that test data uploaded from an Excel sheet reliably
+    matches observed element names regardless of casing.
+    """
+    if not field or not data:
+        return None
+    # Exact match
+    value = data.get(field)
+    if isinstance(value, str):
+        return value
+    # Lowercase match
+    value = data.get(field.lower())
+    if isinstance(value, str):
+        return value
+    # Normalised slug match (spaces → underscores, strip punctuation, lowercase)
+    slug = normalize_name(field)
+    if slug:
+        value = data.get(slug)
+        if isinstance(value, str):
+            return value
+        # Also try reverse: normalise every existing key and compare
+        for key, val in data.items():
+            if isinstance(val, str) and normalize_name(str(key)) == slug:
+                return val
+    return None
 
 
 def _destructive(steps: list[dict[str, Any]], states: dict[str, _State]) -> bool:

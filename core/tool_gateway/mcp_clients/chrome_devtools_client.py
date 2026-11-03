@@ -287,9 +287,32 @@ def _authentication_completed(text: str, login_text: str = "") -> bool:
         return False
     old_url = re.search(r'RootWebArea[^\n]*url="([^"]+)"', login_text)
     new_url = re.search(r'RootWebArea[^\n]*url="([^"]+)"', text)
-    return bool(old_url and new_url and old_url[1] != new_url[1]
-                and any(role in {"heading", "button", "link"} for _, role, _ in controls)
-                and not re.search(r"verification|one.time|captcha|loading", text, re.I))
+    if (old_url and new_url and old_url[1] != new_url[1]
+            and any(role in {"heading", "button", "link"} for _, role, _ in controls)
+            and not re.search(r"verification|one.time|captcha|loading", text, re.I)):
+        return True
+
+    # Some applications complete login in place and keep the login route. In
+    # that case, disappearance of the credential form is the only observable
+    # signal available in the accessibility snapshot. Require a meaningful
+    # page (and no login/challenge markers) so transient loading/error screens
+    # are not mistaken for an authenticated landing page.
+    if login_text and old_url and new_url and old_url[1] == new_url[1]:
+        login_controls = _parse_controls(login_text)
+        had_login_form = (
+            _find_password_uid(login_controls, "", ["password", "passcode", "pin"]) is not None
+            or _find_submit_uid(login_controls, ["log in", "login", "sign in", "signin"]) is not None
+        )
+        has_login_form = (
+            _find_password_uid(controls, "", ["password", "passcode", "pin"]) is not None
+            or _find_submit_uid(controls, ["log in", "login", "sign in", "signin"]) is not None
+        )
+        meaningful_page = any(role in {"heading", "button", "link", "menuitem"}
+                              for _, role, _ in controls)
+        if (had_login_form and not has_login_form and meaningful_page
+                and not re.search(r"invalid|incorrect|failed|error|verification|one.time|captcha|loading", text, re.I)):
+            return True
+    return False
 
 
 def _find_uid(

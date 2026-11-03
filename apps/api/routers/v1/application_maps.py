@@ -642,6 +642,10 @@ def _credential_from_login_form(
 def _input_navigation_job(checkpoint: dict, path: list[dict], request_id: str | None = None) -> dict:
     from core.agents.application_discovery.crawler import ClickStep
     from core.agents.application_discovery.parallel_crawler import DiscoveryJob, ParallelCrawler
+    # Keep login submissions in the public replay phase: the selected path
+    # includes the observed role/navigation steps needed to reach the form.
+    # The authentication step itself switches the browser to its signed-in
+    # state before the resulting page is recorded and expanded.
     job = DiscoveryJob(-1, 0, path=[ClickStep(**step) for step in path], skip_auth=True, force_expand=True, input_request_id=request_id)
     raw = ParallelCrawler._serialize_job(job, "pending")
     checkpoint["jobs"] = [item for item in checkpoint.get("jobs", []) if item.get("key") != raw["key"]] + [raw]

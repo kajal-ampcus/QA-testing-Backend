@@ -46,6 +46,38 @@ def test_authentication_completion_uses_controls(snapshot, expected):
     assert _authentication_completed(snapshot) is expected
 
 
+def test_authentication_completion_accepts_same_route_after_login_form_disappears():
+    before = (
+        'uid=1_0 RootWebArea "Login" url="https://sample.test/en"\n'
+        'uid=1_1 textbox "Email"\n'
+        'uid=1_2 textbox "Password"\n'
+        'uid=1_3 button "Login"'
+    )
+    after = (
+        'uid=1_0 RootWebArea "Home" url="https://sample.test/en"\n'
+        'uid=1_1 heading "Home"\n'
+        'uid=1_2 link "Contact" url="https://sample.test/en/contact"'
+    )
+    assert _authentication_completed(after, before)
+
+
+def test_authentication_completion_rejects_same_route_with_login_form_or_error():
+    before = (
+        'uid=1_0 RootWebArea "Login" url="https://sample.test/en"\n'
+        'uid=1_1 textbox "Email"\n'
+        'uid=1_2 textbox "Password"\n'
+        'uid=1_3 button "Login"'
+    )
+    still_login = before.replace('uid=1_0 RootWebArea "Login"', 'uid=1_0 RootWebArea "Home"')
+    error = (
+        'uid=1_0 RootWebArea "Home" url="https://sample.test/en"\n'
+        'uid=1_1 StaticText "Login failed"\n'
+        'uid=1_2 link "Forgot password"'
+    )
+    assert not _authentication_completed(still_login, before)
+    assert not _authentication_completed(error, before)
+
+
 def test_math_captcha_supports_unicode_minus():
     assert _solve_math_captcha("4 − 2 = ?") == 2
 
