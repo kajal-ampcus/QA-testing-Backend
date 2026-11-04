@@ -15,6 +15,7 @@ marks test cases written against older versions OUTDATED.
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -47,6 +48,150 @@ from schemas.requirement import (
 )
 
 router = APIRouter(prefix="/requirements", tags=["requirements"])
+
+
+class DiscoveryRequirementScope(BaseModel):
+    application_map_id: uuid.UUID
+    state_codes: list[str] = Field(min_length=1, max_length=500)
+
+
+class DiscoveryRequirementDraft(DiscoveryRequirementScope):
+    state_codes: list[str] = Field(min_length=1, max_length=100)
+    save: bool = False
+    exploratory: bool = False
+    behavioral: bool = False
+    success_outcome: str | None = Field(default=None, min_length=3, max_length=2000)
+    existing_requirement_id: uuid.UUID | None = None
+    expected_version: int | None = Field(default=None, ge=1)
+    title: str | None = Field(default=None, min_length=3, max_length=200)
+    description: str | None = Field(default=None, min_length=3, max_length=20000)
+    criteria: list[str] | None = Field(default=None, min_length=1, max_length=100)
+
+
+class DiscoveryRequirementLink(DiscoveryRequirementScope):
+    expected_version: int = Field(ge=1)
+
+
+async def _discovery_states(session, project_id, body):
+    from infra.db.repositories.application_map_repo import ApplicationMapRepository
+    app_map = await ApplicationMapRepository(session).get_with_states(body.application_map_id)
+    if app_map is None or app_map.project_id != project_id:
+        raise HTTPException(404, "Application map not found in this project")
+    codes = set(body.state_codes)
+    states = [state for state in app_map.states if state.state_code in codes]
+    if {state.state_code for state in states} != codes:
+        raise HTTPException(422, "Selected states are no longer in this application map")
+    return states
+
+
+@router.post("/projects/{project_id}/discovery-coverage")
+async def discovery_requirement_coverage(project_id: uuid.UUID, body: DiscoveryRequirementScope,
+                                         session: AsyncSession = Depends(get_db_session)):
+    from core.agents.test_design.discovery_requirements import matching_requirement
+    from core.agents.test_design.form_contracts import form_profile, visibility_only
+    states = await _discovery_states(session, project_id, body)
+    pairs = (await session.execute(select(Requirement, RequirementVersion).join(
+        RequirementVersion, (RequirementVersion.requirement_id == Requirement.id)
+        & (RequirementVersion.version == Requirement.current_version)
+    ).where(Requirement.project_id == project_id))).all()
+    return {"pages": [{"state_code": state.state_code, "url": state.url_pattern,
+        "requirements": [{"id": str(req.id), "title": version.title, "status": req.status,
+                          "match": match, "form_behavior_missing": bool(form_profile(state)) and visibility_only(version)} for req, version in pairs
+                         if (match := matching_requirement(state, version))]}
+        for state in states]}
+
+
+@router.post("/projects/{project_id}/discovery-draft")
+async def draft_discovery_requirement(project_id: uuid.UUID, body: DiscoveryRequirementDraft,
+                                       session: AsyncSession = Depends(get_db_session)):
+    from core.agents.test_design.discovery_requirements import discovery_draft
+    from core.agents.requirement_understanding.schemas import RequirementExtraction
+    from core.agents.test_design.form_contracts import form_profile
+    import hashlib
+    states = await _discovery_states(session, project_id, body)
+    draft = discovery_draft(states, body.exploratory, body.behavioral, body.success_outcome)
+    requires_outcome = body.behavioral and not body.exploratory and any(form_profile(state) for state in states)
+    current_requirement = current = None
+    if body.existing_requirement_id:
+        current_requirement = (await _lock_requirement(session, body.existing_requirement_id) if body.save
+                               else await session.get(Requirement, body.existing_requirement_id))
+        if current_requirement is None or current_requirement.project_id != project_id:
+            raise HTTPException(404, "Requirement not found in this project")
+        if current_requirement.current_version != body.expected_version:
+            raise HTTPException(409, "Requirement changed. Reload before reviewing form behavior")
+        current = await _current_version(session, current_requirement)
+        known = {ac["text"] for ac in current.acceptance_criteria}
+        draft["acceptance_criteria"] = [*[dict(ac) for ac in current.acceptance_criteria],
+            *[ac for ac in draft["acceptance_criteria"] if ac["text"] not in known]]
+        draft["title"], draft["description"] = current.title, current.description
+        draft["ambiguities"] = [dict(item) for item in getattr(current, "ambiguities", [])]
+        draft["domain_tags"] = list(dict.fromkeys([*(current.domain_tags or []), *draft["domain_tags"]]))
+        for index, ac in enumerate(draft["acceptance_criteria"], 1):
+            ac["id"] = f"AC-{index}"
+    if not body.save:
+        return {"draft": draft, "requires_success_outcome": requires_outcome}
+    if requires_outcome and not str(body.success_outcome or "").strip():
+        raise HTTPException(422, "Confirm the expected successful submission result before saving functional form requirements")
+    if body.title is not None:
+        draft["title"] = body.title
+    if body.description is not None:
+        draft["description"] = body.description
+    if body.criteria is not None:
+        if any(not text.strip() or len(text) > 4000 for text in body.criteria):
+            raise HTTPException(422, "Each acceptance criterion needs text of at most 4000 characters")
+        by_text = {ac["text"]: ac for ac in draft["acceptance_criteria"]}
+        confirmed_success = [ac for ac in draft["acceptance_criteria"] if (ac.get("form_behavior") or {}).get("kind") == "submit"]
+        texts = [*body.criteria, *[ac["text"] for ac in confirmed_success if ac["text"] not in body.criteria]]
+        draft["acceptance_criteria"] = [{**by_text.get(text.strip(), {"source": "REQUIREMENT"}),
+                                        "id": f"AC-{index+1}", "text": text.strip()}
+                                         for index, text in enumerate(texts)]
+    extraction = RequirementExtraction.model_validate(draft)
+    repo = RequirementRepository(session)
+    if current_requirement:
+        version = await repo.append_version(current_requirement, extraction.model_dump_json(), extraction)
+        version.acceptance_criteria = draft["acceptance_criteria"]
+        await _after_new_version(session, current_requirement, version)
+        await session.commit()
+        return {"requirement": _to_response(current_requirement, version)}
+    code = await repo.next_req_code(project_id)  # project lock also serializes duplicate creation
+    identity = f"{body.application_map_id}:{','.join(sorted(set(body.state_codes)))}:{body.exploratory}" + (":behavioral" if body.behavioral else "")
+    ref = "discovery:" + hashlib.sha256(identity.encode()).hexdigest()
+    existing = await session.scalar(select(Requirement).where(
+        Requirement.project_id == project_id, Requirement.external_ref == ref))
+    if existing:
+        return {"requirement": _to_response(existing, await _current_version(session, existing))}
+    requirement, version = await repo.create(project_id, code, extraction.model_dump_json(), extraction,
+                                              RequirementStatus.PENDING_APPROVAL, external_ref=ref)
+    version.acceptance_criteria = draft["acceptance_criteria"]
+    _request_approval(session, requirement)
+    await session.commit()
+    return {"requirement": _to_response(requirement, version)}
+
+
+@router.post("/projects/{project_id}/{requirement_id}/discovery-scope", response_model=RequirementResponse)
+async def link_discovery_requirement(project_id: uuid.UUID, requirement_id: uuid.UUID,
+                                      body: DiscoveryRequirementLink,
+                                      session: AsyncSession = Depends(get_db_session)):
+    from core.agents.test_design.discovery_requirements import route_tag
+    from core.agents.requirement_understanding.schemas import RequirementExtraction
+    states = await _discovery_states(session, project_id, body)
+    requirement = await _lock_requirement(session, requirement_id)
+    if requirement.project_id != project_id:
+        raise HTTPException(404, "Requirement not found in this project")
+    if requirement.current_version != body.expected_version:
+        raise HTTPException(409, "Requirement changed. Refresh before linking pages")
+    current = await _current_version(session, requirement)
+    tags = list(dict.fromkeys([*(current.domain_tags or []), *[route_tag(state) for state in states]]))
+    if tags == current.domain_tags:
+        return _to_response(requirement, current)
+    extraction = RequirementExtraction(title=current.title, description=current.description,
+        acceptance_criteria=current.acceptance_criteria, ambiguities=current.ambiguities, domain_tags=tags)
+    version = await RequirementRepository(session).append_version(requirement,
+        current.raw_text + "\nLinked discovery pages: " + ", ".join(state.url_pattern for state in states), extraction)
+    version.acceptance_criteria = current.acceptance_criteria
+    await _after_new_version(session, requirement, version)
+    await session.commit()
+    return _to_response(requirement, version)
 
 
 def blocking_ambiguities(ambiguities: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -239,7 +384,13 @@ async def revise_requirement(
     )
     requirement = await _lock_requirement(session, requirement_id)
     repo = RequirementRepository(session)
+    current = await _current_version(session, requirement)
+    scope_tags = [tag for tag in (current.domain_tags or []) if tag.startswith("discovery-route:") or tag == "exploratory"]
+    result.extraction.domain_tags = list(dict.fromkeys([*result.extraction.domain_tags, *scope_tags]))
     version = await repo.append_version(requirement, body.raw_text, result.extraction)
+    contracts = {ac["text"]: ac["form_behavior"] for ac in current.acceptance_criteria if ac.get("form_behavior")}
+    version.acceptance_criteria = [{**ac, **({"form_behavior": contracts[ac["text"]]} if ac["text"] in contracts else {})}
+                                  for ac in version.acceptance_criteria]
     await _after_new_version(session, requirement, version)
     _record_successful_run(session, agent, input_envelope, result, requirement, version)
     await session.commit()
@@ -319,6 +470,9 @@ async def edit_acceptance_criteria(
     if any(not text for text in edits.values()):
         raise HTTPException(status_code=422, detail="Acceptance criteria must not be blank")
     updated_criteria = [{**ac, "text": edits[ac["id"]]} for ac in current.acceptance_criteria]
+    for original, updated in zip(current.acceptance_criteria, updated_criteria, strict=True):
+        if updated["text"] != original["text"]:
+            updated.pop("form_behavior", None)
     if updated_criteria == current.acceptance_criteria:
         return _to_response(requirement, current)
     repo = RequirementRepository(session)

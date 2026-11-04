@@ -174,7 +174,7 @@ function chooseDropdowns(page: Page): void {
 /**
  * One browser window for the whole run.
  * Tests reuse this page instead of opening a new window each time.
- * Username and password are read from the suite .env at runtime.
+ * Username and password are read from the environment or local login JSON.
  * This file does not contain credential values or credential references.
  */
 function loadSuiteEnv(): void {
@@ -192,6 +192,18 @@ function loadSuiteEnv(): void {
 
 function credentialValue(name: string): string {
   if (process.env[name] !== undefined) return process.env[name]!;
+  const localFile = path.resolve(__dirname, "../credentials/login-credentials.json");
+  if (fs.existsSync(localFile)) {
+    const config = JSON.parse(fs.readFileSync(localFile, "utf8"));
+    const spec = path.relative(path.resolve(__dirname, ".."), base.info().file).replace(/\\/g, "/");
+    const account = config.accounts?.[spec] ?? config.accounts?.[path.basename(spec)];
+    if (account) {
+      const fields: Record<string, string> = { "TEST_USERNAME": "username", "TEST_PASSWORD": "password", "TEST_LOGIN_URL": "login_url", "TEST_ACCOUNT_ROLE": "account_role" };
+      if (fields[name]) return String(account[fields[name]] ?? "");
+      const structured: Record<string, string> = { TEST_LOGIN_FIELDS_B64: "fields", TEST_LOGIN_PRELUDE_B64: "login_prelude", TEST_LOGIN_CHOICE_B64: "login_choice" };
+      if (structured[name]) return Buffer.from(JSON.stringify(account[structured[name]] ?? (name === "TEST_LOGIN_CHOICE_B64" ? null : name === "TEST_LOGIN_FIELDS_B64" ? {} : []))).toString("base64");
+    }
+  }
   const file = path.resolve(__dirname, "../config/credentials.json");
   if (!fs.existsSync(file)) return "";
   const config = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -449,7 +461,7 @@ async function enterApplication(page: Page): Promise<void> {
     const parsed = JSON.parse(Buffer.from(encodedFields, "base64").toString("utf8"));
     if (parsed && typeof parsed === "object") {
       extraFields = Object.fromEntries(
-        Object.entries(parsed).filter(([name, value]) => typeof name === "string" && typeof value === "string" && value),
+        Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
       );
     }
   } catch {
@@ -661,7 +673,7 @@ export { expect };
 """
 _TESTDATA = """\
 /**
- * Inputs are supplied through the environment.
+ * Inputs use environment overrides or credentials/test-data.json via executionInput.
  * Do not put real credentials in this file.
  */
 export const testData = {
@@ -742,7 +754,11 @@ chain for the whole suite.
 
 ## Environment
 
-The platform writes `.env` from the discovery account when the suite is generated. Do not commit `.env`, and do not paste passwords into the TypeScript files. Edit the account on the Automation step if a different login is needed.
+Managed execution supplies account inputs at runtime. For a separate standalone
+run, download the ZIP and select the saved-login option when needed. The package
+contains `credentials/login-credentials.json` and `credentials/test-data.json`;
+the fixtures read these files without a platform API or database connection.
+Do not commit these files or paste passwords into the TypeScript source.
 
 - `BASE_URL` — application under test
 - `TEST_USERNAME` and `TEST_PASSWORD` — account inputs, when a flow needs them
@@ -769,6 +785,8 @@ npx playwright test
 
 _GITIGNORE = """\
 node_modules/
+credentials/login-credentials.json
+credentials/test-data.json
 config/credentials.json
 config/testdata.json
 test-results/

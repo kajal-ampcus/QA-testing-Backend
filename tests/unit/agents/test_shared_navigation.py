@@ -48,6 +48,29 @@ def test_snapshot_landmarks_do_not_leak_into_main_content():
     assert nodes[3]["landmark"] == "main"
 
 
+@pytest.mark.asyncio
+async def test_custom_sidebar_is_offered_once_and_plain_text_is_not_navigation():
+    crawler = ParallelCrawler(None, CrawlBudget(), [], None, True, discovery_mode="guided")
+    queue = asyncio.PriorityQueue()
+    menu = [
+        {"role": "StaticText", "name": "Users", "navigation_clickable": True, "locator_scope": "aside"},
+        {"role": "StaticText", "name": "Announcements", "navigation_clickable": True, "locator_scope": "aside"},
+        {"role": "StaticText", "name": "Platform management", "locator_scope": "aside"},
+        {"role": "StaticText", "name": "Sign out", "navigation_clickable": True, "locator_scope": "aside"},
+    ]
+    path = [ClickStep("authentication", "Sign in")]
+    await crawler._enqueue_children(queue, menu, path, True, "admin", "https://site.test/admin",
+                                    "authenticated", None, authenticated=True)
+    jobs = list(crawler._job_states.values())
+    assert {job["path"][-1]["name"] for job in jobs} == {"Users", "Announcements"}
+    assert all(job["status"] == "available" and job["parent_fingerprint"] == "admin" for job in jobs)
+    assert queue.empty()
+    await crawler._enqueue_children(queue, menu, [*path, ClickStep("StaticText", "Users")],
+                                    True, "users", "https://site.test/users", "authenticated", None,
+                                    authenticated=True)
+    assert len(crawler._job_states) == 2
+
+
 def test_main_buttons_and_different_auth_context_are_preserved():
     from core.agents.application_discovery.shared_navigation import (
         inherited_navigation,

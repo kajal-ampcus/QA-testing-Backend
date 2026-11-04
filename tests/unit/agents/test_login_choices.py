@@ -65,16 +65,21 @@ async def test_discovery_requests_role_before_credentials_and_keeps_saved_accoun
 
 
 @pytest.mark.asyncio
-async def test_guided_round_trip_inspects_selected_role_then_authenticated_pages():
+@pytest.mark.parametrize("custom_sidebar", [False, True])
+@pytest.mark.parametrize("explore_all", [False, True])
+async def test_guided_round_trip_inspects_selected_role_then_authenticated_pages(custom_sidebar, explore_all):
     from tests.unit.agents.test_discovery_crawler import FakeBrowser, TextBlock
     from apps.api.routers.v1.application_maps import _input_navigation_job
 
     class Browser(FakeBrowser):
         async def take_snapshot(self):
             if self.page == "dashboard":
-                return [TextBlock('uid=2_0 RootWebArea "Dashboard" url="https://portal.test/dashboard"\nuid=2_1 button "Logout"')]
+                return [TextBlock('uid=2_0 RootWebArea "Dashboard" url="https://portal.test/dashboard"\nuid=2_1 button "Logout"'
+                    + ('\nuid=2_2 StaticText "Users"\nuid=2_3 StaticText "Announcements"\nuid=2_4 StaticText "Platform management"' if custom_sidebar else ''))]
             if self.page == "users":
                 return [TextBlock('uid=3_0 RootWebArea "Users" url="https://portal.test/users"\nuid=3_1 heading "Users"')]
+            if self.page == "announcements":
+                return [TextBlock('uid=4_0 RootWebArea "Announcements" url="https://portal.test/announcements"\nuid=4_1 heading "Announcements"')]
             return [TextBlock('uid=1_0 RootWebArea "Login" url="https://portal.test/login"\n'
                 'uid=1_1 tab "Member"\nuid=1_2 tab "Supplier"\n'
                 'uid=1_3 textbox "Member ID"\nuid=1_4 textbox "Password"\nuid=1_5 button "Sign in"')]
@@ -84,8 +89,20 @@ async def test_guided_round_trip_inspects_selected_role_then_authenticated_pages
             from core.tool_gateway.snapshot import parse_elements
             nodes = parse_elements(snapshot)
             if self.page == "dashboard":
-                nodes.append({"uid": "2_2", "role": "link", "name": "Users", "url": "https://portal.test/users"})
+                if custom_sidebar:
+                    for node in nodes:
+                        if node.get("name") in {"Users", "Announcements"}:
+                            node.update(navigation_clickable=True, locator_scope="aside")
+                else:
+                    nodes.append({"uid": "2_2", "role": "link", "name": "Users", "url": "https://portal.test/users"})
             return nodes
+        async def click(self, uid):
+            if self.page == "dashboard" and uid == "2_2":
+                self.page = "users"
+            elif self.page == "dashboard" and uid == "2_3":
+                self.page = "announcements"
+            else:
+                await super().click(uid)
         async def navigate_page(self, url):
             self.page = "users" if url.endswith("/users") else "login"
 
@@ -120,8 +137,22 @@ async def test_guided_round_trip_inspects_selected_role_then_authenticated_pages
     users = next(job for job in checkpoint["jobs"] if job["path"]
         and job["path"][-1].get("name") == "Users")
     assert users["status"] == "available"
+    assert not any(state["url_pattern"] == "/users" for state in states)
+    assert third.termination_reason == "AWAITING_BRANCH_SELECTION"
+    dashboard = next(node for node in checkpoint["graph"]["nodes"] if node["url_pattern"] == "/dashboard")
+    assert users["parent_fingerprint"] == dashboard["fingerprint"]
+    if custom_sidebar:
+        assert any(job["path"][-1].get("name") == "Announcements" and job["status"] == "available"
+                   for job in checkpoint["jobs"] if job["path"])
+        assert not any(job["path"][-1].get("name") == "Platform management"
+                       for job in checkpoint["jobs"] if job["path"])
     fourth = ParallelCrawler(browser, CrawlBudget(max_pages=20), [], login_url=None, authenticate=True,
         credential_ref="cred:supplier", discovery_mode="guided", worker_limit=1,
-        checkpoint=checkpoint, selected_branches=[users["key"]])
+        checkpoint=checkpoint, selected_branches=[job["key"] for job in checkpoint["jobs"]
+            if job["status"] == "available"] if explore_all else [users["key"]])
     await fourth.crawl("https://portal.test/login", record)
     assert any(state["url_pattern"] == "/users" for state in states)
+    assert any(state["url_pattern"] == "/announcements" for state in states) == (custom_sidebar and explore_all)
+    assert any(edge["parent_fingerprint"] == dashboard["fingerprint"]
+               and edge["child_fingerprint"] == next(node["fingerprint"] for node in fourth.coverage["app_flow_graph"]["nodes"] if node["url_pattern"] == "/users")
+               for edge in fourth.coverage["app_flow_graph"]["edges"])

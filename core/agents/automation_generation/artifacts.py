@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 _SKIP_DIRS = {"node_modules", "test-results", "playwright-report", "blob-report", ".execution-inputs"}
-_SKIP_FILES = {".env", "execution-inputs.json", "credentials.json", "testdata.json"}
+_SKIP_FILES = {".env", "execution-inputs.json", "credentials.json", "testdata.json", "login-credentials.json", "test-data.json"}
 
 
 class ArtifactPathError(ValueError):
@@ -27,9 +27,12 @@ def generation_dir(root: Path, project_id: UUID, generation_id: UUID) -> Path:
     return ensure_under(root, root / str(project_id) / str(generation_id))
 
 
-def build_zip(root: Path, suite_dir: Path, *, config: dict[str, str] | None = None) -> bytes:
+def build_zip(root: Path, suite_dir: Path, *, config: dict[str, str] | None = None, overrides: dict[str, str] | None = None) -> bytes:
     suite = ensure_under(root, suite_dir)
     buffer = io.BytesIO()
+    overrides = overrides or {}
+    if set(overrides) - {"fixtures/auth.ts", "data/execution-inputs.ts"}:
+        raise ArtifactPathError("Unsupported standalone source override")
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(suite.rglob("*")):
             if not path.is_file():
@@ -40,9 +43,12 @@ def build_zip(root: Path, suite_dir: Path, *, config: dict[str, str] | None = No
             if path.name in _SKIP_FILES:
                 continue
             ensure_under(suite, path)
-            archive.write(path, relative.as_posix())
+            if relative.as_posix() not in overrides:
+                archive.write(path, relative.as_posix())
+        for name, content in overrides.items():
+            archive.writestr(name, content)
         for name, content in (config or {}).items():
-            if name not in {"config/testdata.json", "config/credentials.json", "STANDALONE.md"}:
+            if name not in {"config/testdata.json", "config/credentials.json", "credentials/login-credentials.json", "credentials/test-data.json", "STANDALONE.md"}:
                 raise ArtifactPathError("Unsupported standalone configuration path")
             archive.writestr(name, content)
     return buffer.getvalue()

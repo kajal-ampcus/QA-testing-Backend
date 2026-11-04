@@ -2,6 +2,9 @@
 
 Implemented 26 October 2026. This describes the current pipeline and supersedes earlier analysis documents that describe whole-map inventory generation or fixed case quotas.
 
+For the API-to-draft walkthrough, a file inventory, and an analysis of the
+validation agent, see [TEST_CASE_GENERATION_README.md](./TEST_CASE_GENERATION_README.md).
+
 ## Root causes found
 
 1. Normal generation added availability checks for every observed control, then attached them to whichever AC shared the most words. This produced unrelated public-page cases under a login requirement.

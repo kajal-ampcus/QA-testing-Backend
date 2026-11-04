@@ -586,13 +586,14 @@ async def download_generation(
 
     from infra.execution_inputs import read_json
     from infra.test_data_service import runtime_form_values
+    from core.agents.automation_generation.standalone import README as standalone_readme, source_overrides, form_input_document
 
     settings = ApiSettings()
-    if include_credentials and (
-        not settings.allow_credential_export or not settings.api_key
-        or not export_key or not hmac.compare_digest(export_key, settings.api_key)
-    ):
-        raise HTTPException(403, "Credential export requires administrator enablement and a valid API key")
+    if include_credentials:
+        local_mode = getattr(settings, "environment", "development") == "development" and not settings.api_key
+        authenticated = bool(settings.api_key and export_key and hmac.compare_digest(export_key, settings.api_key))
+        if not settings.allow_credential_export or not (local_mode or authenticated):
+            raise HTTPException(403, "Saved-login export is disabled or unauthorized. Enable ALLOW_CREDENTIAL_EXPORT; configured API keys must also be supplied.")
     manifest = read_json(suite / "manifest.json")
     project = await session.get(Project, project_id)
     try:
@@ -601,13 +602,15 @@ async def download_generation(
         raise HTTPException(409, str(exc)) from exc
     sensitive = {binding["key"] for binding in manifest.get("input_bindings", []) if binding.get("sensitive")}
     values = {key: value for key, value in resolved.items() if include_credentials or key not in sensitive}
-    credentials = {}
+    credentials = {"schema_version": 1, "accounts": {}}
     for script in rows:
         case = await session.get(TestCase, script.test_case_id)
         if case is None:
             raise HTTPException(409, "An exported test case no longer exists")
         if case.current_version != script.test_case_version:
             raise HTTPException(409, "Regenerate automation after changing a test case")
+        credentials["accounts"][script.file_path] = {"username": "", "password": "", "login_url": "/login",
+                                                   "account_role": "", "fields": {}, "login_prelude": [], "login_choice": None}
         if include_credentials:
             ref = case.credential_ref or project.credential_ref
             if ref:
@@ -615,21 +618,20 @@ async def download_generation(
                 from core.tool_gateway.playwright_client import _encoded_extra_login_fields
                 from core.tool_gateway.secret_resolver import resolve_login
                 secret = await resolve_login(ref, project_id)
-                credentials[Path(script.file_path).name] = {
-                    "TEST_USERNAME": secret.get("username", ""), "TEST_PASSWORD": secret.get("password", ""),
-                    "TEST_LOGIN_URL": secret.get("login_url") or "/login",
-                    "TEST_ACCOUNT_ROLE": secret.get("account_role") or "",
-                    "TEST_LOGIN_FIELDS_B64": _encoded_extra_login_fields(secret),
-                    "TEST_LOGIN_PRELUDE_B64": base64.b64encode(str(secret.get("login_prelude") or "[]").encode()).decode(),
-                    "TEST_LOGIN_CHOICE_B64": base64.b64encode(str(secret.get("login_choice") or "null").encode()).decode(),
+                fields = json.loads(base64.b64decode(_encoded_extra_login_fields(secret)))
+                fields = {name: value for name, value in fields.items() if not re.search(r"captcha|\botp\b|token|one.time|verification code", name, re.I)}
+                credentials["accounts"][script.file_path] = {
+                    "username": secret.get("username", ""), "password": secret.get("password", ""),
+                    "login_url": secret.get("login_url") or "/login", "account_role": secret.get("account_role") or "",
+                    "fields": fields, "login_prelude": json.loads(secret.get("login_prelude") or "[]"),
+                    "login_choice": json.loads(secret.get("login_choice") or "null"),
                 }
     config = {
-        "config/testdata.json": json.dumps({"schema_version": 1, "values": values}),
-        "STANDALONE.md": "# Standalone execution\nInstall Node.js, run `npm install`, `npx playwright install`, then `npx playwright test`.\nLocal inputs are in config/testdata.json. No platform API or database is needed.\nCredentials are included only when explicitly selected and authorized. Treat this package as confidential.\nRegenerate the package when assignments change. CAPTCHA/OTP require runtime input.\n",
+        "credentials/test-data.json": json.dumps(form_input_document(manifest, values, include_credentials), indent=2),
+        "credentials/login-credentials.json": json.dumps(credentials, indent=2),
+        "STANDALONE.md": standalone_readme,
     }
-    if include_credentials:
-        config["config/credentials.json"] = json.dumps(credentials)
-    payload = build_zip(root, suite, config=config)
+    payload = build_zip(root, suite, config=config, overrides=source_overrides(suite, manifest))
     return Response(
         content=payload,
         media_type="application/zip",
@@ -637,6 +639,53 @@ async def download_generation(
             "Content-Disposition": f'attachment; filename="{language}-{framework}-{generation_id}.zip"',
         },
     )
+
+
+@router.get("/projects/{project_id}/generations/{generation_id}/form-inputs")
+async def generation_form_inputs(project_id: uuid.UUID, generation_id: uuid.UUID,
+                                 session: AsyncSession = Depends(get_db_session)):
+    from infra.execution_inputs import read_json
+    from infra.test_data_service import runtime_form_values
+    from core.agents.automation_generation.standalone import form_input_document, form_input_answers
+    rows = await _require_generation(session, project_id, generation_id)
+    suite = generation_dir(artifact_root(), project_id, generation_id)
+    if not suite.is_dir():
+        raise HTTPException(404, "Generated suite files are not available")
+    manifest = read_json(suite / "manifest.json")
+    try:
+        resolved = await runtime_form_values(session, project_id, rows, manifest.get("input_bindings", []))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    document = form_input_document(manifest, resolved)
+    answers = form_input_answers(document)
+    saved = sum(answer.get("source") != "missing" for answer in answers)
+    return {"path": "credentials/test-data.json", "content": json.dumps(document, indent=2),
+            "saved_fields": saved, "missing_fields": len(answers)-saved}
+
+
+@router.post("/projects/{project_id}/generations/{generation_id}/standalone-inputs", status_code=204)
+async def materialize_standalone_inputs(project_id: uuid.UUID, generation_id: uuid.UUID,
+    include_credentials: bool = False, export_key: str | None = Header(default=None, alias="X-API-Key"),
+    session: AsyncSession = Depends(get_db_session)):
+    from io import BytesIO
+    from zipfile import ZipFile
+    from core.agents.automation_generation.artifacts import ensure_under
+    response = await download_generation(project_id, generation_id, include_credentials, export_key, session)
+    suite = generation_dir(artifact_root(), project_id, generation_id)
+    folder = ensure_under(suite, suite / "credentials")
+    folder.mkdir(parents=True, exist_ok=True)
+    with ZipFile(BytesIO(response.body)) as archive:
+        for name in ("credentials/test-data.json", "credentials/login-credentials.json"):
+            target = ensure_under(suite, suite / name)
+            target.write_bytes(archive.read(name))
+            target.chmod(0o600)
+    # Refresh the owned loader together with the JSON schema, so existing IDE
+    # folders can consume schema v2 without regenerating their test selectors.
+    from core.agents.automation_generation.input_runtime import RUNTIME_SOURCE
+    loader = ensure_under(suite, suite / "data" / "execution-inputs.ts")
+    loader.parent.mkdir(parents=True, exist_ok=True)
+    loader.write_text(RUNTIME_SOURCE, encoding="utf-8")
+    return Response(status_code=204)
 
 
 def _block_code(reason: str) -> str:

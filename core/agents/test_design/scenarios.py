@@ -6,6 +6,7 @@ remain in the denominator instead of becoming guessed tests.
 """
 
 import re
+import json
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -95,7 +96,9 @@ class ScenarioPlan:
         for case in unique.values():
             code = case.steps[0].target.state_code
             state = next((item for item in self.states if item["state_code"] == code), None)
-            smoke = state and re.search(r"/(login|sign-in|signin)/?$", _url_path(state), re.I)
+            smoke = state and (re.search(r"/(login|sign-in|signin)/?$", _url_path(state), re.I)
+                               or (any(e.get("role") == "textbox" for e in _observed(state))
+                                   and any(e.get("input_type") == "submit" for e in _observed(state))))
             if smoke and all(step.action in {"navigate", "assert"} for step in case.steps) and all(
                 (step.assertion or {}).get("kind") == "visible" for step in case.steps if step.action == "assert"):
                 grouped.setdefault(code, []).append(case)
@@ -118,9 +121,17 @@ class ScenarioPlan:
             smoke.steps = [smoke.steps[0], *checks.values()]
             for index, step in enumerate(smoke.steps, 1):
                 step.step_number = index
-            smoke.title = "Login form loads with the required controls"
-            smoke.objective = "Verify the requirement-mapped login controls are displayed; this does not test authentication."
+            login = bool(re.search(r"/(login|sign-in|signin)/?$", _url_path(state), re.I))
+            label = "Login" if login else (_url_path(state).rstrip('/').split('/')[-1].replace('-', ' ').title() or "Application")
+            smoke.title = "Login form loads with the required controls" if login else f"{label} form loads with its controls"
+            smoke.objective = "Verify the requirement-mapped login controls are displayed; this does not test authentication." if login else "Verify the requirement-mapped controls are displayed; this is a form-load check, not a submission test."
             smoke.expected_result = "; ".join(step.expected for step in smoke.steps if step.action == "assert")
+            if not login:
+                from core.agents.test_design.form_contracts import display_name
+                for step in smoke.steps:
+                    if step.action == "assert":
+                        step.expected = f"{display_name(step.target.element_name)} is visible"
+                smoke.expected_result = "; ".join(step.expected for step in smoke.steps if step.action == "assert")
             smoke.traceability = sorted({ac for case in cases for ac in case.traceability})
             retained.append(smoke)
         return retained
@@ -199,6 +210,43 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
             continue
         criteria.append({**selected, "text": rule})
     for criterion_index, ac in enumerate(criteria):
+        if ac.get("form_behavior"):
+            from core.agents.test_design.form_contracts import contract_case
+            rule = ac["form_behavior"]
+            candidates = [state for state in states if state.get("url_pattern") == rule.get("route")
+                          and (starting_states is None or state["state_code"] in starting_states)]
+            spec = contract_case(ac, candidates[0]) if len(candidates) == 1 else None
+            category = "NEGATIVE" if rule.get("kind") in {"missing", "missing_choice", "all_missing"} else "POSITIVE"
+            wanted = (requested_categories or {}).get(str(ac["id"]), {category})
+            for requested in sorted(wanted):
+                scenarios.append(Scenario(f"{ac['id']}:{criterion_index}:form:{requested}", str(ac["id"]),
+                    str(ac["text"]), "negative" if requested == "NEGATIVE" else "functional", requested,
+                    spec if requested == category else None,
+                    reason="A reviewed behavior rule and unambiguous current form controls are required."))
+            continue
+        # Discovery drafts carry exact visibility statements rather than
+        # business assertions. Resolve them against the observed page/control
+        # directly; words such as "Message" are otherwise treated as outcome
+        # prose by the general scenario classifier.
+        observed = re.fullmatch(r'Observed control ("(?:[^"\\]|\\.)*") with role (\w+) is visible on ("(?:[^"\\]|\\.)*")\.',
+                                str(ac.get("text") or "")) if ac.get("source") == "OBSERVED_DOM" else None
+        if observed:
+            name, role, route = json.loads(observed[1]), observed[2], json.loads(observed[3])
+            candidates = [(state, element) for state in states
+                          if (starting_states is None or state["state_code"] in starting_states)
+                          and state.get("url_pattern") == route
+                          for element in _observed(state)
+                          if element.get("role") == role and str(element.get("name") or "").strip() == name]
+            spec = None
+            if len(candidates) == 1:
+                state, element = candidates[0]
+                spec = _spec(str(ac["id"]), state, element, f"{name} {role} is visible", f"{name} is visible", {"kind": "visible"})
+            wanted = (requested_categories or {}).get(str(ac["id"]), {"POSITIVE"})
+            for category in sorted(wanted):
+                scenarios.append(Scenario(f"{ac['id']}:{criterion_index}:observed:{category}", str(ac["id"]),
+                    str(ac["text"]), "functional", category, spec if category == "POSITIVE" else None,
+                    reason="Visibility needs an unambiguous observed control; other outcomes need confirmed requirements and evidence."))
+            continue
         for clause_index, text in enumerate(clauses(str(ac.get("text") or "")) or [""]):
             ac_id = str(ac["id"])
             category = _default_categories({"text": text})[0]

@@ -30,7 +30,8 @@ def test_login_input_creates_encrypted_opaque_credential(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_submitted_login_creates_account_and_resumes_with_reference(monkeypatch):
+@pytest.mark.parametrize("with_challenge", [False, True])
+async def test_submitted_login_creates_account_and_resumes_with_reference(monkeypatch, with_challenge):
     from types import SimpleNamespace
     from apps.api.routers.v1 import application_maps as api
     from infra.db.models.application_map import ApplicationMap
@@ -52,6 +53,8 @@ async def test_submitted_login_creates_account_and_resumes_with_reference(monkey
             "configuration": {"mode": "guided", "credential_ref": None},
             "input_requests": [request],
         })
+    if with_challenge:
+        request["fields"].append({"key": "textbox:captcha", "name": "CAPTCHA", "required": True})
     added, saved, queued = [], [], []
     class Session:
         async def get(self, model, identity):
@@ -76,10 +79,14 @@ async def test_submitted_login_creates_account_and_resumes_with_reference(monkey
     monkeypatch.setattr(api, "save_form_answers", save)
     monkeypatch.setattr(api, "_claim_discovery_slot", claim)
     monkeypatch.setattr(api, "enqueue", enqueue)
-    response = await api.submit_input_request(app_map.id, "login-input", api.SubmitInputRequestBody(approve_submission=True, fields=[
+    answers = [
         api.InputFieldAnswer(key="textbox:username", value="qa-user"),
         api.InputFieldAnswer(key="textbox:password", value="private-password"),
-    ]), Session())
+    ]
+    if with_challenge:
+        answers.append(api.InputFieldAnswer(key="textbox:captcha", value="123456"))
+    response = await api.submit_input_request(app_map.id, "login-input", api.SubmitInputRequestBody(
+        approve_submission=True, fields=answers), Session())
 
     ref = response.credential_ref
     assert added[0].credential_ref == ref
@@ -88,7 +95,15 @@ async def test_submitted_login_creates_account_and_resumes_with_reference(monkey
     assert response.credential_ref == ref
     assert response.selected_branches
     assert app_map.discovery_checkpoint["configuration"]["credential_ref"] == ref
-    assert not saved
+    if with_challenge:
+        assert saved[0]["session_values"] == {"textbox:captcha": "123456"}
+        assert saved[0]["credential_ref"] == ref
+        assert "123456" not in str(app_map.discovery_checkpoint)
+    else:
+        assert not saved
+    job = next(item for item in app_map.discovery_checkpoint["jobs"] if item["key"] in response.selected_branches)
+    assert job["input_request_id"] == "login-input"
+    assert job["path"][-1]["role"] == "authentication"
     assert app_map.discovery_checkpoint["input_requests"][0]["credential_ref"] == ref
     assert "private-password" not in str(app_map.discovery_checkpoint)
     assert "private-password" not in str(queued)

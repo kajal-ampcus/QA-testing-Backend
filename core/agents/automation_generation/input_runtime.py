@@ -17,11 +17,25 @@ function write(file: string, value: unknown): void {
   fs.renameSync(temp, file);
 }
 
+function localAnswer(document: any, key: string): Answer | undefined {
+  if (!document) return undefined;
+  if (document.schema_version !== 2) return document.values?.[key];
+  const matches: Answer[] = [];
+  for (const row of Object.values(document.test_cases || {}) as any[]) {
+    for (const input of Object.values(row.inputs || {}) as any[]) {
+      if (input?.binding === key) matches.push(input);
+    }
+  }
+  if (matches.length > 1) throw new Error(`Duplicate local input binding: ${key}`);
+  return matches[0];
+}
+
 /** Input values are fixed at the consuming checkpoint, never changed mid-action. */
 export async function executionInput(key: string, fallback: string | null): Promise<string> {
   const directory = process.env.EXECUTION_INPUT_DIR;
   if (!directory) {
-    const saved = read(path.resolve(__dirname, "../config/testdata.json"))?.values?.[key] as Answer | undefined;
+    const saved = localAnswer(read(path.resolve(__dirname, "../credentials/test-data.json")), key)
+      ?? localAnswer(read(path.resolve(__dirname, "../config/testdata.json")), key);
     if (saved) {
       const binding = read(path.resolve(__dirname, "../manifest.json"))?.input_bindings?.find((item: any) => item.key === key);
       if (typeof saved.value !== "string" || !["value", "empty"].includes(saved.mode) || (saved.mode === "empty" && !binding?.allow_empty)) {
@@ -32,7 +46,7 @@ export async function executionInput(key: string, fallback: string | null): Prom
     if (fallback !== null && fallback !== "") return fallback;
     const binding = read(path.resolve(__dirname, "../manifest.json"))?.input_bindings?.find((item: any) => item.key === key);
     if (fallback === "" && binding?.allow_empty) return "";
-    throw new Error(`Unresolved input ${key}. Supply the value in config/testdata.json or the environment.`);
+    throw new Error(`Unresolved input ${key}. Supply the value in credentials/test-data.json or the environment.`);
   }
   const binding = read(path.join(directory, "bindings.json"))?.[key];
   if (!binding) throw new Error(`Unknown or stale execution input binding: ${key}`);

@@ -9,6 +9,7 @@ Agentic AI automation testing platform — automates the QA lifecycle (requireme
 - `docs/architecture/agentic-qa-platform-io-contracts-and-devtools.md` — agent I/O contracts + Chrome DevTools MCP integration
 - `docs/PROJECT_STRUCTURE.md` — this repo's folder layout and the reasoning behind it
 - `docs/CODEBASE_GUIDE.md` — file-by-file inventory of every folder, request-flow walkthrough, and setup instructions
+- `docs/TEST_CASE_GENERATION_README.md` — step-by-step test-case generation walkthrough and file inventory
 - `docs/IMPLEMENTATION_PLAN.md` — phased build plan (generated via the Claude Code kickoff prompt)
 
 ## Status

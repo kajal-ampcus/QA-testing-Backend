@@ -197,6 +197,12 @@ def generate_suite(
     )
     _merge_testdata(suite_dir / "data" / "testdata.ts", data_cases, replace=not incremental)
     _write(suite_dir / "data" / "execution-inputs.ts", RUNTIME_SOURCE)
+    # Only empty templates live in generated source. Saved values are added
+    # to the explicitly requested standalone download, never source previews.
+    _write_if_absent(suite_dir / "credentials" / "login-credentials.json", '{"schema_version": 1, "accounts": {}}\n')
+    _write_if_absent(suite_dir / "credentials" / "test-data.json", '{"schema_version": 2, "test_cases": {}}\n')
+    _write_if_absent(suite_dir / "credentials" / "login-credentials.example.json", '{"schema_version": 1, "accounts": {"tests/example.spec.ts": {"username": "", "password": "", "login_url": "/login", "account_role": "", "fields": [], "login_prelude": [], "login_choice": null}}}\n')
+    _write_if_absent(suite_dir / "credentials" / "test-data.example.json", '{"schema_version": 2, "test_cases": {"TC-001": {"version": 1, "inputs": {"Name": {"value": null, "mode": "value", "source": "missing", "binding": "TC-001:v1:step2", "allow_empty": false}}}}}\n')
     if not (suite_dir / "execution-inputs.json").exists():
         _write(suite_dir / "execution-inputs.json", '{"schema_version": 1, "values": {}}\n')
     # Approved case fixtures belong in the existing private input store, which

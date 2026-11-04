@@ -1299,6 +1299,9 @@ class ChromeDevToolsClient:
                 "checkbox",
                 "searchbox",
                 "spinbutton",
+                "StaticText",
+                "menuitem",
+                "tab",
             }
         ]
         function = """(...els) => {
@@ -1377,13 +1380,29 @@ class ChromeDevToolsClient:
                 }
                 return parts.length ? `/${parts.join("/")}` : null;
             };
-            return els.map(el => ({
+            return els.map(node => {
+                const el = node instanceof Element ? node : node.parentElement;
+                if (!el) return {};
+                const navigation = el.closest('nav, aside, [role="navigation"], [role="complementary"]');
+                let navigationClickable = false;
+                if (navigation && !el.closest('a[href], button, [role="button"], [role="link"], [role="menuitem"], [role="tab"]')) {
+                    for (let target = el; target && target !== navigation; target = target.parentElement) {
+                        if (target.matches('a[href], button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [onclick], [tabindex="0"]')
+                            || getComputedStyle(target).cursor === 'pointer') {
+                            navigationClickable = true;
+                            break;
+                        }
+                    }
+                }
+                return {
+                navigation_clickable: navigationClickable,
                 dom_id: el.id || null,
                 locator: el.id ? '#' + CSS.escape(el.id) : null,
                 css_selector: stableCssOf(el),
                 locator_scope: landmarkSelector(el),
                 xpath: xpathOf(el),
                 input_type: el.getAttribute('type'),
+                input_name: el.getAttribute('name'),
                 control_group: el.parentElement ? xpathOf(el.parentElement) : null,
                 required: !!el.required,
                 readonly: !!el.readOnly,
@@ -1399,7 +1418,7 @@ class ChromeDevToolsClient:
                 url: el.href || null,
                 options: el.tagName === "SELECT" && el.options ? [...el.options].filter(o => !o.disabled).map(o => (o.label || o.text || o.value || "").trim()).filter(Boolean) : null,
                 option_items: el.tagName === "SELECT" && el.options ? [...el.options].map(o => ({label: (o.label || o.text || o.value || "").trim(), value: o.value, enabled: !o.disabled})).filter(o => o.label) : null
-            }));
+            }; });
         }"""
         try:
             for offset in range(0, len(controls), 30):

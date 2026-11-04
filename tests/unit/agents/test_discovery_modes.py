@@ -36,7 +36,8 @@ async def record(_state):
 
 
 @pytest.mark.asyncio
-async def test_guided_late_credentials_offer_same_branches_as_preconfigured(monkeypatch):
+@pytest.mark.parametrize("api_selected", [False, True])
+async def test_guided_late_credentials_sign_in_and_offer_authenticated_paths(monkeypatch, api_selected):
     import uuid
     from copy import deepcopy
     from core.agents.application_discovery import parallel_crawler as module
@@ -63,39 +64,31 @@ async def test_guided_late_credentials_offer_same_branches_as_preconfigured(monk
     options = dict(login_url="https://sample.test/login", discovery_mode="guided",
         project_id=project_id, worker_limit=1)
     budget = CrawlBudget(max_pages=30, max_depth=8)
-    early = ParallelCrawler(browser, budget, [], authenticate=True, credential_ref="cred:late", **options)
-    await early.crawl("https://sample.test/login", record)
-
     first = ParallelCrawler(browser, budget, [], authenticate=False, **options)
     await first.crawl("https://sample.test/login", record)
     checkpoint = deepcopy(first._checkpoint_payload())
     assert first.termination_reason == "WAITING_FOR_INPUT"
     request = checkpoint["input_requests"][0]
-    request["status"] = "submitted"
+    request["status"] = "approved"
     request["credential_ref"] = "cred:late"
+    selected = []
+    if api_selected:
+        from apps.api.routers.v1.application_maps import _input_navigation_job
+        raw = _input_navigation_job(checkpoint, [*request.get("navigation_path", []),
+            {"role": "authentication", "name": "Sign in with selected account"}], request["id"])
+        selected = [raw["key"]]
     LoginBrowser.logins = 0
     resumed = ParallelCrawler(browser, budget, [], authenticate=True, credential_ref="cred:late",
-        checkpoint=checkpoint, **options)
+        checkpoint=checkpoint, selected_branches=selected, **options)
     await resumed.crawl("https://sample.test/login", record)
 
-    def choices(crawler):
-        return {(job["path"][-1]["role"], job["path"][-1]["name"])
-            for job in crawler._checkpoint_payload()["jobs"]
-            if job["status"] == "available" and job["path"]}
-
-    assert choices(resumed) == choices(early)
-    assert ("authentication", "Sign in with selected account") in choices(resumed)
-    assert ("link", "Home") in choices(resumed)
-    assert LoginBrowser.logins == 0
+    assert LoginBrowser.logins == 1
     assert resumed.termination_reason == "AWAITING_BRANCH_SELECTION"
     checkpoint = resumed._checkpoint_payload()
-    sign_in = next(job for job in checkpoint["jobs"] if job["path"]
-        and job["path"][-1]["name"] == "Sign in with selected account")
-    after = ParallelCrawler(browser, budget, [], authenticate=True, credential_ref="cred:late",
-        checkpoint=checkpoint, selected_branches=[sign_in["key"]], **options)
-    await after.crawl("https://sample.test/login", record)
-    assert LoginBrowser.logins == 1
-    assert "/dashboard" in {node["url_pattern"] for node in after.coverage["app_flow_graph"]["nodes"]}
+    assert "/dashboard" in {node["url_pattern"] for node in resumed.coverage["app_flow_graph"]["nodes"]}
+    assert any(job["status"] == "available" and any(step.get("role") == "authentication" for step in job["path"])
+               for job in checkpoint["jobs"])
+    assert resumed._input_requests[request["id"]]["status"] == "applied"
     assert not any(step.get("sensitive") for job in checkpoint["jobs"] for step in job["path"])
 
 

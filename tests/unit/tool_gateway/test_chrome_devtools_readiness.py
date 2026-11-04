@@ -267,6 +267,53 @@ async def test_inspect_elements_captures_observed_xpath(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_custom_sidebar_dom_metadata_excludes_native_and_plain_text():
+    import json
+    import os
+    from playwright.async_api import async_playwright
+
+    executable = next((path for path in [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    ] if os.path.isfile(path)), None)
+    if not executable:
+        pytest.skip("Requires a local browser for navigation DOM regression")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(executable_path=executable, args=["--no-sandbox"])
+        try:
+            page = await browser.new_page()
+            await page.set_content('''<aside>
+                <div style="cursor:pointer"><span id="users">Users</span></div>
+                <div><span id="heading">Platform management</span></div>
+                <button><span id="native">Documents</span></button>
+                <div style="display:none;cursor:pointer"><span id="hidden">Hidden</span></div>
+                </aside><main><span id="content" style="cursor:pointer">Article</span></main>''')
+            client = ChromeDevToolsClient()
+            client._page_id = 0
+
+            async def call(_name, arguments):
+                if "xpathOf" not in arguments["function"]:
+                    return "[]"
+                result = await page.evaluate('''args => {
+                    const fn = eval('(' + args.function + ')');
+                    return fn(...args.args.map(id => document.getElementById(id).firstChild));
+                }''', arguments)
+                return json.dumps(result)
+
+            client._call = call
+            nodes = await client.inspect_elements({"elements": [
+                {"uid": uid, "role": "StaticText", "name": uid}
+                for uid in ["users", "heading", "native", "hidden", "content"]
+            ]})
+            by_id = {node["uid"]: node for node in nodes}
+            assert by_id["users"]["navigation_clickable"] is True
+            assert all(by_id[uid]["navigation_clickable"] is False for uid in ["heading", "native", "content"])
+            assert by_id["hidden"]["visible"] is False
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_svg_blob_challenge_is_read_in_browser():
     """Exercise the actual reader, including split digits and blob replacement."""
     import shutil

@@ -1,0 +1,183 @@
+{
+  "database_error": "gaierror",
+  "live": {
+    "url": "https://cep.ampcustech.info/en/feedback",
+    "forms": [
+      {
+        "text": "",
+        "controls": [
+          {
+            "tag": "INPUT",
+            "type": "text",
+            "role": null,
+            "name": null,
+            "label": "",
+            "text": null,
+            "placeholder": "Search",
+            "required": false,
+            "accept": "",
+            "min": "",
+            "max": "",
+            "maxlength": null,
+            "visible": true
+          }
+        ]
+      },
+      {
+        "text": "Name *\nSubject *\nMessage *\nAttach Document (Optional)\n\nClick to upload or drag and drop\n\nPDF, JPG, PNG (Max 500 KB)\n\nRating *\n\nExcellent\nGood\nAverage\nFair\nNeeds Improvement\nSubmit Feedback",
+        "controls": [
+          {
+            "tag": "INPUT",
+            "type": "text",
+            "role": null,
+            "name": null,
+            "label": "Name *",
+            "text": null,
+            "placeholder": "Enter your full name",
+            "required": false,
+            "accept": "",
+            "min": "",
+            "max": "",
+            "maxlength": null,
+            "visible": true
+          },
+          {
+            "tag": "INPUT",
+            "type": "text",
+            "role": null,
+            "name": null,
+            "label": "Subject *",
+            "text": null,
+            "placeholder": "Brief subject line",
+            "required": false,
+            "accept": "",
+            "min": "",
+            "max": "",
+            "maxlength": null,
+            "visible": true
+          },
+          {
+            "tag": "TEXTAREA",
+            "type": "textarea",
+            "role": null,
+            "name": null,
+            "label": "Message *",
+            "text": null,
+            "placeholder": "Provide detailed information about your feedback or grievance",
+            "required": false,
+            "accept": null,
+            "min": null,
+            "max": null,
+            "maxlength": null,
+            "visible": true
+          },
+          {
+            "tag": "INPUT",
+            "type": "file",
+            "role": null,
+            "name": null,
+            "label": "Click to upload or drag and drop\n\nPDF, JPG, PNG (Max 500 KB)",
+            "text": null,
+            "placeholder": null,
+            "required": false,
+            "accept": ".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf",
+            "min": "",
+            "max": "",
+            "maxlength": null,
+            "visible": false
+          },
+          {
+            "tag": "INPUT",
+            "type": "radio",
+            "role": null,
+            "name": "feedback-rating",
+            "label": "Excellent",
+            "text": null,
+            "placeholder": null,
+            "required": false,
+            "accept": "",
+            "min": "",
+            "max": "",
+            "maxlength": null,
+            "visible": true
+          },
+          {
+            "tag": "INPUT",
+            "type": "radio",
+            "role": null,
+            "name": "feedback-rating",
+            "label": "Good",
+            "text": null,
+            "placeholder": null,
+            "required": false,
+            "accept": "",
+            "min": "",
+            "max": "",
+            "maxlength": null,
+            "visible": true
+          },
+          {
+            "tag": "INPUT",
+            "type": "radio",
+            "role": null,
+            "name": "feedback-rating",
+            "label": "Average",
+            "text": null,
+            "placeholder": null,
+            "required": false,
+            "accept": "",
+            "min": "",
+            "max": "",
+            "maxlength": null,
+            "visible": true
+          },
+          {
+            "tag": "INPUT",
+            "type": "radio",
+            "role": null,
+            "name": "feedback-rating",
+            "label": "Fair",
+            "text": null,
+            "placeholder": null,
+            "required": false,
+            "accept": "",
+            "min": "",
+            "max": "",
+            "maxlength": null,
+            "visible": true
+          },
+          {
+            "tag": "INPUT",
+            "type": "radio",
+            "role": null,
+            "name": "feedback-rating",
+            "label": "Needs Improvement",
+            "text": null,
+            "placeholder": null,
+            "required": false,
+            "accept": "",
+            "min": "",
+            "max": "",
+            "maxlength": null,
+            "visible": true
+          },
+          {
+            "tag": "BUTTON",
+            "type": "submit",
+            "role": null,
+            "name": null,
+            "label": "",
+            "text": "Submit Feedback",
+            "placeholder": null,
+            "required": null,
+            "accept": null,
+            "min": null,
+            "max": null,
+            "maxlength": null,
+            "visible": true
+          }
+        ]
+      }
+    ]
+  }
+}

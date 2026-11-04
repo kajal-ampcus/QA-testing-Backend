@@ -63,6 +63,7 @@ from core.agents.application_discovery.login_choices import login_choices, login
 from core.agents.application_discovery.screen_delta import classify_screen
 from core.agents.application_discovery.shared_navigation import (
     inherited_navigation,
+    is_custom_navigation,
     navigation_identity,
 )
 from core.policy_safety.destructive_action_lexicon import classify_risk
@@ -703,6 +704,8 @@ class ParallelCrawler:
             if bool(request.get("skip_auth")) != skip_auth:
                 continue
             request_id = str(request.get("id") or "")
+            if request_id and self._fill_already_queued(request_id):
+                continue
             if (
                 request_id
                 and self._discovery_mode == "guided"
@@ -712,10 +715,19 @@ class ParallelCrawler:
                 and skip_auth
                 and not any(step.get("role") == "authentication" for step in request.get("navigation_path") or [])
             ):
-                # An account supplied on a public login page must expose the
-                # same choices as a preconfigured account. Reinspect that page
-                # without submitting it; authentication remains user-selected.
+                # Submitting login values already selects sign-in. Continue
+                # through authentication instead of inspecting the public form
+                # again and requiring another branch selection.
                 navigation = list(request.get("navigation_path") or [])
+                if any(
+                    key in self._selected_branches
+                    and (raw.get("path") or [])[:len(navigation)] == navigation
+                    and any(step.get("role") == "authentication" for step in (raw.get("path") or [])[len(navigation):])
+                    for key, raw in self._job_states.items()
+                ):
+                    # The API already scheduled the authentication branch.
+                    # Let that job consume the approved request once.
+                    continue
                 submit = request.get("submit") or {}
                 parent_fingerprint = None
                 for key, raw in list(self._job_states.items()):
@@ -738,10 +750,11 @@ class ParallelCrawler:
                         self._selected_branches.discard(key)
                 job = DiscoveryJob(
                     -1, next(self._sequence),
-                    path=[ClickStep(**step) for step in navigation],
+                    path=[*[ClickStep(**step) for step in navigation],
+                          ClickStep("authentication", "Sign in with selected account")],
                     skip_auth=True, force_expand=True, parent_fingerprint=parent_fingerprint,
+                    input_request_id=request_id,
                 )
-                request["status"] = "applied"
                 request.pop("validation_error", None)
                 await queue.put(job)
                 await self._set_job_status(job, "pending")
@@ -1297,6 +1310,8 @@ class ParallelCrawler:
             return False
         if role == "link" and destination:
             return True
+        if is_custom_navigation(element):
+            return True
         # Choosing a radio or an observed combobox option reveals dependent
         # UI without submitting anything; checkboxes are excluded because
         # they usually toggle a persisted setting.
@@ -1443,7 +1458,7 @@ class ParallelCrawler:
                 in_scope = self._action_in_scope(area_id, element, len(path), module_id)
             if not in_scope:
                 continue
-            if role not in {"link", "button", "menuitem", "tab", "radio", "combobox"}:
+            if role not in {"link", "button", "menuitem", "tab", "radio", "combobox"} and not is_custom_navigation(element):
                 continue
             if element.get("disabled") or element.get("visible") is False:
                 continue
@@ -2111,7 +2126,7 @@ class ParallelCrawler:
         # They are still cleared immediately after a successful application
         # (see _resolve_login_input), so they cannot leak into a later run.
         has_submitted_input = any(
-            item.get("status") == "submitted"
+            item.get("status") in {"approved", "submitted"}
             for item in self._input_requests.values()
         )
         if self._project_id is not None and not has_submitted_input:

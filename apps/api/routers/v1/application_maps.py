@@ -796,8 +796,14 @@ async def submit_input_request(
         configuration = dict(checkpoint.get("configuration") or {})
         configuration["credential_ref"] = credential_ref
         checkpoint["configuration"] = configuration
+        if session_values:
+            await save_form_answers(
+                app_map.project_id, page_key, form_key, {},
+                credential_ref=credential_ref, labels=labels,
+                session_values=session_values,
+            )
         raw = _input_navigation_job(checkpoint, [*target.get("navigation_path", []),
-            {"role": "authentication", "name": "Sign in with selected account"}])
+            {"role": "authentication", "name": "Sign in with selected account"}], request_id)
         app_map.discovery_checkpoint = checkpoint
         await session.commit()
         return SubmitInputRequestResponse(id=request_id, status="approved", selected_branches=[raw["key"]], credential_ref=credential_ref)

@@ -46,7 +46,13 @@ def field_requirements(steps, states):
     """Derive editable fields from actual case steps and stable map identifiers."""
     steps, _issues = ground_steps(deepcopy(steps or []), states, {})
     expanded = list(steps)
+    reviewed_form = any((step.get("assertion") or {}).get("form_contract") == "reviewed" for step in steps)
     for step in steps:
+        if reviewed_form:
+            # These cases explicitly supply every companion input and every
+            # fixed radio choice. Do not turn omitted ratings or fixed clicks
+            # back into user-input requests through page-wide expansion.
+            continue
         target = step.get("target") or {}
         state = states.get(target.get("state_code"))
         if state is None:

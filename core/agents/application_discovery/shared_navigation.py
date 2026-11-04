@@ -4,12 +4,18 @@ import re
 from urllib.parse import urljoin
 
 
+def is_custom_navigation(element):
+    return (element.get("role") == "StaticText"
+            and element.get("navigation_clickable") is True
+            and bool(str(element.get("name") or "").strip()))
+
+
 def navigation_identity(element, current_url):
     role = element.get("role")
-    if role not in {"link", "button", "menuitem", "tab"}:
+    if role not in {"link", "button", "menuitem", "tab"} and not is_custom_navigation(element):
         return None
     scope = str(element.get("locator_scope") or element.get("landmark") or "").lower()
-    shared = bool(re.search(r"\b(header|footer|nav|banner|contentinfo|navigation)\b", scope))
+    shared = is_custom_navigation(element) or bool(re.search(r"\b(header|footer|nav|banner|contentinfo|navigation)\b", scope))
     destination = element.get("url")
     # Old snapshots have no landmarks. Exact route links can still be
     # recognized, but never deduplicate an unscoped page button by its label.
