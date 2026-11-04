@@ -483,6 +483,8 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 application_map_id=application_map_id,
                 version_data=version_data,
                 credential_ref=credential_ref,
+                primary_state_code=(tc_spec.steps[0].target.state_code if tc_spec.steps else None),
+                source="ai_generated",
             )
             artifacts.append(AgentArtifactRef(type="test_case", id=str(tc.id), version=1))
         await self._test_case_repo.session.commit()

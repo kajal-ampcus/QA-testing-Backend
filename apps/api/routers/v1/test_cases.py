@@ -18,6 +18,7 @@ from apps.api.routers.v1.approvals import _test_case_side_effect
 from core.agents.test_case_validation.agent import TestCaseValidationAgent
 from core.agents.test_design.agent import TestDesignAgent
 from core.agents.test_design.schemas import TestCaseSpec, TestStep
+from core.services.page_matching import PageMatchingService
 from domain.enums import ApprovalStatus, RequirementStatus, TestCaseStatus
 from infra.db.models.agent_run import AgentRun
 from infra.db.models.approval import Approval
@@ -147,6 +148,8 @@ class TestCaseOut(BaseModel):
     status: str
     current_version: int
     credential_ref: str | None = None
+    primary_state_code: str | None = None
+    source: str = "Unknown"
     current: TestCaseVersionOut
 
 
@@ -185,6 +188,8 @@ def _to_out(tc, version) -> TestCaseOut:
         status=tc.status,
         current_version=tc.current_version,
         credential_ref=tc.credential_ref,
+        primary_state_code=getattr(tc, "primary_state_code", None),
+        source=getattr(tc, "source", None) or "Unknown",
         current=TestCaseVersionOut(
             version=version.version,
             title=version.title,
@@ -198,6 +203,121 @@ def _to_out(tc, version) -> TestCaseOut:
             confidence=version.confidence,
         ),
     )
+
+
+class ImportCaseRow(BaseModel):
+    row_number: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=300)
+    objective: str = ""
+    expected_result: str = ""
+    category: Literal["POSITIVE", "NEGATIVE", "EDGE_CASE"] = "POSITIVE"
+    preconditions: list[str] = Field(default_factory=list)
+    step_notes: list[str] = Field(default_factory=list)
+    page: str | None = None
+    screen: str | None = None
+    module: str | None = None
+    url: str | None = None
+    include: bool = True
+    state_code: str | None = None
+
+
+class ImportPreviewRequest(BaseModel):
+    requirement_id: uuid.UUID
+    application_map_id: uuid.UUID | None = None
+    rows: list[ImportCaseRow] = Field(min_length=1, max_length=2000)
+    filename: str | None = Field(default=None, max_length=300)
+
+
+class ImportPreviewRow(BaseModel):
+    row: ImportCaseRow
+    detected_state_code: str | None
+    detected_page: str | None
+    confidence: float
+    confidence_level: str
+    reason: str
+    alternatives: list[dict[str, Any]]
+    ambiguous: bool = False
+
+
+class ImportPreviewResponse(BaseModel):
+    application_map_id: uuid.UUID
+    pages: list[dict[str, str]]
+    rows: list[ImportPreviewRow]
+
+
+class ImportConfirmRequest(ImportPreviewRequest):
+    rows: list[ImportCaseRow] = Field(min_length=1, max_length=2000)
+
+
+class ImportConfirmResult(BaseModel):
+    row_number: int
+    status: Literal["imported", "duplicate", "invalid", "excluded", "unmapped"]
+    test_case: TestCaseOut | None = None
+    error: str | None = None
+
+
+class ImportConfirmResponse(BaseModel):
+    results: list[ImportConfirmResult]
+
+
+async def _import_context(project_id: uuid.UUID, requirement_id: uuid.UUID, application_map_id: uuid.UUID | None, db: AsyncSession):
+    project = await db.get(Project, project_id)
+    pair = await RequirementRepository(db).get_with_current_version(requirement_id)
+    app_map = await (ApplicationMapRepository(db).get_with_states(application_map_id) if application_map_id else ApplicationMapRepository(db).get_latest_for_project(project_id))
+    if project is None or pair is None or pair[0].project_id != project_id:
+        raise HTTPException(404, "Project or requirement not found")
+    if app_map is None or app_map.project_id != project_id:
+        raise HTTPException(422, "Choose an application discovery map for this project")
+    return project, pair, app_map
+
+
+@router.post("/projects/{project_id}/import-preview", response_model=ImportPreviewResponse)
+async def preview_import(project_id: uuid.UUID, body: ImportPreviewRequest, db: AsyncSession = Depends(get_db_session)) -> ImportPreviewResponse:
+    """Suggest mappings without writing test cases."""
+    _project, _pair, app_map = await _import_context(project_id, body.requirement_id, body.application_map_id, db)
+    matcher = PageMatchingService()
+    rows = []
+    for row in body.rows:
+        match = matcher.match(row.model_dump(), app_map.states)
+        level = "high" if match.confidence >= 80 else "medium" if match.confidence >= 55 else "low"
+        rows.append(ImportPreviewRow(row=row, detected_state_code=match.state_code, detected_page=match.page_name,
+            confidence=match.confidence, confidence_level=level, reason=match.reason,
+            alternatives=match.alternatives, ambiguous=match.ambiguous))
+    return ImportPreviewResponse(application_map_id=app_map.id,
+        pages=[{"state_code": state.state_code, "page_name": matcher.page_name(state)} for state in app_map.states], rows=rows)
+
+
+@router.post("/projects/{project_id}/import-confirm", response_model=ImportConfirmResponse)
+async def confirm_import(project_id: uuid.UUID, body: ImportConfirmRequest, db: AsyncSession = Depends(get_db_session)) -> ImportConfirmResponse:
+    project, (requirement, req_version), app_map = await _import_context(project_id, body.requirement_id, body.application_map_id, db)
+    states = {state.state_code for state in app_map.states}
+    repo = TestCaseRepository(db)
+    await repo.lock_generation(requirement.id)
+    existing = await repo.list_for_requirement(requirement.id)
+    results: list[ImportConfirmResult] = []
+    for row in body.rows:
+        if not row.include:
+            results.append(ImportConfirmResult(row_number=row.row_number, status="excluded")); continue
+        if not row.state_code:
+            results.append(ImportConfirmResult(row_number=row.row_number, status="unmapped", error="Select a discovered page before importing.")); continue
+        if row.state_code not in states:
+            results.append(ImportConfirmResult(row_number=row.row_number, status="invalid", error="Selected page is not in this application map.")); continue
+        expected = row.expected_result.strip() or f"The application handles the scenario successfully: {row.title}."
+        objective = row.objective.strip() or f"Verify: {row.title}"
+        steps = _manual_steps(state_code=row.state_code, expected_result=expected, step_notes=row.step_notes)
+        identity = _import_identity(row.title, expected, row.category, row.preconditions, steps)
+        duplicate = next(((tc, version) for tc, version in existing if _import_identity(version.title, version.expected_result, version.category, version.preconditions, version.steps) == identity), None)
+        if duplicate:
+            results.append(ImportConfirmResult(row_number=row.row_number, status="duplicate", test_case=_to_out(*duplicate))); continue
+        tc, version = await repo.create(project_id, await repo.next_tc_code(project_id), requirement.id, requirement.current_version, app_map.id,
+            {"title": row.title.strip(), "objective": objective, "preconditions": row.preconditions, "steps": steps,
+             "expected_result": expected, "test_data": {"source": "excel_import"}, "traceability": [], "category": row.category, "confidence": 1.0},
+            credential_ref=project.credential_ref, primary_state_code=row.state_code, source="excel_import",
+            import_metadata={"filename": body.filename, "row_number": row.row_number})
+        existing.append((tc, version))
+        results.append(ImportConfirmResult(row_number=row.row_number, status="imported", test_case=_to_out(tc, version)))
+    await db.commit()
+    return ImportConfirmResponse(results=results)
 
 
 class TestCaseCredentialBinding(BaseModel):
@@ -669,6 +789,8 @@ async def create_test_case(
             "confidence": 1.0,
         },
         credential_ref=project.credential_ref,
+        primary_state_code=start_state,
+        source="manual",
     )
     out = _to_out(test_case, current)
     await db.commit()

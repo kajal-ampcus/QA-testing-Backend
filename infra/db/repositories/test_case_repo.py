@@ -75,6 +75,9 @@ class TestCaseRepository(BaseRepository):
         application_map_id: uuid.UUID,
         version_data: dict[str, Any],
         credential_ref: str | None = None,
+        primary_state_code: str | None = None,
+        source: str | None = None,
+        import_metadata: dict[str, Any] | None = None,
     ) -> tuple[TestCase, TestCaseVersion]:
         test_case = TestCase(
             project_id=project_id,
@@ -83,6 +86,9 @@ class TestCaseRepository(BaseRepository):
             requirement_version=requirement_version,
             application_map_id=application_map_id,
             credential_ref=credential_ref,
+            primary_state_code=primary_state_code,
+            source=source,
+            import_metadata=import_metadata,
             current_version=1,
             status=TestCaseStatus.DRAFT,
         )

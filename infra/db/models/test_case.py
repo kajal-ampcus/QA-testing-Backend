@@ -37,6 +37,9 @@ class TestCase(Base):
     requirement_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("requirements.id"), nullable=False)
     requirement_version: Mapped[int] = mapped_column(Integer, nullable=False)  # pinned version
     application_map_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("application_maps.id"), nullable=False)
+    primary_state_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    import_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     credential_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
     account_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
     account_role: Mapped[str | None] = mapped_column(String(120), nullable=True)
