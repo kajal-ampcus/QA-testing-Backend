@@ -21,6 +21,7 @@ from infra.db.models.discovery_credential import DiscoveryCredential
 from infra.db.models.discovery_evidence_review import DiscoveryEvidenceReview
 from infra.db.models.discovery_form_answer import DiscoveryFormAnswer
 from infra.db.models.execution import TestResult, TestRun
+from infra.db.models.form_test_data import FormTestData
 from infra.db.models.project import Project
 from infra.db.models.requirement import Requirement, RequirementVersion
 from infra.db.models.test_case import TestCase, TestCaseVersion
@@ -144,6 +145,9 @@ async def delete_project(
         delete(AutomationVersion).where(AutomationVersion.automation_script_id.in_(script_ids))
     )
     await session.execute(delete(AutomationScript).where(AutomationScript.project_id == project_id))
+    # Fixtures can reference test cases and also belong directly to the project.
+    # Remove both assigned and unassigned fixtures before either parent.
+    await session.execute(delete(FormTestData).where(FormTestData.project_id == project_id))
     await session.execute(
         delete(TestCaseVersion).where(
             TestCaseVersion.test_case_id.in_(

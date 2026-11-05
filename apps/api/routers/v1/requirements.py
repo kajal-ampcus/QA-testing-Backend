@@ -65,7 +65,7 @@ class DiscoveryRequirementDraft(DiscoveryRequirementScope):
     expected_version: int | None = Field(default=None, ge=1)
     title: str | None = Field(default=None, min_length=3, max_length=200)
     description: str | None = Field(default=None, min_length=3, max_length=20000)
-    criteria: list[str] | None = Field(default=None, min_length=1, max_length=100)
+    criteria: list[str] | None = Field(default=None, min_length=1)
 
 
 class DiscoveryRequirementLink(DiscoveryRequirementScope):

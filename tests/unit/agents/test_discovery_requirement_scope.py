@@ -8,6 +8,16 @@ from core.agents.test_design.discovery_requirements import discovery_draft, matc
 from apps.api.routers.v1 import requirements as api
 
 
+@pytest.mark.parametrize("count", [109, 501])
+def test_discovery_draft_acceptance_criteria_have_no_item_limit(count):
+    criteria = [f"Observed control {index} is visible" for index in range(count)]
+    draft = api.DiscoveryRequirementDraft(
+        application_map_id=uuid4(), state_codes=["STATE-004"], save=True,
+        criteria=criteria,
+    )
+    assert draft.criteria == criteria
+
+
 def state(path="/en/feedback"):
     return NS(state_code="STATE-004", url_pattern=path, elements=[
         {"role": "link", "name": "Login", "landmark": "banner"},
