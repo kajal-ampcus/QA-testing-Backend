@@ -324,8 +324,8 @@ def test_captcha_refresh_stays_on_the_public_page(tmp_path) -> None:
         ],
     )
     plan, spec, auth = _render(tmp_path, case, _login_states())
-    assert plan.scripts[0].blocked is True
-    assert "no mapped assertion target" in plan.scripts[0].blocked_reason
+    # A refresh only changes the runtime challenge; it needs no persisted answer.
+    assert plan.scripts[0].blocked is False
     assert "await enterApplication(page)" in auth
     public = auth.split("publicPage:", 1)[1].split("sessionPage:", 1)[0]
     assert "enterApplication" not in public
@@ -404,7 +404,7 @@ def test_public_precondition_conflicting_with_protected_start_is_blocked(tmp_pat
     assert "test.fixme" in spec
 
 
-def test_unconfigured_captcha_answer_blocks_the_case(tmp_path) -> None:
+def test_unconfigured_captcha_answer_is_not_a_generation_blocker(tmp_path) -> None:
     ids = _ids()
     case = _case(
         ids,
@@ -435,10 +435,10 @@ def test_unconfigured_captcha_answer_blocks_the_case(tmp_path) -> None:
         ],
     )
     plan, spec, _auth = _render(tmp_path, case, _login_states())
-    assert plan.scripts[0].blocked is True
-    assert "CAPTCHA" in (plan.scripts[0].blocked_reason or "")
-    assert "test.fixme" in spec
-    assert "enterApplication" not in spec
+    assert plan.scripts[0].blocked is False
+    assert "test.fixme" not in spec
+    assert "TEST_CAPTCHA" not in spec
+    assert "fillCaptcha" not in spec
 
 
 def test_blank_captcha_validation_is_not_blocked(tmp_path) -> None:

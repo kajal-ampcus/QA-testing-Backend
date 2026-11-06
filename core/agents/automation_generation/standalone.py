@@ -52,11 +52,12 @@ def source_overrides(suite: Path, manifest: dict) -> dict[str, str]:
             text = re.sub(pattern, lambda _: helper.group(), text, count=1)
             text = text.replace('Object.entries(parsed).filter(([name, value]) => typeof name === "string" && typeof value === "string" && value)',
                                 'Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0)')
-            # The platform's optional Python OCR module is not part of a
-            # standalone Node package. Keep local DOM/math parsing, and allow
-            # a fresh user-provided answer for a visual challenge.
-            text = re.sub(r"function ocrCaptchaPng\(png: Buffer\): string \| null \{[\s\S]*?(?=async function captchaWidgetText)",
-                'function ocrCaptchaPng(_png: Buffer): string | null {\n  const answer = process.env.TEST_CAPTCHA?.trim() || "";\n  return CAPTCHA_TOKEN.test(answer) ? answer : null;\n}\n\n', text, count=1)
+            text = re.sub(
+                r"function ocrCaptchaPng\(png: Buffer\): string \| null \{[\s\S]*?(?=async function captchaWidgetText)",
+                'function ocrCaptchaPng(_png: Buffer): string | null {\n  return null;\n}\n\n',
+                text,
+                count=1,
+            )
             text = text.replace('import { spawnSync } from "child_process";\n', '').replace('import os from "os";\n', '')
             result["fixtures/auth.ts"] = text
     return result
@@ -80,8 +81,9 @@ Environment variables override local login settings. Within the QA platform,
 managed execution inputs take precedence over these standalone files. Explicit
 negative-test blanks stay blank. CAPTCHA/OTP must be supplied fresh at runtime;
 they are not exported. The files are ignored by Git and contain private data.
-Visual CAPTCHA answers can be supplied through `TEST_CAPTCHA` for the current
-challenge. The standalone package does not call the platform's Python OCR module.
+CAPTCHA answers are never requested or exported. Configure the application
+under test with its provider's official test mode or an owner-authorized staging
+integration before running any login flow that requires a CAPTCHA.
 Download again to include changed account or form-data assignments.
 The Automation explorer's `credentials/test-data.json` entry previews current
 assigned form values. Example files are templates. Use "Refresh inputs in

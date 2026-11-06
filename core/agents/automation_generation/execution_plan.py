@@ -123,6 +123,17 @@ def prepare_execution(
             return _blocked(starting, steps, data, "Empty-field scenario has no unambiguous empty target; name the field explicitly.")
     elif kind in {"login_success", "login_rejected"}:
         steps = [step for step in steps if not _unrelated_fill(step, states, text, keep_credentials=True)]
+        # CAPTCHA answers are ephemeral and page-bound, never reusable test
+        # data. Positive login flows rely on an owner-authorized provider test
+        # mode or staging integration instead of asking for an answer.
+        if kind == "login_success":
+            steps = [step for step in steps if not _is_captcha_step(step, states)]
+        elif not _CAPTCHA.search(text):
+            # A credential-rejection case is not a CAPTCHA case. Do not turn
+            # its changing challenge into a missing runtime fixture. A site
+            # that validates CAPTCHA before credentials still needs its
+            # approved test integration to exercise this scenario correctly.
+            steps = [step for step in steps if not _is_captcha_step(step, states)]
         steps = _ensure_click(steps, start, states, _SUBMIT)
         if kind == "login_rejected":
             steps = _ensure_observed_fill(steps, start, text)
@@ -134,10 +145,6 @@ def prepare_execution(
         data, steps, negative_issue = _ensure_negative(case, steps, data, states)
         if negative_issue:
             return _blocked(starting, steps, data, negative_issue)
-
-    captcha_issue = _captcha_without_value(case, steps, data, states)
-    if captcha_issue:
-        return _blocked(starting, steps, data, captcha_issue)
 
     # Required companion fields use configured fixtures only.  Login
     # credentials are the exception: discovery deliberately keeps them in the
@@ -153,6 +160,10 @@ def prepare_execution(
             if str(element.get("role", "")).lower() not in {"textbox", "combobox", "searchbox", "spinbutton"}:
                 continue
             name = str(element.get("name") or "")
+            # CAPTCHA is an ephemeral runtime challenge, not fixture data.
+            # The execution fixture owns the approved test-mode/manual flow.
+            if _CAPTCHA.search(name) or str(element.get("credential_binding") or "").lower() == "captcha":
+                continue
             value = _resolve_field(data, name)
             if not isinstance(value, str) or not value:
                 key = normalize_name(name)
@@ -423,15 +434,30 @@ def _credential_environment(element: dict[str, Any], name: str) -> str | None:
     if binding == "password":
         return "TEST_PASSWORD"
     if binding == "captcha":
-        return "TEST_CAPTCHA"
+        return None
     blob = f"{name} {element.get('type') or ''} {element.get('input_type') or ''}"
     if _PASSWORD.search(blob) or str(element.get("input_type") or element.get("type") or "").lower() == "password":
         return "TEST_PASSWORD"
     if _CAPTCHA.search(blob):
-        return "TEST_CAPTCHA"
+        return None
     if _USERNAME.search(blob):
         return "TEST_USERNAME"
     return None
+
+
+def _is_captcha_step(step: dict[str, Any], states: dict[str, _State]) -> bool:
+    """Recognize an observed CAPTCHA field without treating it as test data."""
+    element = _element(step, states) or {}
+    target = step.get("target") if isinstance(step.get("target"), dict) else {}
+    blob = " ".join(
+        str(value or "")
+        for value in (
+            element.get("name"),
+            element.get("credential_binding"),
+            target.get("element_name"),
+        )
+    )
+    return bool(_CAPTCHA.search(blob))
 
 
 def _exercises_auth_surface(case: _Case, states: dict[str, _State]) -> bool:
@@ -704,45 +730,6 @@ def _empty_required(
     return data, steps
 
 
-def _captcha_without_value(
-    case: _Case,
-    steps: list[dict[str, Any]],
-    data: dict[str, Any],
-    states: dict[str, _State],
-) -> str | None:
-    if _captcha_is_under_test(case, steps, states):
-        return None
-    for step in steps:
-        if step.get("action") != "fill" or not _CAPTCHA.search(_step_name(step, states)):
-            continue
-        if _fill_value(step, data).strip():
-            continue
-        if str(data.get("TEST_CAPTCHA") or "").strip():
-            continue
-        return "CAPTCHA cannot be answered automatically. Set TEST_CAPTCHA for this test environment."
-    return None
-
-
-def _captcha_is_under_test(
-    case: _Case,
-    steps: list[dict[str, Any]],
-    states: dict[str, _State],
-) -> bool:
-    captcha_fills = [
-        step
-        for step in steps
-        if step.get("action") == "fill" and _CAPTCHA.search(_step_name(step, states))
-    ]
-    if not captcha_fills:
-        return False
-    text = _objective(case)
-    return bool(
-        _CAPTCHA.search(text)
-        and (
-            (case.category or "").upper() == "NEGATIVE"
-            or re.search(r"\b(blank|empty|missing|required|invalid|incorrect|wrong|reject|error|validation)\b", text, re.I)
-        )
-    )
 
 
 def _resolve_field(data: dict[str, Any], field: str) -> str | None:

@@ -18,8 +18,8 @@ import socket
 import tempfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, suppress
 from html import unescape
 from pathlib import Path
@@ -41,6 +41,8 @@ from core.agents.application_discovery.form_inputs import (
     saved_field_values,
     value_for_field,
 )
+from core.challenge_handling import ChallengeDetector
+from core.challenge_handling.models import ChallengeType
 from core.tool_gateway.secret_resolver import resolve_login
 from core.tool_gateway.snapshot import merge_dom_hrefs, parse_elements
 
@@ -485,9 +487,10 @@ def _solve_math_captcha(text: str) -> int | None:
 
 def _captcha_challenge_kind(text: str) -> str:
     """Return the recognized CAPTCHA class in a generic, site-agnostic way."""
-    if _solve_math_captcha(text) is not None:
+    detected = ChallengeDetector().detect({"text": text})
+    if detected and detected.challenge_type == ChallengeType.ARITHMETIC:
         return "math"
-    if _CAPTCHA_CHALLENGE_PATTERN.search(text):
+    if detected is not None:
         return "generic"
     return "none"
 
@@ -2123,10 +2126,14 @@ class ChromeDevToolsClient:
         filled_uids: set[str],
     ) -> list[dict[str, Any]]:
         """Fill saved extra fields. Return required fields that still have no value."""
-        from core.agents.application_discovery.form_inputs import discovery_form
         from core.agents.application_discovery.fingerprint import canonical_route
+        from core.agents.application_discovery.form_inputs import discovery_form
         from core.tool_gateway.form_resolution import (
-            FormContext, account_candidates, apply_values, resolve_candidates, resolve_form,
+            FormContext,
+            account_candidates,
+            apply_values,
+            resolve_candidates,
+            resolve_form,
         )
 
         nodes = await self.inspect_elements(await self.take_snapshot())

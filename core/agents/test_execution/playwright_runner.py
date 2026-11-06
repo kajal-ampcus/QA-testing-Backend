@@ -282,6 +282,11 @@ def _last_result(tests: list[Any]) -> dict[str, Any]:
 
 
 def _result_status(result: dict[str, Any], spec: dict[str, Any]) -> TestResultStatus:
+    message = str(result.get("error") or result.get("message") or "")
+    if "CAPTCHA_CONFIGURATION_ERROR:" in message:
+        return TestResultStatus.CONFIGURATION_ERROR
+    if "CAPTCHA_BLOCKED:" in message:
+        return TestResultStatus.BLOCKED
     raw = str(result.get("status") or spec.get("ok"))
     if raw in {"True", "true"}:
         return TestResultStatus.PASSED

@@ -135,9 +135,7 @@ test.fixme([[ title ]], async () => {
 """
 
 _AUTH = r"""
-import { spawnSync } from "child_process";
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { expect, test as base, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
@@ -290,19 +288,10 @@ function textToken(widgetText: string): string | null {
   return null;
 }
 
-function ocrCaptchaPng(png: Buffer): string | null {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "captcha-"));
-  const file = path.join(dir, "captcha.png");
-  fs.writeFileSync(file, png);
-  const python = process.env.PYTHON || "python";
-  const result = spawnSync(python, ["-m", "core.agents.test_execution.captcha_solve", file], {
-    encoding: "utf8",
-    timeout: 20_000,
-  });
-  fs.rmSync(dir, { recursive: true, force: true });
-  if (result.status !== 0) return null;
-  const answer = (result.stdout || "").trim();
-  return CAPTCHA_TOKEN.test(answer) ? answer : null;
+function ocrCaptchaPng(_png: Buffer): string | null {
+  // CAPTCHA responses must come from a provider test mode or an authorized
+  // staging integration, never from OCR of a live challenge.
+  return null;
 }
 
 async function captchaWidgetText(page: Page): Promise<string> {
@@ -366,17 +355,8 @@ async function captchaPng(page: Page): Promise<Buffer | null> {
 }
 
 async function captchaAnswer(page: Page): Promise<string | null> {
-  const widget = await captchaWidgetText(page);
-  const widgetMath = mathAnswer(widget);
-  if (widgetMath) return widgetMath;
-  const png = await captchaPng(page);
-  if (png) {
-    const token = textToken(widget);
-    if (token) return token;
-    return ocrCaptchaPng(png);
-  }
-  const pageText = await page.locator("body").innerText().catch(() => "");
-  return mathAnswer(pageText) || textToken(widget);
+  void page;
+  return null;
 }
 
 async function loginNotice(page: Page): Promise<string> {
@@ -394,6 +374,19 @@ async function waitOutCaptchaLimit(page: Page): Promise<void> {
   if (!(await blocked.isVisible().catch(() => false))) return;
   await page.waitForFunction(() => false, undefined, { timeout: 65_000 }).catch(() => undefined);
   await page.reload({ waitUntil: "domcontentloaded" });
+}
+
+async function hasCaptchaChallenge(page: Page): Promise<boolean> {
+  // Covers image/text fields as well as provider widgets embedded in frames.
+  // It intentionally identifies a challenge without reading or solving it.
+  const selector = [
+    'input[name*="captcha" i], input[id*="captcha" i]',
+    'img[alt*="captcha" i], img[id*="captcha" i]',
+    '[data-sitekey]', '[class*="captcha" i]', '[id*="captcha" i]',
+    'iframe[src*="recaptcha" i], iframe[src*="hcaptcha" i]',
+    'iframe[src*="turnstile" i], iframe[src*="challenges.cloudflare.com" i]',
+  ].join(", ");
+  return page.locator(selector).first().isVisible().catch(() => false);
 }
 
 function sessionEndControl(page: Page) {
@@ -476,36 +469,27 @@ async function enterApplication(page: Page): Promise<void> {
     if (await field.isVisible().catch(() => false)) await field.fill(value);
   }
   let notice = "";
-  const answerBox = page
-    .getByPlaceholder(/captcha|answer/i)
-    .or(page.getByRole("textbox", { name: /captcha|answer/i }))
-    .or(page.locator('input[name*="captcha" i], input[id*="captcha" i]'))
-    .first();
-  const picture = page
-    .locator('img[alt*="captcha" i], img[id*="captcha" i], [id*="captcha" i] img, [class*="captcha" i] img')
-    .first();
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 1; attempt += 1) {
     notice = await loginNotice(page);
     if (/too many captcha requests/i.test(notice)) {
       await waitOutCaptchaLimit(page);
       continue;
     }
-    const needsCaptcha =
-      (await answerBox.isVisible().catch(() => false)) ||
-      (await picture.isVisible().catch(() => false));
+    const needsCaptcha = await hasCaptchaChallenge(page);
     if (needsCaptcha) {
-      await picture.waitFor({ state: "visible", timeout: 15_000 }).catch(() => undefined);
-      const answer = await captchaAnswer(page);
-      if (!answer) {
-        notice = (await loginNotice(page)) || "The CAPTCHA could not be read.";
-        const refresh = page.getByRole("button", { name: /refresh captcha|reload captcha|new captcha/i });
-        if (await refresh.isEnabled().catch(() => false)) {
-          await refresh.click();
-          continue;
-        }
-        break;
+      // Never read, OCR, or derive an answer from a live CAPTCHA. An owner may
+      // enable an official provider test mode or an application staging hook;
+      // those flows complete their own widget without an answer fixture.
+      const mode = credentialValue("TEST_CAPTCHA_MODE").trim();
+      if (!/^(official_test|staging_hook)$/.test(mode)) {
+        throw new Error("CAPTCHA_BLOCKED: no approved test-mode or staging integration is configured; manual intervention is required.");
       }
-      await answerBox.fill(answer);
+      if (mode === "staging_hook" && !credentialValue("TEST_CAPTCHA_STAGING_HOOK").trim()) {
+        throw new Error("CAPTCHA_CONFIGURATION_ERROR: TEST_CAPTCHA_STAGING_HOOK is required for staging_hook mode.");
+      }
+      if (mode === "staging_hook" && /^(production|prod)$/i.test(process.env.NODE_ENV || "")) {
+        throw new Error("CAPTCHA_CONFIGURATION_ERROR: staging_hook mode is disabled in production.");
+      }
     }
     await page.getByRole("button", { name: /^log\s*in$/i }).click();
     try {
@@ -664,7 +648,7 @@ export const test = base.extend<{ publicPage: Page; sessionPage: Page }>({
   },
 });
 
-export function envCredential(name: "TEST_USERNAME" | "TEST_PASSWORD" | "TEST_CAPTCHA"): string {
+export function envCredential(name: "TEST_USERNAME" | "TEST_PASSWORD"): string {
   loadSuiteEnv();
   return credentialValue(name);
 }
@@ -805,7 +789,9 @@ _ENV_EXAMPLE = """\
 BASE_URL=[[ base_url ]]
 TEST_USERNAME=
 TEST_PASSWORD=
-TEST_CAPTCHA=
+TEST_CAPTCHA_MODE=
+# official_test or staging_hook, configured only for an owner-authorized test environment.
+TEST_CAPTCHA_STAGING_HOOK=
 RUN_DESTRUCTIVE=false
 PLAYWRIGHT_IGNORE_HTTPS_ERRORS=false
 PLAYWRIGHT_HEADLESS=true

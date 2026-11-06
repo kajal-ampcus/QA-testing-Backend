@@ -212,7 +212,7 @@ def test_suite_contains_pom_files_and_keeps_traceability(tmp_path) -> None:
     auth = (root / "fixtures" / "auth.ts").read_text(encoding="utf-8")
     assert 'img[alt="CAPTCHA"]' not in auth
     assert 'img[alt*="captcha" i]' in auth
-    assert "core.agents.test_execution.captcha_solve" in auth
+    assert "core.agents.test_execution.captcha_solve" not in auth
     assert 'querySelectorAll("tspan")' in auth
     assert 'querySelectorAll("text, tspan")' not in auth
     assert r"(\d{1,2})" in auth

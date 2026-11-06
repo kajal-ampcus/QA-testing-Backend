@@ -474,19 +474,29 @@ def _plan_case(
             reasons.append(f"Step {index}: {decision.reason}")
             continue
         prop = used_props.setdefault((state_code, element_code or ""), _prop_name(decision))
+        element = next(
+            (item for item in state.elements if str(item.get("element_code") or "") == (element_code or "")),
+            {},
+        )
         element_name = str(target.get("element_name") or decision.evidence.get("name") or "")
         if action in {"fill", "select"}:
-            expression, field = _fill_expression(case, index, step, element_name, leaves, forbidden)
-            binding = _input_binding(case, index, step, element_name, state, forbidden)
-            input_bindings.append(binding)
-            raw = str(step.get("value") or "")
-            match = re.fullmatch(r"\{([^{}]+)\}", raw.strip())
-            if match and not match.group(1).startswith("credential:") and not any(
-                path == match.group(1) or path.endswith("." + match.group(1)) for path, _ in leaves
-            ):
-                expression = "null"
-                field = None  # value comes from execution-inputs.json, not an env var
-            expression = f"await executionInput({json.dumps(binding['key'])}, {expression})"
+            captcha = _is_captcha_element(element_name, element)
+            if captcha:
+                # CAPTCHA validation can use deterministic invalid/empty
+                # syntax values. A valid answer is never collected as input.
+                expression, field = _captcha_expression(case, step), None
+            else:
+                expression, field = _fill_expression(case, index, step, element_name, leaves, forbidden)
+                binding = _input_binding(case, index, step, element_name, state, forbidden)
+                input_bindings.append(binding)
+                raw = str(step.get("value") or "")
+                match = re.fullmatch(r"\{([^{}]+)\}", raw.strip())
+                if match and not match.group(1).startswith("credential:") and not any(
+                    path == match.group(1) or path.endswith("." + match.group(1)) for path, _ in leaves
+                ):
+                    expression = "null"
+                    field = None  # value comes from execution-inputs.json, not an env var
+                expression = f"await executionInput({json.dumps(binding['key'])}, {expression})"
             if field:
                 data_fields.append(field)
             verb = "select" if action == "select" else "fill"
@@ -854,6 +864,22 @@ def _fill_expression(
     env = _env_name(case.tc_code, field_key)
     name = _identifier(field_key.split(".")[-1], f"step{index}")
     return f"testData.{_case_key(case.tc_code)}.{name}", {"name": name, "env": env}
+
+
+def _is_captcha_element(name: str, element: dict[str, Any]) -> bool:
+    return bool(re.search(r"\bcaptcha\b", " ".join((name, str(element.get("credential_binding") or ""))), re.I))
+
+
+def _captcha_expression(case: CaseInput, step: dict[str, Any]) -> str:
+    """Synthetic values for validation only; never a live CAPTCHA response."""
+    text = " ".join((case.title, case.objective, case.expected_result)).casefold()
+    raw = str(step.get("value") or "")
+    if raw == "" or re.search(r"\b(empty|blank|required|missing)\b", text):
+        return '""'
+    if re.search(r"\b(one.character|single.character|boundary)\b", text):
+        return '"1"'
+    # This is intentionally an invalid format/token for negative validation.
+    return '"0000"'
 
 
 def _forbidden_literals(cases: list[CaseInput]) -> set[str]:

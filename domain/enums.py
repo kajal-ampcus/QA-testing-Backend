@@ -110,6 +110,8 @@ class TestResultStatus(StrEnum):
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
     ERROR = "ERROR"
+    BLOCKED = "BLOCKED"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
 
 
 class EvidenceChannel(StrEnum):
