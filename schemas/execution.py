@@ -89,6 +89,7 @@ class TestRunSummaryOut(BaseModel):
     finished_at: datetime | None = None
     created_at: datetime | None = None
     result_count: int = 0
+    retry_of_run_id: UUID | None = None
 
 
 class TestRunDetailOut(TestRunSummaryOut):

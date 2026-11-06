@@ -28,7 +28,7 @@ from infra.db.models.agent_run import AgentRun
 from infra.db.repositories.automation_repo import AutomationRepository
 from infra.db.repositories.execution_repo import ExecutionRepository
 from infra.db.session import AsyncSessionLocal
-from infra.execution_inputs import prepare_run_inputs, read_json, write_json
+from infra.execution_inputs import prepare_run_inputs, read_json, run_input_dir, write_json
 from infra.object_storage.s3_client import S3Client
 from infra.test_data_service import runtime_form_values
 from schemas.envelope import AgentInputEnvelope, AgentOutputEnvelope, AgentRunStatus
@@ -68,6 +68,24 @@ async def run_execution(
             directory = prepare_run_inputs(
                 Path(payload["suite_dir"]), uuid.UUID(str(payload["run_id"]))
             )
+            retry_of = payload.get("retry_of_run_id")
+            if retry_of:
+                # Retain values actually used by the source run. Keys are
+                # still checked against this generation's current bindings.
+                previous = run_input_dir(Path(payload["suite_dir"]), uuid.UUID(str(retry_of)))
+                snapshot = read_json(directory / "snapshot.json")
+                values = dict(snapshot.get("values") or {})
+                for consumed in previous.glob("*.consumed.json"):
+                    item = read_json(consumed)
+                    key = item.get("key")
+                    if key and key in read_json(directory / "bindings.json"):
+                        values[str(key)] = {
+                            "mode": item.get("mode", "value"),
+                            "value": item.get("value", ""),
+                            "source": "retry",
+                        }
+                snapshot["values"] = values
+                write_json(directory / "snapshot.json", snapshot)
             scripts = await automation_repo.list_generation(
                 input_envelope.project_id, uuid.UUID(str(payload["generation_id"]))
             )

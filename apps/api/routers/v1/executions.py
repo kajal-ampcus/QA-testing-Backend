@@ -289,6 +289,7 @@ async def start_execution_run(
     run_destructive: bool = False,
     watch_browser: bool = False,
     script_ids: list[uuid.UUID] | None = None,
+    retry_of_run_id: uuid.UUID | None = None,
 ) -> TriggerExecutionResponse:
     """Queue the Test Execution Agent. The worker runs npx playwright test."""
     scripts = await AutomationRepository(session).list_generation(project.id, generation_id)
@@ -362,7 +363,7 @@ async def start_execution_run(
         run_destructive=run_destructive,
         watch_browser=watch_browser,
         status=TestRunStatus.QUEUED,
-        summary={},
+        summary={"retry_of_run_id": str(retry_of_run_id)} if retry_of_run_id else {},
     )
     execution_repo.add_run(run)
     await session.commit()
@@ -376,6 +377,7 @@ async def start_execution_run(
         "credential_ref": project.credential_ref,
         "base_url": project.application_url,
         "environment": settings.environment,
+        "retry_of_run_id": str(retry_of_run_id) if retry_of_run_id else None,
     }
     payload["script_credential_refs"] = {
         str(script.id): credential_refs.get(script.id)
@@ -412,6 +414,43 @@ async def trigger_execution(
         run_destructive=body.run_destructive,
         watch_browser=body.watch_browser,
         script_ids=body.script_ids,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/runs/{run_id}/retry-failed",
+    response_model=TriggerExecutionResponse,
+    status_code=202,
+)
+async def retry_failed_execution(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> TriggerExecutionResponse:
+    """Queue only failed/error scripts from one finished execution run."""
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    source = await ExecutionRepository(session).get_run_for_project(project_id, run_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Test run not found")
+    if not run_is_finished(source.status):
+        raise HTTPException(status_code=409, detail="Wait for the execution run to finish before retrying failures.")
+    failed_ids = list({
+        result.automation_script_id
+        for result in source.results
+        if result.automation_script_id is not None and result.status in {"FAILED", "ERROR"}
+    })
+    if not failed_ids:
+        raise HTTPException(status_code=409, detail="This run has no failed or errored automated cases to retry.")
+    return await start_execution_run(
+        session,
+        project,
+        source.generation_id,
+        run_destructive=source.run_destructive,
+        watch_browser=source.watch_browser,
+        script_ids=failed_ids,
+        retry_of_run_id=source.id,
     )
 
 
@@ -630,6 +669,7 @@ def _summary(run: TestRun) -> TestRunSummaryOut:
         finished_at=run.finished_at,
         created_at=run.created_at,
         result_count=len(run.results or []),
+        retry_of_run_id=str(raw.get("retry_of_run_id")) if raw.get("retry_of_run_id") else None,
     )
 
 
