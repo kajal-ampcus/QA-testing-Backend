@@ -8,6 +8,7 @@ submits, so the target is checked before a crawl is queued. Cloud metadata,
 link-local, multicast and reserved addresses are always refused. Loopback and
 private networks are allowed in development (local apps under test) and
 refused elsewhere unless DISCOVERY_ALLOW_PRIVATE_TARGETS=true.
+DISCOVERY_ALLOW_LOCALHOST explicitly allows or blocks loopback targets when set.
 DISCOVERY_ALLOWED_HOSTS (comma-separated, "*.example.com" wildcards) restricts
 targets to an explicit allowlist when set.
 """
@@ -16,8 +17,12 @@ import asyncio
 import ipaddress
 import os
 import socket
+from pathlib import Path
 from urllib.parse import urlparse
 
+from dotenv import dotenv_values
+
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 _METADATA_HOSTS = {"metadata.google.internal", "metadata", "instance-data"}
 
 
@@ -50,6 +55,17 @@ def _host_matches(host: str, pattern: str) -> bool:
 def check_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
         address = address.ipv4_mapped
+    if address.is_loopback:
+        allow_localhost = os.environ.get("DISCOVERY_ALLOW_LOCALHOST")
+        if allow_localhost is None:
+            allow_localhost = dotenv_values(_ENV_FILE).get("DISCOVERY_ALLOW_LOCALHOST")
+        if allow_localhost is not None:
+            if allow_localhost.strip().lower() == "true":
+                return
+            raise DiscoveryTargetError(
+                "Localhost discovery targets are disabled. "
+                "Set DISCOVERY_ALLOW_LOCALHOST=true to test local applications."
+            )
     if (
         address.is_link_local
         or address.is_multicast

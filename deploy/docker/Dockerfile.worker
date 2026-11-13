@@ -58,7 +58,10 @@ RUN --mount=type=cache,target=/root/.cache/pip pip install --timeout 120 --retri
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 # Install browser and MCP at build time; no runtime package downloads. Debian
 # supplies Chromium, and /usr/local/bin/google-chrome remains a compatibility alias.
+# Playwright's bundled Node needs libatomic before its dependency installer can run.
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends libatomic1 \
     && mkdir -p /opt/ms-playwright \
     && playwright install --with-deps chromium \
     && python -c "from pathlib import Path; import shutil; binary=shutil.which('chromium') or shutil.which('chromium-browser'); assert binary, 'Chromium executable was not installed'; target=Path('/usr/local/bin/google-chrome'); target.unlink(missing_ok=True); target.symlink_to(Path(binary).resolve()); print(target, '->', Path(binary).resolve())" \
