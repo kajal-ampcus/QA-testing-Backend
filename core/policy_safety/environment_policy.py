@@ -66,6 +66,14 @@ def check_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> Non
                 "Localhost discovery targets are disabled. "
                 "Set DISCOVERY_ALLOW_LOCALHOST=true to test local applications."
             )
+        # IPv6 loopback (::1) can also be classified as reserved. Apply the
+        # loopback policy before the blanket reserved-address rejection.
+        if _allow_private():
+            return
+        raise DiscoveryTargetError(
+            f"Discovery target resolves to a private address ({address}). "
+            "Set DISCOVERY_ALLOW_PRIVATE_TARGETS=true to crawl internal applications."
+        )
     if (
         address.is_link_local
         or address.is_multicast

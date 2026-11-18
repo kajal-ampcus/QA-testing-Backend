@@ -233,6 +233,11 @@ async def trigger_discovery(
         )
         if resumable is None or resumable.project_id != project_id:
             raise HTTPException(status_code=404, detail="Discovery checkpoint not found")
+        if body.url is not None and target_url.rstrip("/") != resumable.base_url.rstrip("/"):
+            raise HTTPException(
+                status_code=409,
+                detail="The discovery URL differs from this saved map. Start a fresh discovery for the new URL.",
+            )
         if resumable.status not in {"PARTIAL", "COMPLETE"} or not resumable.discovery_checkpoint:
             raise HTTPException(status_code=409, detail="Discovery is not resumable")
         saved_mode = resumable.discovery_checkpoint.get("configuration", {}).get("mode")

@@ -288,7 +288,7 @@ async def apply_values(
                 await client.click(str(node["uid"]))
         elif authentication and hasattr(client, "_fill_authentication_field"):
             await client._fill_authentication_field(
-                str(node["uid"]), value, [node["name"]], {node["role"]}, node["name"]
+                str(node["uid"]), value, [node["name"]], {node["role"]}, describe_field(node)["name"]
             )
         else:
             await client.fill(str(node["uid"]), value)

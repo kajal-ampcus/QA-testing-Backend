@@ -22,8 +22,8 @@ from core.services.page_matching import PageMatchingService
 from domain.enums import ApprovalStatus, RequirementStatus, TestCaseStatus
 from infra.db.models.agent_run import AgentRun
 from infra.db.models.approval import Approval
-from infra.db.models.project import Project
 from infra.db.models.discovery_credential import DiscoveryCredential
+from infra.db.models.project import Project
 from infra.db.models.test_case import TestCase
 from infra.db.repositories.application_map_repo import ApplicationMapRepository
 from infra.db.repositories.requirement_repo import RequirementRepository
@@ -293,28 +293,31 @@ async def confirm_import(project_id: uuid.UUID, body: ImportConfirmRequest, db: 
     states = {state.state_code for state in app_map.states}
     repo = TestCaseRepository(db)
     await repo.lock_generation(requirement.id)
-    existing = await repo.list_for_requirement(requirement.id)
     results: list[ImportConfirmResult] = []
     for row in body.rows:
         if not row.include:
-            results.append(ImportConfirmResult(row_number=row.row_number, status="excluded")); continue
+            results.append(ImportConfirmResult(row_number=row.row_number, status="excluded"))
+            continue
         if not row.state_code:
-            results.append(ImportConfirmResult(row_number=row.row_number, status="unmapped", error="Select a discovered page before importing.")); continue
+            results.append(ImportConfirmResult(row_number=row.row_number, status="unmapped", error="Select a discovered page before importing."))
+            continue
         if row.state_code not in states:
-            results.append(ImportConfirmResult(row_number=row.row_number, status="invalid", error="Selected page is not in this application map.")); continue
+            results.append(ImportConfirmResult(row_number=row.row_number, status="invalid", error="Selected page is not in this application map."))
+            continue
         expected = row.expected_result.strip() or f"The application handles the scenario successfully: {row.title}."
         objective = row.objective.strip() or f"Verify: {row.title}"
         steps = _manual_steps(state_code=row.state_code, expected_result=expected, step_notes=row.step_notes)
-        identity = _import_identity(row.title, expected, row.category, row.preconditions, steps)
-        duplicate = next(((tc, version) for tc, version in existing if _import_identity(version.title, version.expected_result, version.category, version.preconditions, version.steps) == identity), None)
+        duplicate = await repo.find_semantic_duplicate(requirement.id,
+            {"title": row.title, "objective": objective, "expected_result": expected,
+             "preconditions": row.preconditions, "steps": steps}, app_map.id)
         if duplicate:
-            results.append(ImportConfirmResult(row_number=row.row_number, status="duplicate", test_case=_to_out(*duplicate))); continue
+            results.append(ImportConfirmResult(row_number=row.row_number, status="duplicate", test_case=_to_out(*duplicate)))
+            continue
         tc, version = await repo.create(project_id, await repo.next_tc_code(project_id), requirement.id, requirement.current_version, app_map.id,
             {"title": row.title.strip(), "objective": objective, "preconditions": row.preconditions, "steps": steps,
              "expected_result": expected, "test_data": {"source": "excel_import"}, "traceability": [], "category": row.category, "confidence": 1.0},
             credential_ref=project.credential_ref, primary_state_code=row.state_code, source="excel_import",
             import_metadata={"filename": body.filename, "row_number": row.row_number})
-        existing.append((tc, version))
         results.append(ImportConfirmResult(row_number=row.row_number, status="imported", test_case=_to_out(tc, version)))
     await db.commit()
     return ImportConfirmResponse(results=results)
@@ -733,39 +736,20 @@ async def create_test_case(
         )
 
     preconditions = [item.strip() for item in body.preconditions if item.strip()]
-    if body.skip_existing:
-        # Keep the check and insert in one transaction, including concurrent uploads.
-        await tc_repo.lock_generation(requirement.id)
-        identity = _import_identity(body.title, body.expected_result, body.category, preconditions,
-                                    _manual_steps(state_code=start_state, expected_result=body.expected_result, step_notes=body.step_notes))
-        for existing, saved in await tc_repo.list_for_requirement(requirement.id):
-            if existing.status == TestCaseStatus.OUTDATED or existing.requirement_version != requirement.current_version:
-                continue
-            saved_identity = _import_identity(saved.title, saved.expected_result, saved.category, saved.preconditions, saved.steps)
-            # The compact manual form has no step notes. Match the scenario
-            # against generated/imported cases even when they have detailed steps.
-            same_manual_scenario = (
-                saved_identity[0] == identity[0] if body.manual_entry else
-                not body.step_notes and not body.preconditions and saved_identity[:3] == identity[:3]
-            )
-            if saved_identity == identity or same_manual_scenario:
-                out = _to_out(existing, saved).model_copy(update={"already_exists": True})
-                await db.commit()
-                return out
-        try:
-            found = await tc_repo.find_semantic_duplicate(requirement.id, {
-                "title": body.title, "objective": body.objective,
-                "expected_result": body.expected_result, "preconditions": body.preconditions,
-                "steps": _manual_steps(state_code=start_state, expected_result=body.expected_result, step_notes=body.step_notes),
-            })
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail="Duplicate comparison is unavailable. No test case was added; please retry.") from exc
-        if found:
-            out = _to_out(*found).model_copy(update={"already_exists": True})
-            await db.commit()
-            return out
+    # Every source uses the same comparison, under the same requirement lock.
+    # The legacy skip_existing flag cannot bypass scenario uniqueness.
+    await tc_repo.lock_generation(requirement.id)
+    found = await tc_repo.find_semantic_duplicate(requirement.id, {
+        "title": body.title, "objective": body.objective,
+        "expected_result": body.expected_result, "preconditions": preconditions,
+        "steps": _manual_steps(state_code=start_state, expected_result=body.expected_result, step_notes=body.step_notes),
+    }, app_map.id)
+    if found:
+        if body.traceability:
+            await tc_repo.merge_traceability(found[0].id, found[1].id, body.traceability)
+        out = _to_out(*found).model_copy(update={"already_exists": True})
+        await db.commit()
+        return out
     tc_code = await tc_repo.next_tc_code(project_id)
     test_case, current = await tc_repo.create(
         project_id=project_id,
@@ -818,6 +802,11 @@ async def revise_test_case(
     requirement's current acceptance criteria, and re-bases an OUTDATED case
     onto the current requirement version."""
     tc_repo = TestCaseRepository(db)
+    # Use the same lock order as import/generation: requirement, then case.
+    initial = await tc_repo.get_with_current_version(test_case_id)
+    if initial is None:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    await tc_repo.lock_generation(initial[0].requirement_id)
     test_case, _ = await _load_for_change(tc_repo, test_case_id, body.expected_version)
     if test_case.status == TestCaseStatus.APPROVED:
         raise HTTPException(
@@ -857,6 +846,15 @@ async def revise_test_case(
     issues = TestCaseValidationAgent().issues_for(spec, map_states, ac_ids)
     if issues:
         raise HTTPException(status_code=422, detail=issues)
+    duplicate = await tc_repo.find_semantic_duplicate(
+        requirement.id, version_data, test_case.application_map_id,
+        exclude_case_id=test_case.id,
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This scenario already exists as {duplicate[0].tc_code}; edit that case instead.",
+        )
     version = await tc_repo.append_version(test_case, version_data)
     test_case.requirement_version = requirement.current_version
     await db.commit()

@@ -74,3 +74,39 @@ async def test_local_matching_keeps_inputs_negation_and_sequence_distinct():
     for title in ["Login with an empty username", "Login with an invalid password", "Do not login with an empty password"]:
         assert await find_semantic_duplicate({"title": title}, existing) is None
     assert await find_semantic_duplicate({"title": "Logout then login"}, [{"id": "1", "title": "Login then logout"}]) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("candidate,existing", [
+    ({"title": "Verify login validation when username is blank"}, {"title": "Login with an empty username"}),
+    ({"title": "1. Enter valid username", "expected_result": "User is authenticated and navigated to the dashboard page."},
+     {"title": "Verify successful login with valid credentials", "expected_result": "Valid credentials authenticate the user."}),
+    ({"title": "1. Enter a password", "expected_result": "Password characters are masked by default."},
+     {"title": "Verify password is masked by default", "expected_result": "Password input uses type=password"}),
+    ({"title": "1. Enter a valid username", "expected_result": "Username is accepted and displayed."},
+     {"title": "Verify username accepts valid input", "expected_result": "Username accepts a valid username"}),
+    ({"title": "1. Click Back to Home", "expected_result": "User is navigated to the home page."},
+     {"title": "Verify Back to Home navigation", "expected_result": "Home page is visible"}),
+])
+async def test_cross_source_paraphrases_share_behavior(candidate, existing):
+    assert await find_semantic_duplicate(candidate, [{"id": "saved", **existing}]) == "saved"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("candidate,existing", [
+    ({"title": "Login", "expected_result": "Dashboard opens"}, {"title": "Login", "expected_result": "Error appears"}),
+    ({"title": "Password boundary of 8 characters"}, {"title": "Password boundary of 64 characters"}),
+    ({"title": "Login with blank email"}, {"title": "Login with blank password"}),
+    ({"title": "Login with valid credentials", "expected_result": "User is authenticated", "steps": [{"expected": "Press Enter using keyboard"}]},
+     {"title": "Successful login with valid credentials", "expected_result": "User is authenticated"}),
+    ({"title": "1. Enter valid credentials", "expected_result": "Password is not exposed in the URL"},
+     {"title": "1. Enter valid credentials", "expected_result": "Login is submitted and user navigated to dashboard"}),
+    ({"title": "Admin successful login"}, {"title": "Candidate successful login"}),
+    ({"title": "Verify password accepts valid input", "expected_result": "Password accepts input"},
+     {"title": "Enter a valid password", "expected_result": "Password accepts input and keeps it masked"}),
+    ({"title": "Login UI", "expected_result": "Controls are displayed with correct alignment"},
+     {"title": "Login UI", "expected_result": "Controls are displayed"}),
+    ({"title": "Field boundary", "test_data": {"value": 8}}, {"title": "Field boundary", "test_data": {"value": 9}}),
+])
+async def test_meaningful_conditions_and_outcomes_are_not_duplicates(candidate, existing):
+    assert await find_semantic_duplicate(candidate, [{"id": "saved", **existing}]) is None

@@ -5,8 +5,8 @@ are coverage dimensions, not new database categories. Unsupported obligations
 remain in the denominator instead of becoming guessed tests.
 """
 
-import re
 import json
+import re
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -16,11 +16,13 @@ from core.agents.test_design.fast_generate import (
     _default_categories,
     _observed,
     _rank_states,
+    _result_state,
     _state_score,
     _target,
     _url_path,
 )
 from core.agents.test_design.form_behaviors import form_behavior_cases
+from core.agents.test_design.login_cases import login_cases, login_controls
 from core.agents.test_design.schemas import TestCaseSpec, TestStep
 from domain.test_case_identity import case_signature
 
@@ -138,7 +140,7 @@ class ScenarioPlan:
 
 
 def _field_matches(element: dict[str, Any], text: str) -> bool:
-    name = str(element.get("name") or "")
+    name = str(element.get("name") or element.get("field_label") or "")
     name_terms = terms(name) - {"registered", "address"}
     return bool(name_terms) and name_terms.issubset(terms(text))
 
@@ -247,6 +249,30 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
                     str(ac["text"]), "functional", category, spec if category == "POSITIVE" else None,
                     reason="Visibility needs an unambiguous observed control; other outcomes need confirmed requirements and evidence."))
             continue
+        login_states = [state for state in states
+                        if (starting_states is None or state["state_code"] in starting_states)
+                        and login_controls(state)]
+        if len(login_states) == 1 and re.search(r"\blogin\b|\bsign.in\b|\bauthentication\b", title, re.I):
+            designed = login_cases(ac, login_states[0], criteria)
+            if designed:
+                if any(case.title == "Verify successful login with valid credentials" for case in designed):
+                    controls = login_controls(login_states[0])
+                    destination, _ = _result_state(states, login_states[0], controls[2])
+                    if destination["state_code"] != login_states[0]["state_code"]:
+                        observed_case = _build_case(ac=ac, category="POSITIVE", start=login_states[0], states=states, title=str(ac["text"]))
+                        if observed_case and observed_case.steps[-1].target.state_code == destination["state_code"]:
+                            designed = [observed_case]
+                ac_id = str(ac["id"])
+                wanted = (requested_categories or {}).get(ac_id)
+                scenarios.extend(Scenario(f"{ac_id}:{criterion_index}:login:{index}", ac_id, case.title,
+                                          dimension(str(ac["text"])), case.category, case)
+                                 for index, case in enumerate(designed)
+                                 if not wanted or case.category in wanted)
+                for missing_category in sorted((wanted or set()) - {case.category for case in designed}):
+                    scenarios.append(Scenario(f"{ac_id}:{criterion_index}:login:requested:{missing_category}", ac_id,
+                        str(ac["text"]), dimension(str(ac["text"])), missing_category,
+                        reason="Requested category needs a defined input and expected outcome for this login behavior."))
+                continue
         for clause_index, text in enumerate(clauses(str(ac.get("text") or "")) or [""]):
             ac_id = str(ac["id"])
             category = _default_categories({"text": text})[0]
@@ -323,7 +349,7 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
             presence_subject = _presence_subject(control_text, category)
             explicit_role = re.search(r'\b(heading|button|link|textbox|input|dropdown)\b', presence_subject or '', re.I)
             if explicit_role:
-                roles = {'input': {'textbox', 'searchbox', 'spinbutton'}, 'dropdown': {'combobox'}}
+                roles = {'input': {'textbox', 'searchbox', 'spinbutton'}, 'dropdown': {'combobox'}, 'button': {'button', 'link'}}
                 matched = [element for element in matched if element.get('role') in roles.get(explicit_role.group(1).lower(), {explicit_role.group(1).lower()})]
             if _REQUIRED.search(text) and (re.search(r"\b(fields|inputs)\b", text, re.I) or (not matched and re.search(r"\b(field|input)\b", text, re.I))):
                 matched = [element for element in elements if (element.get("validation") or {}).get("required") or element.get("required")]
@@ -340,7 +366,7 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
                 made.append(scenario)
 
             for element in matched:
-                name = str(element.get("name") or element["element_code"])
+                name = str(element.get("name") or element.get("field_label") or element["element_code"])
                 code = str(element["element_code"])
                 validation = element.get("validation") or {}
                 input_type = str(element.get("type") or element.get("input_type") or "").lower()
@@ -350,7 +376,7 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
                     add(f"{code}:visible", expected, _spec(ac_id, state, element, f"{name} {_role_name(element)} is visible", expected, {"kind": "visible"}))
                 if fillable and element.get("role") != "combobox" and _REQUIRED.search(text) and (validation.get("required") or element.get("required")):
                     for value, missing, label, cat in [("", "true", "empty required input", "NEGATIVE"),
-                                                        ("0" if input_type == "number" else "a", "false", "one-character required boundary", "EDGE_CASE")]:
+                                                        ("0" if input_type == "number" else "a", "false", "nonempty input satisfies required constraint", "EDGE_CASE")]:
                         expected = f"{name}: native valueMissing is {missing}; no claim about other validation rules"
                         add(f"{code}:required:{missing}", label,
                             _spec(ac_id, state, element, f"{name}: {label}", expected,
@@ -418,7 +444,7 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
             action_promised = bool(re.search(r"\b(click\w*|submit\w*|send\w*|reset\w*|refresh\w*|redirect\w*|accepts?|authenticat\w*|messages?|log\s*out|sign\s*out|prevent\w*|reject\w*)\b|\b(log\s*in|sign\s*in)\b(?!\s+(?:page|form|screen)\b)", text, re.I))
             if not made or action_promised:
                 spec = None
-                if state is not None:
+                if state is not None and not presence_subject:
                     spec = _build_case(ac={**ac, "text": text}, category=category,
                                        start=state, states=states, title=text)
                     # An unchanged text/visibility check does not test an action.

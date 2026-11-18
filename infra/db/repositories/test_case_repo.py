@@ -34,7 +34,9 @@ _VERSION_FIELDS = (
 
 class TestCaseRepository(BaseRepository):
 
-    async def find_semantic_duplicate(self, requirement_id: uuid.UUID, version_data: dict):
+    async def find_semantic_duplicate(self, requirement_id: uuid.UUID, version_data: dict,
+                                      application_map_id: uuid.UUID | None = None,
+                                      *, exclude_case_id: uuid.UUID | None = None):
         from domain.semantic_duplicates import find_semantic_duplicate
         cache = getattr(self, "_duplicate_pairs", None)
         if cache is None:
@@ -42,11 +44,14 @@ class TestCaseRepository(BaseRepository):
         if requirement_id not in cache:
             pairs = await self.list_for_requirement(requirement_id)
             current = await self.session.scalar(select(Requirement.current_version).where(Requirement.id == requirement_id))
-            cache[requirement_id] = [(tc, v) for tc, v in pairs if tc.status != TestCaseStatus.OUTDATED
+            cache[requirement_id] = [(tc, v) for tc, v in pairs if tc.status not in {TestCaseStatus.OUTDATED, TestCaseStatus.REJECTED}
                                     and tc.requirement_version == current]
-        pairs = cache[requirement_id]
+        pairs = [(tc, version) for tc, version in cache[requirement_id]
+                 if tc.id != exclude_case_id
+                 and tc.status not in {TestCaseStatus.OUTDATED, TestCaseStatus.REJECTED}
+                 and (application_map_id is None or tc.application_map_id == application_map_id)]
         def summary(data):
-            return {key: data.get(key) for key in ("title", "objective", "expected_result", "preconditions", "steps")}
+            return {key: data.get(key) for key in ("title", "objective", "expected_result", "preconditions", "steps", "test_data")}
         candidates = [{"id": str(tc.id), **summary({field: getattr(v, field) for field in _VERSION_FIELDS})} for tc, v in pairs]
         found = await find_semantic_duplicate(summary(version_data), candidates)
         return next(((tc, v) for tc, v in pairs if str(tc.id) == found), None)
@@ -132,6 +137,8 @@ class TestCaseRepository(BaseRepository):
         test_case.status = TestCaseStatus.DRAFT
         await self.supersede_pending_approvals(test_case.id, "Superseded by an edited version")
         await self.session.flush()
+        for pairs in getattr(self, "_duplicate_pairs", {}).values():
+            pairs[:] = [(case, version if case.id == test_case.id else saved) for case, saved in pairs]
         return version
 
     async def supersede_pending_approvals(self, test_case_id: uuid.UUID, reason: str) -> None:
@@ -153,11 +160,7 @@ class TestCaseRepository(BaseRepository):
     async def existing_signatures(
         self, requirement_id: uuid.UUID, application_map_id: uuid.UUID | None = None
     ) -> set[tuple[Any, ...]]:
-        """Signatures for the whole requirement.
-
-        The map filter is dropped on purpose: a case regenerated against a new
-        map version is the same scenario, not a new one.
-        """
+        """Signatures within the requested evidence map, or all maps if omitted."""
         pairs = await self.list_for_requirement(requirement_id)
         current_version = await self.session.scalar(select(Requirement.current_version).where(Requirement.id == requirement_id))
         contexts = await self._map_contexts(pairs)
@@ -166,16 +169,20 @@ class TestCaseRepository(BaseRepository):
             for tc, version in pairs
             if tc.status not in {TestCaseStatus.OUTDATED, TestCaseStatus.REJECTED}
             and (current_version is None or tc.requirement_version == current_version)
+            and (application_map_id is None or tc.application_map_id == application_map_id)
         }
 
     async def find_by_signature(
-        self, requirement_id: uuid.UUID, signature: tuple[Any, ...]
+        self, requirement_id: uuid.UUID, signature: tuple[Any, ...],
+        application_map_id: uuid.UUID | None = None,
     ) -> tuple[TestCase, TestCaseVersion] | None:
         """Locate the saved case that already expresses this scenario."""
         pairs = await self.list_for_requirement(requirement_id)
         current_version = await self.session.scalar(select(Requirement.current_version).where(Requirement.id == requirement_id))
         contexts = await self._map_contexts(pairs)
         for tc, version in pairs:
+            if application_map_id is not None and tc.application_map_id != application_map_id:
+                continue
             if tc.status in {TestCaseStatus.OUTDATED, TestCaseStatus.REJECTED}:
                 continue
             if current_version is not None and tc.requirement_version != current_version:
@@ -188,6 +195,9 @@ class TestCaseRepository(BaseRepository):
     async def lock_generation(self, requirement_id: uuid.UUID) -> int | None:
         """Serialize signature-check + insert across independent generation runs."""
         result = await self.session.execute(select(Requirement.current_version).where(Requirement.id == requirement_id).with_for_update())
+        # A generation agent commits each batch. Another import/generation may
+        # have saved cases since our last batch; reload candidates under the lock.
+        getattr(self, "_duplicate_pairs", {}).pop(requirement_id, None)
         return result.scalar_one_or_none()
 
     async def generation_contexts(self, requirement_id: uuid.UUID) -> list[tuple[Any, Any, list[dict[str, Any]]]]:

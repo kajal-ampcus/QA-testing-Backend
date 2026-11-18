@@ -1406,6 +1406,15 @@ class ChromeDevToolsClient:
                 xpath: xpathOf(el),
                 input_type: el.getAttribute('type'),
                 input_name: el.getAttribute('name'),
+                field_label: (() => {
+                    if (!el.matches('input, textarea, select')) return null;
+                    const associated = [...(el.labels || [])].map(label => label.textContent || '').join(' ').trim();
+                    if (associated) return associated;
+                    const parent = el.parentElement;
+                    if (!parent || parent.querySelectorAll('input, textarea, select').length !== 1) return null;
+                    const labels = [...parent.children].filter(child => child.localName === 'label');
+                    return labels.length === 1 ? labels[0].textContent.trim() : null;
+                })(),
                 control_group: el.parentElement ? xpathOf(el.parentElement) : null,
                 required: !!el.required,
                 readonly: !!el.readOnly,
@@ -1588,8 +1597,22 @@ class ChromeDevToolsClient:
         # Reacquire it from a fresh snapshot, then update it atomically while
         # still dispatching the events expected by React/Vue/Angular forms.
         await asyncio.sleep(0.2)
-        controls = _parse_controls(_snapshot_text(await self.take_snapshot()))
-        refreshed_ref = _find_uid(controls, names, roles)
+        refreshed_snapshot = await self.take_snapshot()
+        controls = _parse_controls(_snapshot_text(refreshed_snapshot))
+        if not any(names):
+            # Several inputs can share an empty accessible name. Reacquire the
+            # exact observed DOM label instead of choosing the first textbox.
+            matches = [node for node in await self.inspect_elements(refreshed_snapshot)
+                       if node.get("role") in roles and node.get("field_label") == description]
+            refreshed_ref = str(matches[0]["uid"]) if len(matches) == 1 else None
+        else:
+            refreshed_ref = _find_uid(controls, names, roles)
+            if not refreshed_ref:
+                observed = await self.inspect_elements(refreshed_snapshot)
+                labelled = [(str(node["uid"]), str(node.get("role") or ""),
+                             str(node.get("name") or node.get("field_label") or ""))
+                            for node in observed if node.get("uid")]
+                refreshed_ref = _find_uid(labelled, names, roles)
         if not refreshed_ref:
             raise RuntimeError(
                 f"{description.capitalize()} disappeared while the login form was updating."
@@ -2235,6 +2258,18 @@ class ChromeDevToolsClient:
                     text = f"{text}\n{dom_text}"
             controls = _parse_controls(text)
             controls = await self._select_login_role(secret, controls)
+            if any(role in {"textbox", "input", "combobox", "searchbox"} and not name
+                   for _, role, name in controls):
+                # Authentication used the raw accessibility tree, unlike form
+                # discovery. Keep exact UIDs, but use observed DOM labels for
+                # inputs whose accessible names are empty.
+                observed = await self.inspect_elements(await self.take_snapshot())
+                by_uid = {str(node["uid"]): node for node in observed if node.get("uid")}
+                controls = [
+                    (uid, role, name or str(by_uid.get(uid, {}).get("field_label") or
+                     ("Password" if by_uid.get(uid, {}).get("input_type") == "password" else "")))
+                    for uid, role, name in controls
+                ]
             logger.debug(
                 "[DISCOVERY AUTH] Page controls: %s",
                 [

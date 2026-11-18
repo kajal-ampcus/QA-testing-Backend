@@ -3,12 +3,28 @@
 from core.agents.application_discovery.form_inputs import (
     answers_cover,
     blocking_form,
+    discovery_form,
     form_key_for,
     is_otp_field,
     missing_fields,
     saved_field_values,
     value_for_field,
 )
+
+
+def test_login_with_unassociated_dom_labels_requests_both_credentials():
+    nodes = [
+        {"uid": "1", "role": "textbox", "name": "", "field_label": "USERNAME", "required": True},
+        {"uid": "2", "role": "textbox", "name": "", "field_label": "PASSWORD", "input_type": "password", "required": True},
+        {"role": "button", "name": "Continue", "input_type": "submit"},
+    ]
+    form = discovery_form(nodes)
+    assert form is not None
+    assert form["kind"] == "login"
+    assert [field["key"] for field in form["fields"]] == ["textbox:username", "textbox:password"]
+    assert all(field["required"] for field in form["fields"])
+    assert [node["uid"] for node in form["nodes"]] == ["1", "2"]
+    assert nodes[0]["name"] == ""  # DOM labels do not invent accessible names.
 
 
 def test_required_form_asks_for_its_fields():

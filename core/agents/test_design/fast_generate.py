@@ -17,6 +17,7 @@ from core.agents.application_discovery.dropdowns import (
     representative_option,
 )
 from core.agents.test_data.agent import value_for_element
+from core.agents.test_design.control_labels import control_label
 from core.agents.test_design.schemas import StepTarget, TestCaseSpec, TestStep
 
 _FILLABLE = {"textbox", "searchbox", "spinbutton", "combobox"}
@@ -51,7 +52,11 @@ def _observed(state: dict[str, Any]) -> list[dict[str, Any]]:
     # behavior. Keep different destinations and non-link controls separate.
     seen_links: set[tuple[str, str]] = set()
     unique = []
-    for element in observed:
+    for original in observed:
+        element = dict(original)
+        label = control_label(element, observed)
+        if not element.get("name") and label != element.get("element_code"):
+            element.setdefault("field_label", label)
         if element.get("role") == "link" and element.get("url"):
             identity = (str(element.get("name") or "").strip(), str(element["url"]))
             if identity in seen_links:

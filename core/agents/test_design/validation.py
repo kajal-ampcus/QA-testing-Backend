@@ -229,7 +229,7 @@ def _assertion_issues(step: Any, element: dict | None, state: dict, number: int,
             return ' '.join(str(value).lower().split()).rstrip('.; ')
         if not requirement or not any(normalize(requirement) in normalize(source) for source in sources):
             issues.append(f'Step {number}: manual outcome must cite a supplied requirement clause.')
-        if not assertion.get('text', '').strip() or assertion.get('basis') not in {'missing', 'invalid', 'valid', 'refresh', 'observed_refresh', 'observed_toggle'}:
+        if not assertion.get('text', '').strip() or assertion.get('basis') not in {'missing', 'invalid', 'valid', 'refresh', 'observed_refresh', 'observed_toggle', 'requirement_behavior'}:
             issues.append(f'Step {number}: manual verification needs a supported behavior and explicit expected outcome.')
         basis, outcome = assertion.get('basis'), assertion.get('text', '')
         if basis == 'valid' and normalize(outcome) != normalize(requirement):
@@ -237,7 +237,8 @@ def _assertion_issues(step: Any, element: dict | None, state: dict, number: int,
         if basis == 'invalid':
             from core.agents.test_design.form_behaviors import invalid_expected
             names = assertion.get('fields', '').split('|')
-            observed_names = {item.get('name') for item in state.get('elements', [])}
+            from core.agents.test_design.control_labels import control_label
+            observed_names = {control_label(item, state.get('elements', [])) for item in state.get('elements', [])}
             if not all(name in observed_names for name in names) or outcome != invalid_expected(requirement, names):
                 issues.append(f'Step {number}: do not invent an error result for a manual rejection test.')
         if basis == 'refresh' and (outcome != 'The displayed challenge changes after refresh.' or not re.search(r'\brefresh\w*\b', requirement, re.I)):

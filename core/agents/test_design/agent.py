@@ -448,12 +448,13 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
             await self._lock_generation_version(requirement_id, requirement_version)
             # Another request may have committed after this run first loaded
             # its signatures. Refresh under the same lock as the writes.
+            known_signatures.clear()
             known_signatures.update(await self._test_case_repo.existing_signatures(requirement_id, application_map_id))
         for tc_spec in specs:
             version_data = _spec_version_data(tc_spec)
             signature = case_signature(version_data, map_states)
             if signature in known_signatures:
-                found = await self._test_case_repo.find_by_signature(requirement_id, signature)
+                found = await self._test_case_repo.find_by_signature(requirement_id, signature, application_map_id)
                 if found is not None:
                     tc, version = found
                     extra = [ac for ac in tc_spec.traceability if ac not in (version.traceability or [])]
@@ -461,13 +462,26 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                         await self._test_case_repo.merge_traceability(tc.id, version.id, extra)
                         merged_count += 1
                         merged_acs.extend(extra)
-                skipped += 1
-                continue
-            known_signatures.add(signature)
-            semantic_match = await self._test_case_repo.find_semantic_duplicate(requirement_id, version_data)
+                    skipped += 1
+                    continue
+            semantic_match = await self._test_case_repo.find_semantic_duplicate(requirement_id, version_data, application_map_id)
             if semantic_match is not None:
                 tc, version = semantic_match
                 extra = [ac for ac in tc_spec.traceability if ac not in (version.traceability or [])]
+                if (getattr(tc, "source", None) in {"manual", "excel_import"}
+                    and tc.status == "DRAFT"
+                    and not any(step.get("action") in {"fill", "click", "select"} for step in version.steps)
+                    and any(step.action in {"fill", "click", "select"} for step in tc_spec.steps)):
+                    # Enrich the existing authored draft instead of adding a
+                    # second row or leaving a title-only case unautomatable.
+                    version_data["title"] = version.title
+                    version_data["traceability"] = sorted(set((version.traceability or []) + tc_spec.traceability))
+                    version_data["test_data"] = {**version_data["test_data"], "authored_expected_result": version.expected_result}
+                    await self._test_case_repo.append_version(tc, version_data)
+                    artifacts.append(AgentArtifactRef(type="test_case", id=str(tc.id), version=tc.current_version))
+                    merged_count += 1
+                    merged_acs.extend(extra)
+                    continue
                 if extra:
                     await self._test_case_repo.merge_traceability(tc.id, version.id, extra)
                     merged_count += 1
@@ -487,6 +501,7 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                 source="ai_generated",
             )
             artifacts.append(AgentArtifactRef(type="test_case", id=str(tc.id), version=1))
+            known_signatures.add(signature)
         await self._test_case_repo.session.commit()
         return artifacts, skipped, merged_count, merged_acs
 

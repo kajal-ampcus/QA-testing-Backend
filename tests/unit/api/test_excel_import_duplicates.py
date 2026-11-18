@@ -11,13 +11,14 @@ from domain.enums import RequirementStatus, TestCaseStatus
 @pytest.mark.asyncio
 @pytest.mark.parametrize("detailed_steps", [False, True])
 @pytest.mark.parametrize("manual_entry", [False, True])
-async def test_reimport_returns_existing_without_inserting(monkeypatch, detailed_steps, manual_entry):
+@pytest.mark.parametrize("skip_existing", [False, True])
+async def test_reimport_returns_existing_without_inserting(monkeypatch, detailed_steps, manual_entry, skip_existing):
     project_id, requirement_id, map_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     body = api.CreateTestCaseRequest(
         requirement_id=requirement_id, application_map_id=map_id,
         title="Login works", objective="Verify UI: Login works",
         expected_result="Dashboard opens",
-        category="POSITIVE", skip_existing=True, manual_entry=manual_entry,
+        category="POSITIVE", skip_existing=skip_existing, manual_entry=manual_entry,
     )
     requirement = SimpleNamespace(id=requirement_id, project_id=project_id,
                                   status=RequirementStatus.APPROVED, current_version=1)
@@ -31,7 +32,7 @@ async def test_reimport_returns_existing_without_inserting(monkeypatch, detailed
     if detailed_steps:
         saved.preconditions = ["User is on the login page"]
         saved.steps = [{"action": "click", "target": {"state_code": "OLD", "element_code": "EL-1"}, "expected": None}]
-    repo = SimpleNamespace(lock_generation=AsyncMock(),
+    repo = SimpleNamespace(find_semantic_duplicate=AsyncMock(return_value=(existing, saved)), lock_generation=AsyncMock(),
                            list_for_requirement=AsyncMock(return_value=[(existing, saved)]),
                            create=AsyncMock(), next_tc_code=AsyncMock())
     monkeypatch.setattr(api, "TestCaseRepository", lambda db: repo)
@@ -43,6 +44,7 @@ async def test_reimport_returns_existing_without_inserting(monkeypatch, detailed
     db = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace()), commit=AsyncMock())
     assert await api.create_test_case(project_id, body, db) == {"already_exists": True}
     repo.lock_generation.assert_awaited_once_with(requirement_id)
+    assert repo.find_semantic_duplicate.call_args.args[2] == map_id
     repo.create.assert_not_awaited()
     repo.next_tc_code.assert_not_awaited()
     db.commit.assert_awaited_once()
@@ -76,4 +78,38 @@ def test_manual_case_can_omit_acceptance_criteria():
         steps=api._manual_steps(state_code="STATE-001", expected_result=request.expected_result, step_notes=[]),
         confidence=1.0)
     assert spec.traceability == []
+
+
+@pytest.mark.asyncio
+async def test_excel_batch_checks_paraphrases_against_rows_just_imported(monkeypatch):
+    from domain.semantic_duplicates import find_semantic_duplicate
+    project_id, requirement_id, map_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    rows = []
+    repo = SimpleNamespace(lock_generation=AsyncMock(), next_tc_code=AsyncMock(return_value="TC-1"))
+
+    async def find(_requirement, data, target_map):
+        assert target_map == map_id
+        match = await find_semantic_duplicate(data, [{"id": str(tc.id), **version} for tc, version in rows])
+        return next(((tc, version) for tc, version in rows if str(tc.id) == match), None)
+
+    async def create(*args, **kwargs):
+        data = args[5]
+        pair = (SimpleNamespace(id=uuid.uuid4()), data)
+        rows.append(pair)
+        return pair
+
+    repo.find_semantic_duplicate = find
+    repo.create = create
+    monkeypatch.setattr(api, "TestCaseRepository", lambda _: repo)
+    monkeypatch.setattr(api, "_import_context", AsyncMock(return_value=(
+        SimpleNamespace(credential_ref=None), (SimpleNamespace(id=requirement_id, current_version=1), None),
+        SimpleNamespace(id=map_id, states=[SimpleNamespace(state_code="S1")]))))
+    monkeypatch.setattr(api, "_to_out", lambda *args: None)
+    body = api.ImportConfirmRequest(requirement_id=requirement_id, application_map_id=map_id, rows=[
+        api.ImportCaseRow(row_number=1, title="Login with empty password", expected_result="Password is required", state_code="S1"),
+        api.ImportCaseRow(row_number=2, title="Verify login validation when password is blank", expected_result="Password is required", state_code="S1"),
+    ])
+    result = await api.confirm_import(project_id, body, SimpleNamespace(commit=AsyncMock()))
+    assert [row.status for row in result.results] == ["imported", "duplicate"]
+    assert len(rows) == 1
 

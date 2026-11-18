@@ -3,6 +3,62 @@
 import pytest
 
 
+@pytest.mark.asyncio
+async def test_authenticate_unnamed_inputs_uses_dom_labels_and_resumes(monkeypatch):
+    from core.tool_gateway.snapshot import parse_elements
+
+    client = ChromeDevToolsClient()
+    client._credential_ref = "cred:local"
+    client._project_id = None
+    state = {"signed_in": False}
+    written = {}
+    login = ('uid=1_0 RootWebArea "Sign in" url="http://local.test/login"\n'
+             'uid=1_1 textbox "" required\nuid=1_2 textbox "" required\n'
+             'uid=1_3 button "Continue"\nuid=1_4 link "Back to home"')
+    home = ('uid=2_0 RootWebArea "Dashboard" url="http://local.test/dashboard"\n'
+            'uid=2_1 button "Logout"')
+
+    async def snapshot():
+        return home if state["signed_in"] else login
+
+    async def inspect(snapshot):
+        nodes = parse_elements(snapshot)
+        for node in nodes:
+            if node["uid"] == "1_1":
+                node.update(field_label="USERNAME", input_type="text")
+            if node["uid"] == "1_2":
+                node.update(field_label="PASSWORD", input_type="password")
+        return nodes
+
+    async def secret(*_args):
+        return {"username": "local-user", "password": "local-password"}
+
+    async def ready():
+        pass
+
+    async def write(uid, value):
+        written[uid] = value
+
+    async def click(uid, *_args, **_kwargs):
+        assert uid == "1_3"
+        assert written == {"1_1": "local-user", "1_2": "local-password"}
+        state["signed_in"] = True
+
+    async def captcha():
+        return None, login, "none"
+
+    monkeypatch.setattr("core.tool_gateway.mcp_clients.chrome_devtools_client.resolve_login", secret)
+    monkeypatch.setattr(client, "take_snapshot", snapshot)
+    monkeypatch.setattr(client, "inspect_elements", inspect)
+    monkeypatch.setattr(client, "wait_until_ready", ready)
+    monkeypatch.setattr(client, "_read_visible_login_text", snapshot)
+    monkeypatch.setattr(client, "_set_control_value", write)
+    monkeypatch.setattr(client, "_click_authentication_control", click)
+    monkeypatch.setattr(client, "_wait_for_captcha_answer", captcha)
+    await client.authenticate()
+    assert client._authenticated is True
+
+
 def test_unlabelled_password_uses_password_not_first_saved_field():
     from core.tool_gateway.mcp_clients.chrome_devtools_client import _saved_control_value
 

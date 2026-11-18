@@ -70,12 +70,12 @@ def field_key(role: str, name: str) -> str:
 def is_password_field(element: dict[str, Any]) -> bool:
     if str(element.get("input_type") or "").lower() == "password":
         return True
-    return bool(_PASSWORD_NAME.search(str(element.get("name") or "")))
+    return bool(_PASSWORD_NAME.search(str(element.get("name") or element.get("field_label") or "")))
 
 
 def is_username_field(element: dict[str, Any]) -> bool:
     """Whether an observed field can supply the account identifier."""
-    return bool(_USERNAME_NAME.search(str(element.get("name") or "")))
+    return bool(_USERNAME_NAME.search(str(element.get("name") or element.get("field_label") or "")))
 
 
 def is_captcha_field(name: str) -> bool:
@@ -115,7 +115,7 @@ def form_key_for(fields: list[dict[str, Any]]) -> str:
 
 def describe_field(element: dict[str, Any]) -> dict[str, Any]:
     role = str(element.get("role") or "")
-    name = str(element.get("name") or "")
+    name = str(element.get("name") or element.get("field_label") or "")
     options = element.get("options")
     input_type = str(element.get("input_type") or "")
     if not input_type and is_password_field(element):
@@ -174,7 +174,7 @@ def _fillable(element: dict[str, Any]) -> bool:
         return False
     if element.get("disabled") or element.get("readonly") or element.get("visible") is False:
         return False
-    name = str(element.get("name") or "").strip()
+    name = str(element.get("name") or element.get("field_label") or "").strip()
     return bool(name) and not is_captcha_field(name)
 
 

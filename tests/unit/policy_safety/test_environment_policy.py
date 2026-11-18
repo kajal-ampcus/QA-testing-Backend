@@ -57,17 +57,19 @@ async def test_metadata_and_link_local_targets_are_always_refused(url, monkeypat
         await validate_discovery_target(url)
 
 
-async def test_private_targets_allowed_in_development(monkeypatch) -> None:
+@pytest.mark.parametrize("host", ["127.0.0.1", "[::1]"])
+async def test_private_targets_allowed_in_development(monkeypatch, host) -> None:
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.delenv("DISCOVERY_ALLOW_PRIVATE_TARGETS", raising=False)
-    await validate_discovery_target("http://127.0.0.1:3000/")
+    await validate_discovery_target(f"http://{host}:3000/")
 
 
-async def test_private_targets_refused_outside_development(monkeypatch) -> None:
+@pytest.mark.parametrize("host", ["10.0.0.5", "127.0.0.1", "[::1]"])
+async def test_private_targets_refused_outside_development(monkeypatch, host) -> None:
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.delenv("DISCOVERY_ALLOW_PRIVATE_TARGETS", raising=False)
     with pytest.raises(DiscoveryTargetError):
-        await validate_discovery_target("http://10.0.0.5/")
+        await validate_discovery_target(f"http://{host}/")
 
 
 async def test_allowlist_restricts_hosts(monkeypatch) -> None:
