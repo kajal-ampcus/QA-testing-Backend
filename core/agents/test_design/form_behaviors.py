@@ -59,6 +59,44 @@ def _case(ac_id, text, state, submit, fields, changed, mode, category, expected)
         steps=steps, expected_result=expected, test_data=data, traceability=[ac_id], confidence=0.7)
 
 
+def login_success_case(ac_id: str, text: str, state: dict, states: list[dict] | None = None) -> TestCaseSpec | None:
+    """Design a distinct success case only when the criterion states its result."""
+    if not re.search(r'\b(sign\s*in|log\s*in)\b', text, re.I):
+        return None
+    match = re.search(r'\bon success\s+[^;,.]*?\b(?:dashboard|home\s*page)\b', text, re.I)
+    if not match:
+        return None
+    elements = _observed(state)
+    submits = [item for item in elements if item.get('role') == 'button' and re.fullmatch(r'sign\s*in|log\s*in', str(item.get('name') or ''), re.I)]
+    fields = [item for item in elements if item.get('role') in _INPUTS and re.search(r'e-?mail|user\s*name|password', str(item.get('name') or ''), re.I)]
+    if len(submits) != 1 or len(fields) < 2:
+        return None
+    outcome = match.group(0)
+    case = _case(ac_id, outcome, state, submits[0], fields, frozenset(), 'valid', 'POSITIVE', outcome)
+    case.title = 'Sign in with valid credentials'
+    from core.agents.application_discovery.login_outcome import observed_login_outcome
+    observed = observed_login_outcome(state, states or [], outcome)
+    if observed:
+        destination, heading = observed
+        expected = f"{heading['name']} is visible"
+        case.steps[-1] = TestStep(step_number=len(case.steps), action='assert', target=_target(destination, heading),
+                                  expected=expected, assertion={'kind': 'visible', 'target': heading['element_code']})
+        case.expected_result = expected
+        case.preconditions = [f'Browser is on {_url_path(state)}', 'Use a configured test account and any required live authentication challenge inputs.']
+    return case
+
+
+def login_failure_cases(ac_id: str, text: str, state: dict) -> list[TestCaseSpec]:
+    if not re.search(r'\b(sign\s*in|log\s*in)\b', text, re.I) or not re.search(r'\b(fail\w*|reject\w*|invalid|incorrect)\b', text, re.I):
+        return []
+    elements = _observed(state)
+    submits = [item for item in elements if item.get('role') == 'button' and re.fullmatch(r'sign\s*in|log\s*in', str(item.get('name') or ''), re.I)]
+    fields = [item for item in elements if item.get('role') in _INPUTS and re.search(r'e-?mail|user\s*name|password', str(item.get('name') or ''), re.I)]
+    if len(submits) != 1 or len(fields) < 2:
+        return []
+    return [_case(ac_id, text, state, submits[0], fields, frozenset({item['element_code']}), 'invalid', 'NEGATIVE', invalid_expected(text, [item['name']])) for item in fields]
+
+
 def form_behavior_cases(ac_id: str, text: str, state: dict | None) -> list[tuple[str, TestCaseSpec]]:
     if state is None:
         return []
@@ -83,8 +121,8 @@ def form_behavior_cases(ac_id: str, text: str, state: dict | None) -> list[tuple
             expected_result=expected, test_data={}, traceability=[ac_id], confidence=0.7)
         output.append(('functional', spec))
     password = next((element for element in fields if (element.get('type') or element.get('input_type')) == 'password' and _named(element, text)), None)
-    reveal = [element for element in observed if element.get('role') == 'button' and re.search(r'\b(show|reveal)\s+password\b', control_label(element), re.I)]
-    if password and len(reveal) == 1 and positive_ui:
+    reveal = [element for element in observed if element.get('role') == 'button' and re.search(r'\b(show|reveal)\s+password\b', str(element.get('name') or ''), re.I)]
+    if password and len(reveal) == 1 and positive_ui and not re.search(r'\b(forgot|recover|reset)\s+password\b', text, re.I):
         button = reveal[0]
         expected = f"{password['name']} is revealed without changing its entered value."
         spec = TestCaseSpec(title=f"Verify {button['name']} reveals the entered value", objective=expected, category='POSITIVE',
@@ -102,6 +140,14 @@ def form_behavior_cases(ac_id: str, text: str, state: dict | None) -> list[tuple
         return output  # do not guess which form or submit control is intended
     submit = submits[0]
     required = [element for element in fields if (element.get('validation') or {}).get('required') or element.get('required')]
+    # Application validation may be implemented in JavaScript without HTML
+    # required attributes. Explicit requirement language can support a manual
+    # scenario, but it cannot prove a native browser validity constraint.
+    if re.search(r'\b(required|mandatory|non.blank|blank|empty)\b', text, re.I):
+        named = [element for element in fields if _named(element, text)]
+        if re.search(r'\b(mandatory|required)\s+(?:fields|inputs)\b', text, re.I) and re.search(r'log\s*in|sign\s*in', str(submit.get('name') or ''), re.I):
+            named = [element for element in fields if re.search(r'password|e-?mail|user\s*name', str(element.get('name') or ''), re.I)]
+        required = list({element['element_code']: element for element in [*required, *named]}.values())
     named_required = [element for element in required if _named(element, text)]
     if re.search(r'\b(required|mandatory|missing|blank|empty)\b|\bmust be (entered|provided|filled)\b', text, re.I) and re.search(r'\b(fields|inputs|submit\w*|validat\w*|messages?|reject\w*|prevent\w*)\b', text, re.I):
         selected = required if re.search(r'\b(fields|inputs)\b', text, re.I) else named_required

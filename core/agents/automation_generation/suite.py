@@ -72,6 +72,8 @@ class StateInput:
     state_code: str
     url_pattern: str
     elements: list[dict[str, Any]]
+    reached_via: list[Any] = field(default_factory=list)
+    account_context: str = ""
 
 
 @dataclass
@@ -466,11 +468,7 @@ def _plan_case(
             ):
                 calls.append((state_code, "expectOnPage", None))
             else:
-                # Do not block a complete suite merely because a legacy case
-                # recorded a manual outcome without a locator.  The generated
-                # test still waits for the observed page to settle; a later
-                # rediscovery can strengthen this into a targeted assertion.
-                calls.append((state_code, "waitForReady", None))
+                reasons.append(f"Step {index}: expected result has no reliable observed target; review is required.")
             continue
         decision = resolve_in_state(state_code, element_code, state.elements)
         risks.append(decision.risk)
@@ -501,7 +499,7 @@ def _plan_case(
                 ):
                     expression = "null"
                     field = None  # value comes from execution-inputs.json, not an env var
-                expression = f"await executionInput({json.dumps(binding['key'])}, {expression})"
+                expression = f"await executionInput({json.dumps(binding['key'])}, {expression}{', true' if step.get('force_negative_value') else ''})"
             if field:
                 data_fields.append(field)
             verb = "select" if action == "select" else "fill"
@@ -568,6 +566,8 @@ def _render_case(draft: _Draft, generation_id: UUID) -> str:
     pages = []
     seen: set[str] = set()
     lines: list[str] = []
+    negative_states = {state for state, method, _ in draft.calls if method == "expectRuntimeLoginRejection"}
+    observed_negative: set[str] = set()
     for state_code, method, argument in draft.calls:
         var = _instance(state_code)
         class_name = _class_name(state_code)
@@ -577,6 +577,9 @@ def _render_case(draft: _Draft, generation_id: UUID) -> str:
             pages.append({"class_name": class_name, "file_name": file_name})
             lines.append(f"const {var} = new {class_name}(page);")
             lines.append(f"{var}.expectedState = {json.dumps(draft.starting_state)};")
+        if state_code in negative_states and state_code not in observed_negative and (method.startswith("fill") or method.startswith("click")):
+            lines.append(f"await {var}.beginNegativeObservation();")
+            observed_negative.add(state_code)
         if argument is None:
             lines.append(f"await {var}.{method}();")
         else:
@@ -650,7 +653,7 @@ def _action_for(method: str, prop: str) -> dict[str, str] | None:
     mapping = {
         f"fill{pascal}": (
             "value: string",
-            f"await this.guard(async () => {{ await this.{prop}.fill(value); }});",
+            f"await this.guard(async () => {{ await this.{prop}.fill(value); this.enteredValues.set({json.dumps(prop)}, value); }});",
         ),
         f"select{pascal}": (
             "value: string",
@@ -668,6 +671,7 @@ def _action_for(method: str, prop: str) -> dict[str, str] | None:
             f"await expect(this.{prop}).toContainText(expected);",
         ),
         f"expect{pascal}Visible": ("", f"await expect(this.{prop}).toBeVisible();"),
+        f"expect{pascal}Revealed": ("", f'const entered = this.enteredValues.get({json.dumps(prop)}); if (entered === undefined) throw new Error("No prior value was entered for the password visibility check"); await expect(this.{prop}).toBeVisible(); await expect(this.{prop}).toHaveAttribute("type", "text"); await expect.poll(async () => (await this.{prop}.inputValue()) === entered).toBe(true);'),
         f"expect{pascal}Available": (
             "",
             f"await expect(this.{prop}).toBeVisible(); await expect(this.{prop}).toBeEnabled();",
@@ -718,7 +722,11 @@ def _assertion_call(
     pascal = _pascal(prop)
     kind = str((assertion or {}).get("kind") or "").lower()
     if kind == 'manual':
-        return f"expect{pascal}Visible", None
+        raise ValueError("Manual verification has no automated assertion; review is required.")
+    if kind == 'password_revealed':
+        return f"expect{pascal}Revealed", None
+    if kind == 'runtime_login_rejection':
+        return "expectRuntimeLoginRejection", f"{json.dumps(assertion.get('fields') or [])}, {json.dumps(assertion.get('dashboard_heading') or '')}"
     text = str((assertion or {}).get("text") or "")
 
     if kind == "visible":

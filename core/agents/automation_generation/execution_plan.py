@@ -77,21 +77,131 @@ def prepare_execution(
     steps = _copy_steps(case.steps)
     data = dict(case.test_data or {})
     starting = classify_start(case, states)
-    # A manual assertion has no trustworthy pass/fail oracle. Keep its place
-    # in the browser flow as an observation wait; execution still records its
-    # screenshot/video/trace without failing on a guessed assertion.
-    for step in steps:
-        assertion = step.get("assertion")
-        if isinstance(assertion, dict) and assertion.get("kind") == "manual":
-            step["action"] = "wait"
-            step.pop("assertion", None)
-            step.pop("expected", None)
-            step["target"] = {"state_code": step.get("target", {}).get("state_code")}
     text = _objective(case)
     start = _start_state(case, states)
+    if start and _discovered_authenticated(start):
+        account = str(getattr(start, 'account_context', '') or '')
+        credential = getattr(case, 'credential_ref', None)
+        if not credential:
+            return _blocked('AUTHENTICATED', steps, data, 'This discovered page requires a saved test account.')
+        if account.startswith('authenticated::') and account != f'authenticated::{credential}':
+            return _blocked('AUTHENTICATED', steps, data, 'This page was discovered with a different account; select the matching account or rediscover it.')
+        if _PUBLIC_PRE.search(' '.join(case.preconditions or [])):
+            return _blocked('AUTHENTICATED', steps, data, 'The case requires a public session but the discovered starting page requires authentication.')
+    if start and len(steps) == 2 and steps[0].get('action') == 'navigate' and steps[1].get('action') == 'assert' and not steps[1].get('target', {}).get('element_code') and re.search(r'\bpassword\b.*\b(masked|hidden|obscured)\b.*\b(default|initially)\b', str(case.expected_result or ''), re.I):
+        passwords = [item for item in start.elements if item.get('element_code') and str(item.get('input_type') or item.get('type') or '').lower() == 'password' and item.get('visible') is not False]
+        if len(passwords) == 1:
+            item = passwords[0]
+            steps = [steps[0], {'action': 'assert', 'target': {'state_code': start.state_code, 'element_code': item['element_code'], 'element_name': item.get('name'), 'element_role': item.get('role')}, 'expected': 'Password is masked by default', 'assertion': {'kind': 'attribute', 'name': 'type', 'value': 'password', 'target': item['element_code']}}]
+            return ExecutionPlan(starting_state=starting, fixture=_fixture(starting), authenticated=starting == 'AUTHENTICATED', steps=_renumber(steps), test_data=data)
+    if start and len(steps) == 2 and steps[0].get('action') == 'navigate' and steps[1].get('action') == 'assert' and not steps[1].get('target', {}).get('element_code') and re.search(r'\bforgot\s+password\b', str(case.expected_result or ''), re.I) and re.search(r'\b(open|opens|opened)\b', str(case.expected_result or ''), re.I):
+        buttons = [item for item in start.elements if item.get('role') in {'button', 'link'} and re.fullmatch(r'forgot\s+(?:your\s+)?password\??', str(item.get('name') or ''), re.I) and item.get('input_type') != 'submit']
+        prefix = getattr(start, 'reached_via', []) or []
+        destinations = [state for state in states.values() if state.state_code != start.state_code and len(getattr(state, 'reached_via', []) or []) == len(prefix) + 1 and (getattr(state, 'reached_via', []) or [])[:len(prefix)] == prefix and re.search(r'forgot\s+(?:your\s+)?password', str((getattr(state, 'reached_via', []) or [])[-1]), re.I)]
+        if len(buttons) == 1 and len(destinations) == 1:
+            destination = destinations[0]
+            headings = [item for item in destination.elements if item.get('role') in {'heading', 'dialog'} and re.search(r'forgot|recover|reset', str(item.get('name') or ''), re.I) and item.get('element_code') and item.get('visible') is not False]
+            if len(headings) == 1:
+                button, heading = buttons[0], headings[0]
+                steps = [{'action': 'navigate', 'target': {'state_code': start.state_code}},
+                         {'action': 'click', 'target': {'state_code': start.state_code, 'element_code': button['element_code'], 'element_name': button['name'], 'element_role': button['role']}},
+                         {'action': 'assert', 'target': {'state_code': destination.state_code, 'element_code': heading['element_code'], 'element_name': heading['name'], 'element_role': heading['role']}, 'expected': f"{heading['name']} is visible", 'assertion': {'kind': 'visible', 'target': heading['element_code']}}]
+                return ExecutionPlan(starting_state=starting, fixture=_fixture(starting), authenticated=starting == 'AUTHENTICATED', steps=_renumber(steps), test_data=data)
+    # Imported visibility cases may name several controls in one expected
+    # result. Resolve each against this page; never turn a list into a click.
+    if start and len(steps) == 2 and steps[0].get('action') == 'navigate' and steps[1].get('action') == 'assert' and not steps[1].get('target', {}).get('element_code'):
+        expected = str(case.expected_result or '')
+        match = re.fullmatch(r'(.+?)\s+(?:should|must|are|is)\s+(?:be\s+)?(?:displayed|visible|shown|present)\.?', expected.strip(), re.I)
+        if match:
+            names = [re.sub(r'^(?:and|or)\s+', '', part.strip(), flags=re.I) for part in re.split(r'\s*,\s*|\s+and\s+', match.group(1)) if part.strip()]
+            resolved = []
+            for name in names:
+                normalized = re.sub(r'\b(?:input|field|textbox|button|link|id)\b', '', name, flags=re.I).strip().casefold()
+                def matches(element):
+                    observed = str(element.get('name') or '').strip().casefold().rstrip('?')
+                    needle = normalized.rstrip('?')
+                    if needle in {'email', 'e-mail', 'work email', 'work mail'}:
+                        return element.get('role') in {'textbox', 'input'} and bool(re.search(r'e-?mail', observed))
+                    return observed == needle
+                candidates = [item for item in start.elements if item.get('element_code') and item.get('visible') is not False and matches(item)]
+                if len(candidates) != 1:
+                    resolved = []
+                    break
+                resolved.append(candidates[0])
+            if len(resolved) == len(names) and len({item['element_code'] for item in resolved}) == len(names):
+                steps = [steps[0], *[{'action': 'assert', 'target': {'state_code': start.state_code, 'element_code': item['element_code'], 'element_name': item.get('name'), 'element_role': item.get('role')},
+                                     'expected': f"{item['name']} is visible", 'assertion': {'kind': 'visible', 'target': item['element_code']}} for item in resolved]]
+                return ExecutionPlan(starting_state=starting, fixture=_fixture(starting), authenticated=starting == 'AUTHENTICATED', steps=_renumber(steps), test_data=data)
     steps, mapping_issues = ground_steps(steps, states, data, discovery)
     if mapping_issues:
         return _blocked(starting, steps, data, "; ".join(mapping_issues))
+    reveal_check = False
+    runtime_negative = False
+    observed_login = False
+    from core.agents.application_discovery.login_outcome import observed_login_outcome
+    state_rows = [{"state_code": item.state_code, "url_pattern": item.url_pattern, "elements": item.elements,
+                   "reached_via": getattr(item, "reached_via", []), "account_context": getattr(item, "account_context", "")} for item in states.values()]
+    start_row = next((item for item in state_rows if start and item["state_code"] == start.state_code), None)
+    outcome = observed_login_outcome(start_row, state_rows, case.expected_result, getattr(case, "credential_ref", None)) if start_row else None
+    login_submit = any(item.get("action") == "click" and item.get("target", {}).get("state_code") == (start.state_code if start else None)
+                       and re.fullmatch(r"log\s*in|sign\s*in", _step_name(item, states), re.I) for item in steps)
+    if outcome and login_submit and (case.category or "").upper() == "POSITIVE":
+        destination, heading = outcome
+        for item in steps:
+            assertion = item.get("assertion") or {}
+            if item.get("action") == "assert" and assertion.get("kind") == "manual" and assertion.get("basis") == "valid":
+                item["target"] = {"state_code": destination["state_code"], "element_code": heading["element_code"], "element_name": heading["name"], "element_role": heading["role"]}
+                item["assertion"] = {"kind": "visible", "target": heading["element_code"]}
+                item["expected"] = f"{heading['name']} is visible"
+                observed_login = True
+            elif item.get("action") == "assert" and item.get("target", {}).get("state_code") == destination["state_code"] and item.get("target", {}).get("element_code") == heading["element_code"] and assertion.get("kind") == "visible":
+                observed_login = True
+    if observed_login and not getattr(case, "credential_ref", None):
+        return _blocked(starting, steps, data, "A saved test account is required for the discovered login flow.")
+    for index, step in enumerate(steps):
+        assertion = step.get("assertion") or {}
+        if assertion.get("kind") != "manual":
+            continue
+        target = step.get("target") or {}
+        element = _element(step, states) or {}
+        fills = [item for item in steps[:index] if item.get("action") == "fill" and item.get("target", {}).get("state_code") == target.get("state_code") and item.get("target", {}).get("element_code") == target.get("element_code")]
+        clicks = [item for item in steps[:index] if item.get("action") == "click" and item.get("target", {}).get("state_code") == target.get("state_code") and re.search(r"\b(show|reveal)\s+password\b", _step_name(item, states), re.I)]
+        if ((case.category or '').upper() == 'NEGATIVE' and assertion.get('basis') in {'missing', 'invalid'}
+                and login_submit and start is not None and target.get('state_code') == start.state_code
+                and re.fullmatch(r'log\s*in|sign\s*in', _step_name(step, states), re.I)):
+            names = [name.strip() for name in str(assertion.get('fields') or '').split('|') if name.strip()]
+            selected = [item for item in steps[:index] if item.get('action') == 'fill' and _step_name(item, states) in names]
+            if not names or len(selected) != len(names) or len(set(names)) != len(names):
+                return _blocked(starting, steps, data, 'The negative scenario does not identify its input fields unambiguously.')
+            requirement = str(assertion.get('requirement_text') or '')
+            if assertion['basis'] == 'invalid' and any(_PASSWORD.search(name) for name in names) and not re.search(r'password|passphrase|credentials', requirement, re.I):
+                return _blocked(starting, steps, data, 'The invalid-password scenario is not supported by its linked requirement; review its traceability.')
+            for item in [part for part in steps[:index] if part.get('action') == 'fill']:
+                field = _step_name(item, states)
+                if item in selected:
+                    item['value'] = '' if assertion['basis'] == 'missing' else ('not-an-email' if _USERNAME.search(field) and re.search(r'email|mail', field, re.I) and re.search(r'format|malformed', str(assertion.get('requirement_text') or ''), re.I) else 'wrong')
+                    item['force_negative_value'] = True
+                else:
+                    environment = _credential_environment(_element(item, states) or {}, field)
+                    if not environment or not getattr(case, 'credential_ref', None):
+                        return _blocked(starting, steps, data, f'A configured valid companion value is needed for {field}.')
+                    item['value'] = '{credential:' + environment + '}'
+            authenticated = observed_login_outcome(start_row, state_rows, 'dashboard', getattr(case, 'credential_ref', None)) if start_row else None
+            step['assertion'] = {'kind': 'runtime_login_rejection', 'target': target.get('element_code'), 'fields': names,
+                                 'dashboard_heading': authenticated[1]['name'] if authenticated else ''}
+            runtime_negative = True
+            continue
+        if (assertion.get("basis") == "observed_toggle" and str(element.get("input_type") or element.get("type") or "").lower() == "password" and len(fills) == 1 and len(clicks) == 1 and steps.index(fills[0]) < steps.index(clicks[0]) and not any(item.get("action") == "click" and _SUBMIT.search(_step_name(item, states)) for item in steps)):
+            step["assertion"] = {"kind": "password_revealed", "target": target.get("element_code")}
+            reveal_check = True
+        else:
+            return _blocked(starting, steps, data, "Manual verification has no reliable automated assertion; review and provide an observed outcome.")
+    if reveal_check:
+        return ExecutionPlan(starting_state=starting, fixture=_fixture(starting),
+                             authenticated=starting == "AUTHENTICATED", steps=_renumber(steps), test_data=data)
+    if runtime_negative:
+        return ExecutionPlan(starting_state=starting, fixture=_fixture(starting), authenticated=False,
+                             steps=_renumber(steps), test_data=data)
     start_conflict = _start_conflict(case, start)
     if start_conflict:
         return _blocked(starting, steps, data, start_conflict)
@@ -106,7 +216,7 @@ def prepare_execution(
         return ExecutionPlan(starting_state=starting, fixture=_fixture(starting),
                              authenticated=starting == "AUTHENTICATED", steps=_renumber(steps), test_data=data)
     destructive = _destructive(steps, states)
-    kind = _primary_kind(text, case.category, start, steps, states)
+    kind = "login_success" if observed_login else _primary_kind(text, case.category, start, steps, states)
 
     if kind in {"navigate", "refresh"}:
         steps = [step for step in steps if not _unrelated_fill(step, states, text, keep_credentials=False)]
@@ -260,7 +370,15 @@ def ground_steps(steps, states, data, discovery=None):
             action not in {"navigate", "fill", "click", "select", "wait"}
         )
         if prose:
-            if re.match(r"^(click|press|tap)\b", text, re.I):
+            if re.match(r"^(open|visit|go\s+to|navigate\s+to)\b", text, re.I):
+                state = states[code]
+                labels = [str(item.get('name') or '').strip() for item in state.elements if item.get('role') == 'heading' and item.get('name')]
+                leaf = str(state.url_pattern or '').rstrip('/').split('/')[-1].replace('-', ' ')
+                if leaf:
+                    labels.append(leaf)
+                if any(len(label) >= 3 and re.search(r'\b' + re.escape(label) + r'\b', text, re.I) for label in labels):
+                    action = 'navigate'
+            elif re.match(r"^(click|press|tap)\b", text, re.I):
                 action = "click"
             elif re.match(r"^(fill|enter|type|leave|clear)\b", text, re.I):
                 action = "fill"
@@ -308,6 +426,8 @@ def ground_steps(steps, states, data, discovery=None):
 def classify_start(case: _Case, states: dict[str, _State]) -> str:
     preconditions = " ".join(case.preconditions or [])
     start = _start_state(case, states)
+    if start is not None and _discovered_authenticated(start):
+        return "AUTHENTICATED"
     if start is not None and _credential_surface(start) and _exercises_auth_surface(case, states):
         return "LOGIN_PAGE"
     if _AUTH_PRE.search(preconditions) and not _PUBLIC_PRE.search(preconditions):
@@ -327,6 +447,15 @@ def classify_start(case: _Case, states: dict[str, _State]) -> str:
     if re.search(r"\b(landing|public|home page)\b", text, re.I):
         return "PUBLIC"
     return "AUTHENTICATED"
+
+
+def _discovered_authenticated(state: _State) -> bool:
+    """Use the discovery path, not page wording or URL, for session scope."""
+    context = str(getattr(state, 'account_context', '') or '')
+    if context.startswith('authenticated::'):
+        return True
+    return any(re.search(r'role=authentication(?:,|\))', str(action), re.I)
+               for action in (getattr(state, 'reached_via', []) or []))
 
 
 def _start_conflict(case: _Case, start: _State | None) -> str | None:

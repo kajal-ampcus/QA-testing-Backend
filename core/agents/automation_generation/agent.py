@@ -37,6 +37,8 @@ class AutomationGenerationAgent(BaseAgent[SuitePlan]):
                 state_code=code,
                 url_pattern=str(item.get("url_pattern") or ""),
                 elements=list(item.get("elements") or []),
+                reached_via=list(item.get("reached_via") or []),
+                account_context=str(item.get("account_context") or ""),
             )
             for code, item in (payload.get("states") or {}).items()
         }

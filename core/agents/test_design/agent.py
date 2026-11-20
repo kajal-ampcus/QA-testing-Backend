@@ -1013,12 +1013,6 @@ class TestDesignAgent(BaseAgent[TestDesignResult]):
                     assertion_sources=[(requirement_texts or {}).get(ac_id, "") for ac_id in case.traceability]):
                     if getattr(saved, "application_map_id", map_id) == map_id:
                         cases.append(case)
-                    else:
-                        # Count earlier maps only after validating their own
-                        # evidence and matching an actual current-map scenario.
-                        current = planned.get(case_signature(case.model_dump(mode="json"), original_states))
-                        if current is not None:
-                            cases.append(current.model_copy(update={"traceability": case.traceability}))
             except (ValidationError, AttributeError):
                 continue
         return cases

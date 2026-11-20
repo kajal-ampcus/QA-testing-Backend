@@ -46,6 +46,13 @@ def validate_case(case: TestCaseSpec, states: list[dict[str, Any]], ac_ids: set[
             issues.append(f"Step {expected}: step_number={step.step_number} after renumbering.")
     if case.steps[-1].action != "assert":
         issues.append("Last step must be an assert verifying the expected result; a click or fill alone is not a complete test.")
+    intent = f"{case.title} {case.objective}"
+    if case.category == "NEGATIVE" and re.search(r"\b(unauthori[sz]ed|denied|prevent\w*|reject\w*|invalid credentials)\b", intent, re.I):
+        for step in case.steps:
+            if step.action == "assert" and (step.assertion or {}).get("kind") in {"visible", "text", "enabled"}:
+                positive = f"{step.target.element_name or ''} {step.expected or ''} {(step.assertion or {}).get('text', '')}"
+                if re.search(r"\b(dashboard|signed in|logged in|authenticated|access granted)\b", positive, re.I) and not re.search(r"\b(not|never|hidden|absent|denied|prevented)\b", positive, re.I):
+                    issues.append("A rejected or unauthorized login cannot be proven by asserting that the authenticated dashboard is visible.")
     bad_acs = set(case.traceability) - ac_ids
     if bad_acs:
         issues.append(f"Traceability contains unknown AC ids: {sorted(bad_acs)}.")

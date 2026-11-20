@@ -173,6 +173,10 @@ def _page_context(text: str) -> tuple[str | None, str]:
 def _on_page(state: dict, page: str) -> bool:
     leaf = _url_path(state).strip('/').split('/')[-1].lower()
     label = re.sub(r'[^a-z0-9]', '', page.lower())
+    if label in {'login', 'signin'}:
+        elements = _observed(state)
+        return any(str(item.get('input_type') or item.get('type') or '').lower() == 'password' for item in elements) and any(
+            item.get('role') == 'button' and re.fullmatch(r'log\s*in|sign\s*in', str(item.get('name') or ''), re.I) for item in elements)
     if label in {'home', 'homepage'}:
         return not leaf or bool(re.fullmatch(r'[a-z]{2}', leaf))
     return bool(leaf) and label.endswith(re.sub(r'[^a-z0-9]', '', leaf))
@@ -197,6 +201,7 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
                    starting_states: set[str] | None = None) -> ScenarioPlan:
     scenarios: list[Scenario] = []
     criteria = list(acceptance_criteria)
+    original_criteria = {str(item.get('id')): str(item.get('text') or '') for item in acceptance_criteria}
     # Supplement ACs with explicit requirement rules only when the same named
     # observed field anchors both. A broad feature summary is not a new rule.
     for rule in clauses(str(description or "")):
@@ -212,6 +217,20 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
             continue
         criteria.append({**selected, "text": rule})
     for criterion_index, ac in enumerate(criteria):
+        from core.agents.test_design.form_behaviors import login_failure_cases, login_success_case
+        login_states = [item for item in states if (starting_states is None or item['state_code'] in starting_states) and _on_page(item, 'login')]
+        if len(login_states) == 1 and (not requested_categories or 'POSITIVE' in requested_categories.get(str(ac['id']), {'POSITIVE'})):
+            login_success = login_success_case(str(ac['id']), str(ac.get('text') or ''), login_states[0], states)
+            if login_success:
+                scenarios.append(Scenario(f"{ac['id']}:{criterion_index}:login-success", str(ac['id']),
+                    login_success.expected_result, 'functional', 'POSITIVE', login_success))
+        if len(login_states) == 1 and (not requested_categories or 'NEGATIVE' in requested_categories.get(str(ac['id']), {'NEGATIVE'})):
+            for index, failure in enumerate(login_failure_cases(str(ac['id']), str(ac.get('text') or ''), login_states[0])):
+                fields = failure.steps[-1].assertion.get('fields', '')
+                if re.search(r'password|passphrase', fields, re.I) and not re.search(r'password|passphrase|credentials', original_criteria.get(str(ac['id']), ''), re.I):
+                    continue
+                scenarios.append(Scenario(f"{ac['id']}:{criterion_index}:login-failure:{index}", str(ac['id']),
+                    failure.title, 'negative', 'NEGATIVE', failure))
         if ac.get("form_behavior"):
             from core.agents.test_design.form_contracts import contract_case
             rule = ac["form_behavior"]
@@ -334,15 +353,17 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
                 if sources:
                     relevant = sources
             if re.search(r"\b(authenticat\w*|credentials|log\s*in|sign\s*in)\b", text, re.I):
-                login_sources = [state for state in ranked if any(
-                    element.get("role") == "button" and re.fullmatch(r"log\s*in|sign\s*in", str(element.get("name") or ""), re.I)
-                    for element in _observed(state))]
+                login_sources = [state for state in states if (starting_states is None or state['state_code'] in starting_states) and _on_page(state, "login")]
                 if login_sources:
                     relevant = login_sources
                 elif re.search(r"\b(successful\w*|valid)\b", text, re.I):
                     # A page reached after authentication is result evidence,
                     # not a starting state that can prove authentication.
                     relevant = []
+            if re.search(r"\b(?:empty|blank|mandatory|required)\b.*\b(?:sign\s*in|log\s*in)\b", text, re.I):
+                login_sources = [item for item in states if (starting_states is None or item['state_code'] in starting_states) and _on_page(item, 'login')]
+                if len(login_sources) == 1:
+                    relevant = login_sources
             entry_navigation = bool(re.search(r"\b(click\w*|open\w*|navigate\w*|redirect\w*)\b", text, re.I) and
                                     re.search(r"\blogin\s+(page|form|screen)\b", text, re.I) and
                                     not re.search(r"\bforgot\s+password\b", text, re.I) and
@@ -493,7 +514,8 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
                     if re.search(r"\b(registered|valid credentials|authenticat\w*)\b", text, re.I) or spec.title == "Sign in with configured valid credentials":
                         spec.preconditions.append("Use a configured test account and any required live authentication challenge inputs.")
                 add("behavior", text, spec)
-            behavior_cases = form_behavior_cases(ac_id, text, state)
+            behavior_text = text if text.casefold() in str(ac.get("text") or "").casefold() else str(ac.get("text") or text)
+            behavior_cases = form_behavior_cases(ac_id, behavior_text, state)
             if any(case.steps[-1].assertion['basis'] == 'invalid' for _, case in behavior_cases):
                 # A discovered error screen does not bind that outcome to the
                 # synthetic inputs of the generic negative template. Replace
@@ -503,6 +525,11 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
                 made[:] = [item for item in made if item.spec is not None or item.key != f'{prefix}:behavior']
             for behavior_index, (behavior_dimension, behavior_case) in enumerate(behavior_cases):
                 mode = behavior_case.steps[-1].assertion['basis']
+                if mode == 'invalid':
+                    fields = behavior_case.steps[-1].assertion.get('fields', '')
+                    original = original_criteria.get(ac_id, '')
+                    if re.search(r'password|passphrase', fields, re.I) and not re.search(r'password|passphrase|credentials', original, re.I):
+                        continue
                 if mode == 'valid' and any(item.spec and any(step.action == 'click' for step in item.spec.steps) for item in made):
                     continue  # an observed result already supports this happy path
                 add(f"form-behavior:{behavior_index}", behavior_case.title, behavior_case,

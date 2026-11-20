@@ -111,7 +111,7 @@ OnStateDiscovered = Callable[[dict[str, Any]], Awaitable[None]]
 OnCheckpoint = Callable[[dict[str, Any]], Awaitable[None]]
 
 
-def _is_login_form_chrome(nodes: list[dict[str, Any]], role: str, destination: str | None) -> bool:
+def _is_login_form_chrome(nodes: list[dict[str, Any]], role: str, destination: str | None, name: str = "") -> bool:
     """Skip controls that only change the current login form.
 
     Role buttons such as Employee, Kitchen, and Admin, plus show-password
@@ -121,6 +121,10 @@ def _is_login_form_chrome(nodes: list[dict[str, Any]], role: str, destination: s
     """
     if destination or role not in {"button", "radio", "checkbox"}:
         return False
+    if role == "button" and re.fullmatch(r"(?:forgot|recover)\s+(?:your\s+)?password\??", name.strip(), re.I) and any(
+        item.get("role") == role and item.get("name") == name and str(item.get("input_type") or "").lower() == "button" for item in nodes
+    ):
+        return False  # Navigation only; submit-type buttons remain blocked below.
     return any(
         node.get("role") in {"textbox", "input"}
         and re.search(r"\bpassword\b", str(node.get("name", "")), re.I)
@@ -1449,7 +1453,7 @@ class ParallelCrawler:
                 if self._job_key(child_job) not in self._job_states:
                     await self._set_job_status(child_job, "available")
                 continue
-            if not authenticated and _is_login_form_chrome(nodes, role, element.get("url")):
+            if not authenticated and _is_login_form_chrome(nodes, role, element.get("url"), name):
                 self._skipped.add(f"{urlparse(current_url).path}: {role} {name}")
                 continue
             if authenticated and self._discovery_mode == "guided":

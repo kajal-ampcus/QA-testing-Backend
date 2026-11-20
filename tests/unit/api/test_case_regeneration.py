@@ -61,3 +61,34 @@ async def test_delete_archives_approved_case():
     await repo.delete(case)
     assert case.status == TestCaseStatus.OUTDATED
     assert repo._retire_cases.call_args.args[0] == [case.id]
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_validates_and_retires_selected_cases(monkeypatch):
+    project = uuid4()
+    cases = [SimpleNamespace(id=uuid4(), project_id=project) for _ in range(2)]
+    by_id = {case.id: (case, None) for case in cases}
+    repo = SimpleNamespace(get_with_current_version=AsyncMock(side_effect=lambda case_id, **_: by_id.get(case_id)), delete=AsyncMock())
+    monkeypatch.setattr(endpoints, "TestCaseRepository", lambda _: repo)
+    session = SimpleNamespace(commit=AsyncMock())
+    result = await endpoints.bulk_delete_test_cases(project, endpoints.BulkDeleteTestCasesRequest(
+        test_case_ids=[cases[0].id, cases[1].id, cases[0].id]), session)
+    assert result == {"deleted": 2}
+    assert repo.delete.await_count == 2
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_rejects_other_project_before_retiring(monkeypatch):
+    from fastapi import HTTPException
+    project = uuid4()
+    cases = [SimpleNamespace(id=uuid4(), project_id=project), SimpleNamespace(id=uuid4(), project_id=uuid4())]
+    by_id = {case.id: (case, None) for case in cases}
+    repo = SimpleNamespace(get_with_current_version=AsyncMock(side_effect=lambda case_id, **_: by_id.get(case_id)), delete=AsyncMock())
+    monkeypatch.setattr(endpoints, "TestCaseRepository", lambda _: repo)
+    session = SimpleNamespace(commit=AsyncMock())
+    with pytest.raises(HTTPException) as error:
+        await endpoints.bulk_delete_test_cases(project, endpoints.BulkDeleteTestCasesRequest(test_case_ids=[case.id for case in cases]), session)
+    assert error.value.status_code == 404
+    repo.delete.assert_not_awaited()
+    session.commit.assert_not_awaited()

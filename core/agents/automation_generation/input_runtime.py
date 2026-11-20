@@ -31,12 +31,12 @@ function localAnswer(document: any, key: string): Answer | undefined {
 }
 
 /** Input values are fixed at the consuming checkpoint, never changed mid-action. */
-export async function executionInput(key: string, fallback: string | null): Promise<string> {
+export async function executionInput(key: string, fallback: string | null, forceScenarioValue = false): Promise<string> {
   const directory = process.env.EXECUTION_INPUT_DIR;
   if (!directory) {
     const saved = localAnswer(read(path.resolve(__dirname, "../credentials/test-data.json")), key)
       ?? localAnswer(read(path.resolve(__dirname, "../config/testdata.json")), key);
-    if (saved) {
+    if (saved && !forceScenarioValue) {
       const binding = read(path.resolve(__dirname, "../manifest.json"))?.input_bindings?.find((item: any) => item.key === key);
       if (typeof saved.value !== "string" || !["value", "empty"].includes(saved.mode) || (saved.mode === "empty" && !binding?.allow_empty)) {
         throw new Error(`Invalid local input ${key}`);
@@ -52,7 +52,7 @@ export async function executionInput(key: string, fallback: string | null): Prom
   if (!binding) throw new Error(`Unknown or stale execution input binding: ${key}`);
   const identifier = randomUUID();
   const saved = read(path.join(directory, "snapshot.json"))?.values?.[key] as Answer | undefined;
-  let answer = saved;
+  let answer = forceScenarioValue ? undefined : saved;
   if (!answer && fallback !== null && (fallback !== "" || binding.allow_empty)) {
     answer = { mode: fallback === "" ? "empty" : "value", value: fallback, source: "case" };
   }

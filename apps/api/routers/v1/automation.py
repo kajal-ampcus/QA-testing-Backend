@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from domain.test_case_identity import discovery_account_context
 
 from apps.api.dependencies import get_db_session
 from apps.api.settings import ApiSettings
@@ -239,6 +240,8 @@ async def generate_automation(
         state.state_code: {
             "url_pattern": state.url_pattern,
             "elements": state.elements,
+            "reached_via": state.reached_via or [],
+            "account_context": discovery_account_context(state.fingerprint, state.reached_via or [], (full_map.coverage or {}).get("app_flow_graph", {}).get("nodes", [])),
         }
         for state in full_map.states
     }
@@ -278,10 +281,10 @@ async def generate_automation(
 
     recovered_states, recovery, refreshed = await recover_cases(
         [_case(item) for item in case_payload],
-        {code: StateInput(code, item["url_pattern"], item["elements"]) for code, item in states.items()},
+        {code: StateInput(code, item["url_pattern"], item["elements"], item["reached_via"], item["account_context"]) for code, item in states.items()},
         generation_id, refresh if body.rediscover else None,
     )
-    states = {code: {"url_pattern": state.url_pattern, "elements": state.elements}
+    states = {code: {"url_pattern": state.url_pattern, "elements": state.elements, "reached_via": state.reached_via, "account_context": state.account_context}
               for code, state in recovered_states.items()}
     # Keep approved map states immutable. Evidence is versioned by generation
     # in the map's existing diagnostic store and in the suite manifest.

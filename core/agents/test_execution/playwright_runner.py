@@ -140,8 +140,8 @@ def outcome_from_progress(
     if not spec_path and not title:
         return None
     raw_status = str(payload.get("status") or "")
-    status = _STATUS.get(raw_status) or _STATUS.get(raw_status.lower()) or TestResultStatus.FAILED
     error_message = str(payload.get("error") or "").strip() or None
+    status = _result_status({"status": raw_status, "error": error_message}, {})
     expected, actual = assertion_values(error_message, status)
     script = _match_script(spec_path, {_norm(item.file_path): item for item in scripts})
     if script and script.expected_result and status == TestResultStatus.PASSED:
@@ -215,6 +215,8 @@ def parse_playwright_json(
 
 
 def assertion_values(error_message: str | None, status: TestResultStatus) -> tuple[str, str]:
+    if status == TestResultStatus.BLOCKED and "NEGATIVE_REVIEW_REQUIRED:" in (error_message or ""):
+        return "Verifiable validation feedback", "Review needed: " + (error_message or "").split("NEGATIVE_REVIEW_REQUIRED:", 1)[1].strip()
     if error_message:
         matched = _EXPECT.search(error_message)
         if matched:
@@ -283,6 +285,10 @@ def _last_result(tests: list[Any]) -> dict[str, Any]:
 
 def _result_status(result: dict[str, Any], spec: dict[str, Any]) -> TestResultStatus:
     message = str(result.get("error") or result.get("message") or "")
+    if "NEGATIVE_REVIEW_REQUIRED:" in message:
+        return TestResultStatus.BLOCKED
+    if "NEGATIVE_INFRASTRUCTURE_ERROR:" in message:
+        return TestResultStatus.ERROR
     if "CAPTCHA_CONFIGURATION_ERROR:" in message:
         return TestResultStatus.CONFIGURATION_ERROR
     if "CAPTCHA_BLOCKED:" in message:

@@ -122,7 +122,9 @@ def match_observed_element(
             continue
         if target.get("element_role") and role != str(target["element_role"]).lower():
             continue
-        names = [normalized(element.get(key)) for key in ("name", *_LABEL_KEYS, *_PLACEHOLDER_KEYS)]
+        # field_label helps identify the intended control; the locator itself
+        # still comes only from an independently observed selector or label.
+        names = [normalized(element.get(key)) for key in ("name", "field_label", *_LABEL_KEYS, *_PLACEHOLDER_KEYS)]
         names = [name for name in names if name]
         score = 1.0 if hint and hint in names else 0.0
         if not hint and any(re.search(rf"\b{re.escape(name)}\b", wording) for name in names):
@@ -188,6 +190,21 @@ def _choose(
     name = _text(element.get("name")) or _locator_name(element)
     scope = element.get("locator_scope")
     scoped_unique = False
+    # Password inputs do not expose the textbox role in Playwright, and their
+    # role can change when revealed. Prefer a stable observed locator instead.
+    if str(element.get("input_type") or element.get("type") or "").lower() == "password":
+        css = _css(element)
+        if css and sum(_css(item) == css for item in siblings) == 1:
+            return _resolved(state_code, element, "css", f"locator({json.dumps(css)})", {"css": css})
+        label = _first(element, _LABEL_KEYS)
+        if label:
+            return _unique_text(state_code, element, siblings, "getByLabel", label, _LABEL_KEYS,
+                                f"getByLabel({json.dumps(label)}, {{ exact: true }})")
+        placeholder = _first(element, _PLACEHOLDER_KEYS)
+        if placeholder:
+            return _unique_text(state_code, element, siblings, "getByPlaceholder", placeholder, _PLACEHOLDER_KEYS,
+                                f"getByPlaceholder({json.dumps(placeholder)}, {{ exact: true }})")
+        return _blocked(state_code, code, risk, f"{state_code}/{code} password input needs an observed label, placeholder, or stable selector.")
     if _DYNAMIC_BADGE.fullmatch(name):
         return _blocked(
             state_code,

@@ -34,9 +34,7 @@ _VERSION_FIELDS = (
 
 class TestCaseRepository(BaseRepository):
 
-    async def find_semantic_duplicate(self, requirement_id: uuid.UUID, version_data: dict,
-                                      application_map_id: uuid.UUID | None = None,
-                                      *, exclude_case_id: uuid.UUID | None = None):
+    async def find_semantic_duplicate(self, requirement_id: uuid.UUID, version_data: dict, application_map_id: uuid.UUID | None = None):
         from domain.semantic_duplicates import find_semantic_duplicate
         cache = getattr(self, "_duplicate_pairs", None)
         if cache is None:
@@ -46,10 +44,7 @@ class TestCaseRepository(BaseRepository):
             current = await self.session.scalar(select(Requirement.current_version).where(Requirement.id == requirement_id))
             cache[requirement_id] = [(tc, v) for tc, v in pairs if tc.status not in {TestCaseStatus.OUTDATED, TestCaseStatus.REJECTED}
                                     and tc.requirement_version == current]
-        pairs = [(tc, version) for tc, version in cache[requirement_id]
-                 if tc.id != exclude_case_id
-                 and tc.status not in {TestCaseStatus.OUTDATED, TestCaseStatus.REJECTED}
-                 and (application_map_id is None or tc.application_map_id == application_map_id)]
+        pairs = [pair for pair in cache[requirement_id] if application_map_id is None or pair[0].application_map_id == application_map_id]
         def summary(data):
             return {key: data.get(key) for key in ("title", "objective", "expected_result", "preconditions", "steps", "test_data")}
         candidates = [{"id": str(tc.id), **summary({field: getattr(v, field) for field in _VERSION_FIELDS})} for tc, v in pairs]
@@ -160,7 +155,7 @@ class TestCaseRepository(BaseRepository):
     async def existing_signatures(
         self, requirement_id: uuid.UUID, application_map_id: uuid.UUID | None = None
     ) -> set[tuple[Any, ...]]:
-        """Signatures within the requested evidence map, or all maps if omitted."""
+        """Find active duplicates within the requested application map."""
         pairs = await self.list_for_requirement(requirement_id)
         current_version = await self.session.scalar(select(Requirement.current_version).where(Requirement.id == requirement_id))
         contexts = await self._map_contexts(pairs)
@@ -168,13 +163,13 @@ class TestCaseRepository(BaseRepository):
             case_signature({field: getattr(version, field) for field in _VERSION_FIELDS}, contexts.get(tc.application_map_id))
             for tc, version in pairs
             if tc.status not in {TestCaseStatus.OUTDATED, TestCaseStatus.REJECTED}
+            and (application_map_id is None or tc.application_map_id == application_map_id)
             and (current_version is None or tc.requirement_version == current_version)
             and (application_map_id is None or tc.application_map_id == application_map_id)
         }
 
     async def find_by_signature(
-        self, requirement_id: uuid.UUID, signature: tuple[Any, ...],
-        application_map_id: uuid.UUID | None = None,
+        self, requirement_id: uuid.UUID, signature: tuple[Any, ...], application_map_id: uuid.UUID | None = None
     ) -> tuple[TestCase, TestCaseVersion] | None:
         """Locate the saved case that already expresses this scenario."""
         pairs = await self.list_for_requirement(requirement_id)

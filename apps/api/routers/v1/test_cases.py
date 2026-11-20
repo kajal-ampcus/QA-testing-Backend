@@ -49,6 +49,10 @@ class GenerateTestCasesRequest(BaseModel):
     regenerate: bool = False
 
 
+class BulkDeleteTestCasesRequest(BaseModel):
+    test_case_ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
+
+
 class CreateTestCaseRequest(BaseModel):
     """Manual draft — typically an EDGE_CASE the generator did not cover."""
 
@@ -150,6 +154,7 @@ class TestCaseOut(BaseModel):
     credential_ref: str | None = None
     primary_state_code: str | None = None
     source: str = "Unknown"
+    import_metadata: dict[str, Any] | None = None
     current: TestCaseVersionOut
 
 
@@ -190,6 +195,7 @@ def _to_out(tc, version) -> TestCaseOut:
         credential_ref=tc.credential_ref,
         primary_state_code=getattr(tc, "primary_state_code", None),
         source=getattr(tc, "source", None) or "Unknown",
+        import_metadata=getattr(tc, "import_metadata", None),
         current=TestCaseVersionOut(
             version=version.version,
             title=version.title,
@@ -213,12 +219,17 @@ class ImportCaseRow(BaseModel):
     category: Literal["POSITIVE", "NEGATIVE", "EDGE_CASE"] = "POSITIVE"
     preconditions: list[str] = Field(default_factory=list)
     step_notes: list[str] = Field(default_factory=list)
+    input: str = ""
+    scenario_name: str = ""
+    source_case_id: str = ""
+    inferred: list[str] = Field(default_factory=list)
     page: str | None = None
     screen: str | None = None
     module: str | None = None
     url: str | None = None
     include: bool = True
     state_code: str | None = None
+    page_confirmed: bool = False
 
 
 class ImportPreviewRequest(BaseModel):
@@ -237,6 +248,10 @@ class ImportPreviewRow(BaseModel):
     reason: str
     alternatives: list[dict[str, Any]]
     ambiguous: bool = False
+    readiness: str = "review_needed"
+    readiness_issues: list[str] = Field(default_factory=list)
+    step_mappings: list[dict[str, str]] = Field(default_factory=list)
+    assessed_state_code: str | None = None
 
 
 class ImportPreviewResponse(BaseModel):
@@ -280,9 +295,11 @@ async def preview_import(project_id: uuid.UUID, body: ImportPreviewRequest, db: 
     for row in body.rows:
         match = matcher.match(row.model_dump(), app_map.states)
         level = "high" if match.confidence >= 80 else "medium" if match.confidence >= 55 else "low"
+        readiness, issues, mappings = _assess_import_mapping(row, app_map.states, row.state_code or match.state_code)
         rows.append(ImportPreviewRow(row=row, detected_state_code=match.state_code, detected_page=match.page_name,
             confidence=match.confidence, confidence_level=level, reason=match.reason,
-            alternatives=match.alternatives, ambiguous=match.ambiguous))
+            alternatives=match.alternatives, ambiguous=match.ambiguous, readiness=readiness,
+            readiness_issues=issues, step_mappings=mappings, assessed_state_code=row.state_code or match.state_code))
     return ImportPreviewResponse(application_map_id=app_map.id,
         pages=[{"state_code": state.state_code, "page_name": matcher.page_name(state)} for state in app_map.states], rows=rows)
 
@@ -302,25 +319,55 @@ async def confirm_import(project_id: uuid.UUID, body: ImportConfirmRequest, db: 
             results.append(ImportConfirmResult(row_number=row.row_number, status="unmapped", error="Select a discovered page before importing."))
             continue
         if row.state_code not in states:
-            results.append(ImportConfirmResult(row_number=row.row_number, status="invalid", error="Selected page is not in this application map."))
-            continue
-        expected = row.expected_result.strip() or f"The application handles the scenario successfully: {row.title}."
+            results.append(ImportConfirmResult(row_number=row.row_number, status="invalid", error="Selected page is not in this application map.")); continue
+        suggestion = PageMatchingService().match(row.model_dump(), app_map.states)
+        if (suggestion.ambiguous or suggestion.confidence < 80 or suggestion.state_code != row.state_code) and not row.page_confirmed:
+            results.append(ImportConfirmResult(row_number=row.row_number, status="invalid", error="Confirm the selected page for this uncertain or changed match.")); continue
+        expected = row.expected_result.strip()
+        if not expected:
+            results.append(ImportConfirmResult(row_number=row.row_number, status="invalid", error="Expected result is missing; add it to the workbook before importing.")); continue
         objective = row.objective.strip() or f"Verify: {row.title}"
         steps = _manual_steps(state_code=row.state_code, expected_result=expected, step_notes=row.step_notes)
-        duplicate = await repo.find_semantic_duplicate(requirement.id,
-            {"title": row.title, "objective": objective, "expected_result": expected,
-             "preconditions": row.preconditions, "steps": steps}, app_map.id)
+        identity = _import_identity(row.title, expected, row.category, row.preconditions, steps, row.input)
+        duplicate = next(((tc, version) for tc, version in existing if _import_identity(version.title, version.expected_result, version.category, version.preconditions, version.steps, (version.test_data or {}).get('imported_input', '')) == identity), None)
         if duplicate:
             results.append(ImportConfirmResult(row_number=row.row_number, status="duplicate", test_case=_to_out(*duplicate)))
             continue
         tc, version = await repo.create(project_id, await repo.next_tc_code(project_id), requirement.id, requirement.current_version, app_map.id,
             {"title": row.title.strip(), "objective": objective, "preconditions": row.preconditions, "steps": steps,
-             "expected_result": expected, "test_data": {"source": "excel_import"}, "traceability": [], "category": row.category, "confidence": 1.0},
+             "expected_result": expected, "test_data": {"source": "excel_import", **({"imported_input": row.input} if row.input else {})}, "traceability": [], "category": row.category, "confidence": 1.0},
             credential_ref=project.credential_ref, primary_state_code=row.state_code, source="excel_import",
             import_metadata={"filename": body.filename, "row_number": row.row_number})
         results.append(ImportConfirmResult(row_number=row.row_number, status="imported", test_case=_to_out(tc, version)))
     await db.commit()
     return ImportConfirmResponse(results=results)
+
+
+def _assess_import_mapping(row: ImportCaseRow, states: list, state_code: str | None) -> tuple[str, list[str], list[dict[str, str]]]:
+    """Preview mapping without executing a case or claiming automation readiness."""
+    from copy import deepcopy
+    from core.agents.automation_generation.execution_plan import ground_steps
+    from core.agents.automation_generation.suite import StateInput
+
+    if not state_code or not any(state.state_code == state_code for state in states):
+        return "review_needed", ["Select a discovered starting page."], []
+    state_map = {state.state_code: StateInput(state.state_code, state.url_pattern, state.elements, getattr(state, 'reached_via', []) or []) for state in states}
+    steps = _manual_steps(state_code=state_code, expected_result=row.expected_result, step_notes=row.step_notes)
+    mapped, issues = ground_steps(deepcopy(steps), state_map, {}, {})
+    issues = list(issues)
+    if not row.step_notes:
+        issues.append("Reproduction steps are missing; review the imported case.")
+    if not row.expected_result.strip():
+        issues.append("Expected result is missing.")
+    mappings = []
+    for index, step in enumerate(mapped[1:], 1):
+        target = step.get('target') or {}
+        action = str(step.get('action') or '')
+        name = str(target.get('element_name') or '')
+        if action == 'assert' and not target.get('element_code'):
+            issues.append(f"Step {index}: expected result has no uniquely mapped control; review is needed.")
+        mappings.append({'step': str(index), 'action': action, 'control': name or 'Not mapped'})
+    return ("review_needed" if issues else "mapped_not_assessed"), list(dict.fromkeys(issues)), mappings
 
 
 class TestCaseCredentialBinding(BaseModel):
@@ -355,12 +402,12 @@ async def bind_test_case_credential(
     return _to_out(*pair)
 
 
-def _import_identity(title: str, expected: str, category: str, preconditions: list[str], steps: list[dict]) -> tuple:
+def _import_identity(title: str, expected: str, category: str, preconditions: list[str], steps: list[dict], input_value: str = "") -> tuple:
     """Match imported scenarios despite casing, spacing, or objective enrichment."""
     def normalized(value: str) -> str:
         return " ".join(value.split()).casefold()
 
-    return (normalized(title), normalized(expected), normalized(category),
+    return (normalized(title), normalized(expected), normalized(category), normalized(str(input_value or "")),
             tuple(normalized(item) for item in preconditions or [] if item.strip()),
             tuple((step.get("action"), normalized(str(step.get("expected") or "")),
                    normalized(str(step.get("value") or "")))
@@ -404,6 +451,8 @@ def _manual_steps(
                 "expected": note,
             }
         )
+    if notes[-1].strip().casefold() != expected_result.strip().casefold():
+        steps.append({"step_number": len(steps) + 1, "action": "assert", "target": {"state_code": state_code}, "value": None, "expected": expected_result})
     return steps
 
 
@@ -873,6 +922,26 @@ async def submit_test_case(
     await _submit_draft_for_approval(db, test_case)
     await db.commit()
     return _to_out(test_case, version)
+
+
+@router.post("/projects/{project_id}/bulk-delete")
+async def bulk_delete_test_cases(
+    project_id: uuid.UUID,
+    body: BulkDeleteTestCasesRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, int]:
+    """Retire selected project cases atomically, preserving execution history."""
+    repo = TestCaseRepository(db)
+    cases = []
+    for case_id in sorted(set(body.test_case_ids), key=str):
+        pair = await repo.get_with_current_version(case_id, for_update=True)
+        if pair is None or pair[0].project_id != project_id:
+            raise HTTPException(status_code=404, detail="A selected test case was not found in this project")
+        cases.append(pair[0])
+    for case in cases:
+        await repo.delete(case)
+    await db.commit()
+    return {"deleted": len(cases)}
 
 
 @router.delete("/{test_case_id}", status_code=204)

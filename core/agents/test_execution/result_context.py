@@ -33,6 +33,8 @@ def input_fields(test_data: dict[str, Any] | None, steps: list[dict[str, Any]] |
 
 def explain_failure(status: str, error: str | None, expected: str, actual: str) -> tuple[str, str]:
     """Return a cause and a recommended fix. Empty strings when the check passed."""
+    if "NEGATIVE_REVIEW_REQUIRED:" in (error or ""):
+        return ("The negative outcome could not be verified automatically.", "Review the screenshot and validation feedback; the application may still have rejected the input.")
     if status.lower() not in {"failed", "error"}:
         return "", ""
     text = f"{error or ''} {actual}".lower()

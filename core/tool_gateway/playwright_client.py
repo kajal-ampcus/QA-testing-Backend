@@ -127,6 +127,8 @@ export default defineConfig({
     video: "on",
     trace: "on",
     launchOptions: {
+      ...((base.use || {}).launchOptions || {}),
+      slowMo: Number(process.env.PLAYWRIGHT_SLOW_MO ?? 400),
       ...(executablePath ? { executablePath } : {}),
       args: noSandbox
         ? ["--no-sandbox", "--disable-dev-shm-usage"]
@@ -356,6 +358,57 @@ async def _drain(
             await emit(block.decode("utf-8", "replace"))
 
 
+async def _execute_windows_selector(
+    cmd: list[str], *, cwd: Path, env: dict[str, str], timeout: int,
+    on_output: Callable[[str], Awaitable[None]] | None,
+    on_case: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    results_path: Path | None,
+) -> subprocess.CompletedProcess[str]:
+    """Run with ordinary pipes because Windows selector loops lack subprocess support."""
+    process = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, start_new_session=True)
+    stdout_parts: list[bytes] = []
+    stderr_parts: list[bytes] = []
+    emit_lock = asyncio.Lock()
+    stop_results = asyncio.Event()
+    watch = asyncio.create_task(_watch_results(results_path, on_case, stop_results)) if results_path is not None and on_case is not None else None
+
+    async def drain(stream: Any, sink: list[bytes]) -> None:
+        while True:
+            block = await asyncio.to_thread(os.read, stream.fileno(), 1024)
+            if not block:
+                return
+            sink.append(block)
+            if on_output:
+                async with emit_lock:
+                    await on_output(block.decode("utf-8", "replace"))
+
+    try:
+        try:
+            await asyncio.wait_for(asyncio.gather(drain(process.stdout, stdout_parts),
+                drain(process.stderr, stderr_parts), asyncio.to_thread(process.wait)), timeout)
+        except (Exception, asyncio.CancelledError) as exc:
+            if process.poll() is None:
+                with suppress(ProcessLookupError):
+                    process.kill()
+            await asyncio.to_thread(process.wait)
+            if isinstance(exc, TimeoutError):
+                raise subprocess.TimeoutExpired(cmd, timeout) from None
+            raise
+    finally:
+        stop_results.set()
+        if watch is not None:
+            with suppress(Exception):
+                await watch
+        if process.stdout:
+            process.stdout.close()
+        if process.stderr:
+            process.stderr.close()
+    return subprocess.CompletedProcess(cmd, process.returncode,
+        b"".join(stdout_parts).decode("utf-8", "replace"),
+        b"".join(stderr_parts).decode("utf-8", "replace"))
+
+
 async def _execute(
     cmd: list[str],
     *,
@@ -380,6 +433,9 @@ async def _execute(
             check=False,
         )
         return completed
+    if os.name == "nt" and isinstance(asyncio.get_running_loop(), asyncio.SelectorEventLoop):
+        return await _execute_windows_selector(cmd, cwd=cwd, env=env, timeout=timeout,
+                                               on_output=on_output, on_case=on_case, results_path=results_path)
     process = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(cwd),

@@ -20,11 +20,16 @@ _ENV = Environment(
 )
 
 _PAGE = """\
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 /** Observed application-map state [[ state_code ]]. */
 export class [[ class_name ]] {
   readonly page: Page;
+  private readonly enteredValues = new Map<string, string>();
+  private negativeBefore = new Set<string>();
+  private negativeNetworkFailure = false;
+  private negativeRequestFailure = (request: import("@playwright/test").Request) => { if (["document", "xhr", "fetch"].includes(request.resourceType()) && new URL(request.url()).origin === new URL(this.page.url()).origin) this.negativeNetworkFailure = true; };
+  private negativeResponse = (response: import("@playwright/test").Response) => { if (response.status() >= 500 && ["document", "xhr", "fetch"].includes(response.request().resourceType()) && new URL(response.url()).origin === new URL(this.page.url()).origin) this.negativeNetworkFailure = true; };
   expectedState = "AUTHENTICATED";
 [% for locator in locators %]
   readonly [[ locator.prop ]]: Locator;
@@ -47,6 +52,58 @@ export class [[ class_name ]] {
 
   async expectOnPage() {
     await expect(this.page).toHaveURL([[ url_pattern ]]);
+  }
+
+  private async validationSignals(): Promise<string[]> {
+    return this.page.locator('[role="alert"], [aria-live="assertive"], [aria-invalid="true"], input:user-invalid, textarea:user-invalid, select:user-invalid, [data-testid*="error" i], [class*="error" i], form p, form span').evaluateAll(nodes => nodes.filter(node => {
+      const el = node as HTMLElement; const style = getComputedStyle(el);
+      return !!el.getClientRects().length && style.visibility !== 'hidden' && style.display !== 'none';
+    }).map(node => {
+      const el = node as HTMLInputElement;
+      return (el.validationMessage || el.getAttribute('aria-label') || el.textContent || '').trim();
+    }).filter(Boolean));
+  }
+
+  async beginNegativeObservation() {
+    if (await this.page.locator('[data-sitekey], iframe[src*="captcha" i], input[name*="captcha" i], input[id*="captcha" i]').first().isVisible().catch(() => false))
+      throw new Error('NEGATIVE_REVIEW_REQUIRED: A live CAPTCHA needs an approved test integration before credential rejection can be verified.');
+    this.negativeBefore = new Set(await this.validationSignals());
+    this.negativeNetworkFailure = false;
+    this.page.on('requestfailed', this.negativeRequestFailure);
+    this.page.on('response', this.negativeResponse);
+  }
+
+  async expectRuntimeLoginRejection(fields: string[], dashboardHeading: string) {
+    try {
+      let feedback = '';
+      for (let attempt = 0; attempt < 30; attempt++) {
+        if (this.negativeNetworkFailure) throw new Error('NEGATIVE_INFRASTRUCTURE_ERROR: A relevant application request failed during the test.');
+        const signals = await this.validationSignals();
+        feedback = signals.find(value => {
+          const expectedPassword = fields.some(field => /password|passphrase/i.test(field));
+          const expectedUser = fields.some(field => /e-?mail|username|user name/i.test(field));
+          const mentionsPassword = /password|passphrase/i.test(value);
+          const mentionsUser = /e-?mail|username|user name/i.test(value);
+          return !this.negativeBefore.has(value) && /invalid|incorrect|wrong|not valid|required|missing|enter|provide|cannot|unable|failed|failure|denied|reject/i.test(value)
+            && !/captcha|network|connection|server|try again later|service unavailable/i.test(value)
+            && (!(mentionsPassword || mentionsUser) || (mentionsPassword && expectedPassword) || (mentionsUser && expectedUser));
+        }) || '';
+        if (feedback) break;
+        await this.page.waitForTimeout(200);
+      }
+      if (this.negativeNetworkFailure) throw new Error('NEGATIVE_INFRASTRUCTURE_ERROR: A relevant application request failed during the test.');
+      if (!feedback) throw new Error('NEGATIVE_REVIEW_REQUIRED: No new identifiable login validation feedback was found.');
+      if (dashboardHeading && await this.page.getByRole('heading', {name: dashboardHeading, exact: true}).isVisible().catch(() => false))
+        throw new Error('Negative test failed: the authenticated dashboard is visible after submission.');
+      const login = this.page.getByRole('button', {name: /^(sign\\s*in|log\\s*in)$/i});
+      if (!(await login.isVisible().catch(() => false))) throw new Error('NEGATIVE_REVIEW_REQUIRED: The login form was not visible after rejection.');
+      let safe = feedback;
+      for (const value of this.enteredValues.values()) if (value.length >= 3) safe = safe.split(value).join('[redacted]');
+      await test.info().attach('validation-feedback', {body: `Fields: ${fields.join(', ')}\nFeedback: ${safe}`, contentType: 'text/plain'});
+    } finally {
+      this.page.off('requestfailed', this.negativeRequestFailure);
+      this.page.off('response', this.negativeResponse);
+    }
   }
 
   async guard(action: () => Promise<void>): Promise<void> {
@@ -563,6 +620,7 @@ async function openContext(
 ): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({
     baseURL: suiteBaseURL(),
+    ignoreHTTPSErrors: process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS === "true",
     viewport: null,
   });
   await context.addInitScript(() => {
