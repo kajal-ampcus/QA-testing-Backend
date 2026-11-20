@@ -166,6 +166,20 @@ def prepare_execution(
         element = _element(step, states) or {}
         fills = [item for item in steps[:index] if item.get("action") == "fill" and item.get("target", {}).get("state_code") == target.get("state_code") and item.get("target", {}).get("element_code") == target.get("element_code")]
         clicks = [item for item in steps[:index] if item.get("action") == "click" and item.get("target", {}).get("state_code") == target.get("state_code") and re.search(r"\b(show|reveal)\s+password\b", _step_name(item, states), re.I)]
+        # Older generated login cases recorded the expected rejection as a
+        # generic manual requirement. Their data still identifies the actual
+        # blank/invalid inputs, so recover that structured intent here rather
+        # than leaving an otherwise automatable case blocked forever.
+        if ((case.category or '').upper() == 'NEGATIVE'
+                and assertion.get('basis') == 'requirement_behavior'
+                and login_submit and start is not None
+                and target.get('state_code') == start.state_code
+                and re.fullmatch(r'log\s*in|sign\s*in', _step_name(step, states), re.I)):
+            changed = [item for item in steps[:index] if item.get('action') == 'fill'
+                       and (_fill_value(item, data) == '' or str(_fill_value(item, data)).startswith('INVALID_TEST_FIXTURE:'))]
+            if changed:
+                assertion['basis'] = 'missing' if any(_fill_value(item, data) == '' for item in changed) else 'invalid'
+                assertion['fields'] = '|'.join(_step_name(item, states) for item in changed)
         if ((case.category or '').upper() == 'NEGATIVE' and assertion.get('basis') in {'missing', 'invalid'}
                 and login_submit and start is not None and target.get('state_code') == start.state_code
                 and re.fullmatch(r'log\s*in|sign\s*in', _step_name(step, states), re.I)):

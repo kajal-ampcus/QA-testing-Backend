@@ -58,12 +58,30 @@ def login_cases(ac: dict, state: dict, criteria: list[dict]) -> list[TestCaseSpe
         if click:
             steps.append(TestStep(step_number=len(steps) + 1, action="click", target=_target(state, click if isinstance(click, dict) else submit)))
         manual = assertion is None
+        negative_fields = [field for field, value in values or []
+                           if value == "" or str(value).startswith("INVALID_TEST_FIXTURE:")]
+        negative_basis = (
+            "missing" if click and any(value == "" for _field, value in values or [])
+            else "invalid" if click and negative_fields
+            else "requirement_behavior"
+        )
+        assertion_text = expected
+        if negative_basis == "invalid":
+            # The runtime oracle detects newly displayed validation feedback.
+            # Keep its structured manual metadata aligned with the standard
+            # negative-case contract, while retaining the requirement wording
+            # as the user-facing expected result.
+            from core.agents.test_design.form_behaviors import invalid_expected
+            assertion_text = invalid_expected(text, [
+                control_label(field, state["elements"]) for field in negative_fields
+            ])
         steps.append(TestStep(step_number=len(steps) + 1, action="assert", target=_target(state, target),
             expected=expected, assertion=assertion or {"kind": "manual", "target": target["element_code"],
-                "text": expected, "requirement_text": text, "basis": "requirement_behavior"}))
+                "text": assertion_text, "requirement_text": text, "basis": negative_basis}))
         if manual:
-            steps[-1].assertion["fields"] = "|".join(control_label(field, state["elements"])
-                for field, value in values or [] if str(value).startswith("INVALID_TEST_FIXTURE:"))
+            steps[-1].assertion["fields"] = "|".join(
+                control_label(field, state["elements"]) for field in negative_fields
+            )
         output.append(TestCaseSpec(title=title, objective=expected, category=category,
             preconditions=[f"Browser is on {_url_path(state)} with a fresh signed-out session.",
                 *(["Manual verification required: the outcome is specified by the requirement; an automated result oracle is not established."] if manual else []),

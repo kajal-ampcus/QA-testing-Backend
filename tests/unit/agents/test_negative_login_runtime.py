@@ -55,6 +55,17 @@ def test_both_empty_fields_remain_explicit_scenario_values():
     assert draft.source.count(', true)') == 2
 
 
+def test_legacy_manual_negative_login_recovers_its_blank_field_intent():
+    case, states = negative_case('missing', 'Password')
+    case.steps[-1]['assertion']['basis'] = 'requirement_behavior'
+    case.test_data['password'] = ''
+    draft = _plan_case(case, states, set(), uuid4())
+    assert not draft.blocked, draft.blocked_reason
+    assert 'expectRuntimeLoginRejection' in draft.source
+    assert 'envCredential("TEST_USERNAME")' in draft.source
+    assert 'envCredential("TEST_PASSWORD")' not in draft.source
+
+
 def test_execution_input_keeps_intentional_blank_even_if_saved_value_exists():
     from core.agents.automation_generation.input_runtime import RUNTIME_SOURCE
     node = shutil.which('node')

@@ -83,6 +83,17 @@ def test_required_messages_and_independent_blank_fields():
     assert any(case.test_data["password"] == "" and case.test_data["username"] != "" for case in cases)
     assert all('is required"' in case.expected_result for case in cases)
     assert not any("one-character" in case.title or "EL-" in case.title for case in cases)
+    assert all(case.steps[-1].assertion["basis"] == "missing" for case in cases)
+    assert all(case.steps[-1].assertion["fields"] for case in cases)
+
+
+def test_invalid_login_cases_are_marked_for_runtime_rejection_observation():
+    cases = generate(['The system shall display "Invalid username or password" for incorrect credentials.'])
+    negative = [case for case in cases if case.category == "NEGATIVE"]
+    assert negative
+    assert all(case.steps[-1].assertion["kind"] == "manual" for case in negative)
+    assert all(case.steps[-1].assertion["basis"] == "invalid" for case in negative)
+    assert all(case.steps[-1].assertion["fields"] for case in negative)
 
 
 def test_displaying_back_home_does_not_turn_into_navigation():
