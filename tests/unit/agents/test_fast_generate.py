@@ -215,6 +215,17 @@ def test_duplicate_signature_ignores_category_relabelling() -> None:
     )
 
 
+def test_duplicate_signature_merges_manual_requirement_wording_for_the_same_steps() -> None:
+    steps = [
+        {"action": "navigate", "target": {"state_code": "STATE-001"}},
+        {"action": "fill", "target": {"state_code": "STATE-001", "element_code": "EL-001"}, "value": ""},
+        {"action": "click", "target": {"state_code": "STATE-001", "element_code": "EL-004"}},
+    ]
+    left = {"steps": [*steps, {"action": "assert", "target": {"state_code": "STATE-001"}, "assertion": {"kind": "manual", "text": "Username is required", "fields": "username"}}]}
+    right = {"steps": [*steps, {"action": "assert", "target": {"state_code": "STATE-001"}, "assertion": {"kind": "manual", "text": "The login form blocks a blank username", "fields": "username"}}]}
+    assert case_signature(left) == case_signature(right)
+
+
 def test_positive_case_asserts_the_state_its_click_leads_to() -> None:
     acs = [{"id": "AC-1", "text": "User can log in with valid credentials"}]
     positive = next(

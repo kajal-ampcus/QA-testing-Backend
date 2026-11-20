@@ -86,6 +86,47 @@ def login_cases(ac: dict, state: dict, criteria: list[dict]) -> list[TestCaseSpe
         make("Verify password is masked by default", "Password input uses type=password",
              assertion={"kind": "attribute", "target": password["element_code"], "name": "type", "value": "password"}, target=password)
         return output
+    if re.search(r"\b(password|passphrase)\b", lower) and re.search(
+        r"\b(visibility|visible|show|hide|reveal|toggle|eye)\b", lower
+    ):
+        # This is a local input-state interaction, not an authentication flow.
+        # Only use a control explicitly observed in the application map: an
+        # unlabeled icon must be fixed in the application/discovery data rather
+        # than guessed as the form submit button.
+        toggles = [element for element in _observed(state)
+                   if element.get("role") in {"button", "checkbox"}
+                   and re.search(r"\b(show|hide|reveal|toggle|visibility|eye)\b.*\b(password|passphrase)\b|\b(password|passphrase)\b.*\b(show|hide|reveal|toggle|visibility|eye)\b",
+                                 control_label(element, state["elements"]), re.I)]
+        if len(toggles) != 1:
+            return None
+        toggle = toggles[0]
+        sample_key = "visibility_sample"
+        sample_value = "Visibility sample"
+        expected = "Password is revealed without changing its entered value."
+        steps = [
+            TestStep(step_number=1, action="navigate", target=_target(state)),
+            TestStep(step_number=2, action="fill", target=_target(state, password), value="{" + sample_key + "}"),
+            TestStep(step_number=3, action="assert", target=_target(state, password),
+                     expected="Password input uses type=password",
+                     assertion={"kind": "attribute", "target": password["element_code"], "name": "type", "value": "password"}),
+            TestStep(step_number=4, action="click", target=_target(state, toggle)),
+            TestStep(step_number=5, action="assert", target=_target(state, password),
+                     expected="Password input uses type=text",
+                     assertion={"kind": "attribute", "target": password["element_code"], "name": "type", "value": "text"}),
+            TestStep(step_number=6, action="assert", target=_target(state, password), expected=expected,
+                     assertion={"kind": "value", "target": password["element_code"], "value": sample_value}),
+        ]
+        return [TestCaseSpec(
+            title="Verify password visibility toggle preserves the entered value",
+            objective=text,
+            category="POSITIVE",
+            preconditions=[f"Browser is on {_url_path(state)} with a fresh signed-out session."],
+            steps=steps,
+            expected_result=expected,
+            test_data={sample_key: sample_value},
+            traceability=[ac_id],
+            confidence=0.9,
+        )]
     if "back to home" in lower:
         if re.search(r"does not submit|without submitting", lower):
             links = [e for e in _observed(state) if e.get("role") in {"link", "button"}

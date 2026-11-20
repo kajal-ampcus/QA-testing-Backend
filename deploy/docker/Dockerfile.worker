@@ -54,18 +54,14 @@ RUN python -m pip install \
     .
 RUN python -c "import pathlib,tomllib; pathlib.Path('/tmp/qa-dependencies.txt').write_text('\n'.join(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']))"
 RUN --mount=type=cache,target=/root/.cache/pip pip install --timeout 120 --retries 5 -r /tmp/qa-dependencies.txt
-# Keep Playwright's browser cache in a predictable location for the worker.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-# Install browser and MCP at build time; no runtime package downloads. Debian
-# supplies Chromium, and /usr/local/bin/google-chrome remains a compatibility alias.
-# Playwright's bundled Node needs libatomic before its dependency installer can run.
+# The worker connects to the system Chromium over CDP; it does not need
+# Playwright's separately downloaded Chrome-for-Testing bundle.  Avoiding that
+# download makes image builds reliable on networks that block cdn.playwright.dev.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Retries=5 update \
-    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends libatomic1 \
-    && mkdir -p /opt/ms-playwright \
-    && playwright install --with-deps chromium \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends libatomic1 chromium \
     && python -c "from pathlib import Path; import shutil; binary=shutil.which('chromium') or shutil.which('chromium-browser'); assert binary, 'Chromium executable was not installed'; target=Path('/usr/local/bin/google-chrome'); target.unlink(missing_ok=True); target.symlink_to(Path(binary).resolve()); print(target, '->', Path(binary).resolve())" \
-    && chmod -R a+rX /opt/ms-playwright \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 COPY apps/ apps/
@@ -75,9 +71,6 @@ COPY schemas/ schemas/
 COPY infra/ infra/
 RUN --mount=type=cache,target=/root/.cache/pip pip install --no-deps --timeout 120 --retries 5 .
 COPY scripts/docker_entrypoint.py scripts/run_worker.py scripts/
-# Safety net: if the Python playwright package was updated after the apt chromium
-# layer was cached, re-run its own downloader so binary versions always match.
-RUN python -m playwright install chromium
 
 RUN useradd --create-home --uid 10001 qa \
     && mkdir -p /app/artifacts/discovery /app/artifacts/automation /app/logs \

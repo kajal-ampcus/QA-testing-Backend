@@ -129,6 +129,40 @@ def test_login_success_uses_a_public_page_and_submits(tmp_path) -> None:
     assert "test.beforeEach" not in auth
 
 
+def test_password_visibility_toggle_uses_the_observed_eye_control_without_submitting(tmp_path) -> None:
+    ids = _ids()
+    states = _login_states()
+    states["STATE-001"].elements[1]["input_type"] = "password"
+    states["STATE-001"].elements.append(
+        {"element_code": "EL-007", "role": "button", "name": "Show password", "risk": "SAFE", "source": "OBSERVED_DOM"}
+    )
+    case = _case(
+        ids,
+        title="Verify password visibility toggle preserves the entered value",
+        objective="The password visibility eye icon toggles visibility without changing its value.",
+        expected_result="Password is revealed without changing its entered value.",
+        test_data={"visibility_sample": "Visibility sample"},
+        steps=[
+            {"step_number": 1, "action": "navigate", "target": {"state_code": "STATE-001"}},
+            {"step_number": 2, "action": "fill", "target": {"state_code": "STATE-001", "element_code": "EL-002"}, "value": "{visibility_sample}"},
+            {"step_number": 3, "action": "assert", "target": {"state_code": "STATE-001", "element_code": "EL-002"}, "expected": "Password input uses type=password", "assertion": {"kind": "attribute", "name": "type", "value": "password"}},
+            {"step_number": 4, "action": "click", "target": {"state_code": "STATE-001", "element_code": "EL-007"}},
+            {"step_number": 5, "action": "assert", "target": {"state_code": "STATE-001", "element_code": "EL-002"}, "expected": "Password input uses type=text", "assertion": {"kind": "attribute", "name": "type", "value": "text"}},
+            {"step_number": 6, "action": "assert", "target": {"state_code": "STATE-001", "element_code": "EL-002"}, "expected": "Password value is preserved", "assertion": {"kind": "value", "value": "Visibility sample"}},
+        ],
+    )
+    plan, spec, _ = _render(tmp_path, case, states)
+    assert plan.scripts[0].blocked is False
+    assert ".clickShowPasswordEl007()" in spec
+    assert ".clickLoginEl004()" not in spec
+    page = (plan.suite_dir / "pages" / "state-001.page.ts").read_text(encoding="utf-8")
+    assert 'toHaveAttribute(name, expected)' in page
+    assert 'expectPasswordEl002Attribute("type", "password")' in spec
+    assert 'expectPasswordEl002Attribute("type", "text")' in spec
+    assert 'toHaveValue(expected)' in page
+    assert 'expectPasswordEl002Value("Visibility sample")' in spec
+
+
 def test_empty_login_credential_uses_the_other_vault_credential_at_runtime(tmp_path) -> None:
     ids = _ids()
     states = _login_states()

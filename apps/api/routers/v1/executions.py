@@ -610,7 +610,9 @@ async def get_execution_report(
             status_code=409,
             detail="The execution report is available after the Playwright run finishes.",
         )
-    return await load_execution_report(session, run)
+    return await load_execution_report(
+        session, run, await ExecutionRepository(session).list_for_project(project_id)
+    )
 
 
 @router.get("/projects/{project_id}/runs/{run_id}/results/{result_id}/evidence/{channel}")

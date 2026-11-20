@@ -63,12 +63,54 @@ def assemble_execution_report(
     )
 
 
-async def load_execution_report(
-    session: AsyncSession, run: TestRun
+def assemble_latest_suite_report(
+    run: TestRun,
+    runs: list[TestRun],
+    scripts: list[AutomationScript],
+    versions: list[TestCaseVersion],
+    requirements: list[Requirement],
 ) -> ExecutionReportOut:
+    """Report each suite case once, using its newest result up to ``run``."""
+    cutoff = run.created_at
+    relevant = [
+        item for item in runs
+        if item.generation_id == run.generation_id
+        and run_is_finished(item.status)
+        and (cutoff is None or item.created_at is None or item.created_at <= cutoff)
+    ]
+    latest: dict[str, TestResult] = {}
+    for source in sorted(relevant, key=lambda item: str(item.created_at or item.finished_at or ""), reverse=True):
+        for result in source.results or []:
+            key = str(result.automation_script_id or result.spec_path or result.id)
+            latest.setdefault(key, result)
+    script_by_id = {script.id: script for script in scripts}
+    version_by_key = {(item.test_case_id, item.version): item for item in versions}
+    requirement_by_id = {item.id: item for item in requirements}
+    rows = [_result_row(result, script_by_id, version_by_key, requirement_by_id) for result in latest.values()]
+    rows.sort(key=lambda row: (0 if row.status in _FAILURES else 1, row.test_case_code))
+    counts = {key: 0 for key in _COUNT_KEYS}
+    for row in rows:
+        counts[row.status.lower() if row.status.lower() in counts else "error"] += 1
+    total = sum(counts.values())
+    return ExecutionReportOut(
+        run_id=run.id, project_id=run.project_id, generation_id=run.generation_id,
+        environment=run.environment, base_url=run.base_url, status=run.status,
+        started_at=run.started_at, finished_at=run.finished_at,
+        counts=ExecutionReportCounts(total=total, passed=counts["passed"], failed=counts["failed"],
+            skipped=counts["skipped"], error=counts["error"],
+            pass_rate=round((counts["passed"] / total) * 100, 1) if total else 0.0,
+            duration_ms=sum(row.duration_ms or 0 for row in rows)),
+        results=rows,
+    )
+
+
+async def load_execution_report(
+    session: AsyncSession, run: TestRun, runs: list[TestRun] | None = None
+) -> ExecutionReportOut:
+    report_runs = runs or [run]
     script_ids = [
         result.automation_script_id
-        for result in run.results or []
+        for source in report_runs for result in source.results or []
         if result.automation_script_id is not None
     ]
     scripts = await _scripts(session, script_ids)
@@ -78,7 +120,7 @@ async def load_execution_report(
         {script.requirement_id for script in scripts if script.requirement_id is not None}
     )
     requirements = await _requirements(session, requirement_ids)
-    return assemble_execution_report(run, scripts, versions, requirements)
+    return assemble_latest_suite_report(run, report_runs, scripts, versions, requirements)
 
 
 def _counts(run: TestRun, rows: list[ExecutionReportResult]) -> ExecutionReportCounts:
@@ -130,6 +172,7 @@ def _result_row(
     expected = written.strip() or str(assertion.get("expected") or "")
     return ExecutionReportResult(
         id=result.id,
+        execution_run_id=result.test_run_id,
         test_case_code=code or result.spec_path,
         title=(version.title if version is not None else "") or code or result.spec_path,
         requirement_code=requirement_code,

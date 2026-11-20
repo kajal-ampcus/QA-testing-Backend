@@ -74,16 +74,30 @@ def case_signature(version_data: dict[str, Any], states: list[dict[str, Any]] | 
             value = re.sub(r"\{([^{}]+)\}", embedded, value)
         return json.dumps(value, sort_keys=True, ensure_ascii=True)
 
+    def assertion_identity(step: dict[str, Any]) -> Any:
+        assertion = step.get("assertion")
+        if not assertion:
+            return step.get("expected")
+        # A manual assertion has no executable oracle. Its requirement prose
+        # must not turn the same observed interaction into a second test case;
+        # the repository merges the additional acceptance criterion instead.
+        # Native/structured assertions retain every behavior-defining value.
+        ignored = {"target", "requirement_text"}
+        if assertion.get("kind") == "manual":
+            ignored.update({"text", "fields"})
+        return json.dumps(
+            {key: value for key, value in assertion.items() if key not in ignored},
+            sort_keys=True,
+        )
+
     rows = list(
-            (
-                step.get("action"),
-                target_identity(step.get("target") or {}),
-                resolved_value(step.get("value")),
-                # Structured assertions define behavior; prose is descriptive.
-                json.dumps({key: value for key, value in step["assertion"].items() if key not in {"target", "requirement_text"}}, sort_keys=True)
-                if step.get("assertion") else step.get("expected"),
-            )
-            for step in version_data.get("steps", [])
+        (
+            step.get("action"),
+            target_identity(step.get("target") or {}),
+            resolved_value(step.get("value")),
+            assertion_identity(step),
+        )
+        for step in version_data.get("steps", [])
     )
     normalized = []
     assertions = set()

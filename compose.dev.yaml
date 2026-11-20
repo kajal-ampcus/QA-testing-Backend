@@ -22,7 +22,7 @@ services:
       - --host
       - 0.0.0.0
       - --port
-      - "8000"
+      - "8005"
       - --reload
       - --reload-dir
       - /app/apps

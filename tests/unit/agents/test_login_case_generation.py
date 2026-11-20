@@ -53,6 +53,28 @@ def test_password_limits_come_from_requirement_and_do_not_claim_login_success():
                for case in cases if len(case.test_data["password"]) in {8, 64})
 
 
+def test_password_visibility_toggle_never_submits_and_checks_value_is_preserved():
+    state = login_state()
+    state["elements"].append({"element_code": "EYE", "role": "button", "name": "Show password"})
+    criteria = [{"id": "AC-1", "text": "The password visibility eye icon toggles visibility of the password without changing its value."}]
+    plan = plan_scenarios(criteria, [state], "Login page")
+    assert len(plan.cases) == 1
+    case = plan.cases[0]
+    assert case.category == "POSITIVE"
+    assert not any(step.action == "click" and step.target.element_code == "C" for step in case.steps)
+    assert any(step.action == "click" and step.target.element_code == "EYE" for step in case.steps)
+    assertions = [step.assertion for step in case.steps if step.action == "assert"]
+    assert {assertion["kind"] for assertion in assertions} == {"attribute", "value"}
+
+
+def test_password_visibility_without_an_observed_eye_control_is_deferred():
+    criteria = [{"id": "AC-1", "text": "The password visibility eye icon toggles visibility of the password without changing its value."}]
+    plan = plan_scenarios(criteria, [login_state()], "Login page")
+    assert not plan.cases
+    assert len(plan.scenarios) == 1
+    assert "observed, labelled show/hide control" in plan.scenarios[0].reason
+
+
 def test_required_messages_and_independent_blank_fields():
     cases = generate(['The system displays "Username is required" when username is blank.',
                       'The system displays "Password is required" when password is blank.'])

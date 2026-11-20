@@ -1,8 +1,10 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from domain.enums import TestResultStatus, TestRunStatus
 from core.agents.reporting.execution_report import (
     assemble_execution_report,
+    assemble_latest_suite_report,
     run_is_finished,
 )
 from infra.db.models.automation import AutomationScript
@@ -93,6 +95,34 @@ def test_report_joins_playwright_results_and_lists_failures_first() -> None:
     assert failed.actual == "login stayed on the form"
     assert failed.evidence == ["screenshot"]
     assert report.results[1].evidence == ["video"]
+
+
+def test_latest_suite_report_keeps_cases_not_in_a_partial_retry() -> None:
+    project_id, generation_id, requirement_id, map_id = (uuid.uuid4() for _ in range(4))
+    first_id, retry_id = uuid.uuid4(), uuid.uuid4()
+    passed_case, retried_case = uuid.uuid4(), uuid.uuid4()
+    passed_script, retried_script = uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(UTC)
+    first = TestRun(id=first_id, project_id=project_id, generation_id=generation_id,
+        environment="development", status=TestRunStatus.FAILED, created_at=now)
+    first.results = [
+        TestResult(id=uuid.uuid4(), test_run_id=first_id, automation_script_id=passed_script,
+            spec_path="tests/one.spec.ts", status=TestResultStatus.PASSED, assertion={}, evidence={}),
+        TestResult(id=uuid.uuid4(), test_run_id=first_id, automation_script_id=retried_script,
+            spec_path="tests/two.spec.ts", status=TestResultStatus.FAILED, assertion={}, evidence={}),
+    ]
+    retry = TestRun(id=retry_id, project_id=project_id, generation_id=generation_id,
+        environment="development", status=TestRunStatus.COMPLETED, created_at=now + timedelta(seconds=1))
+    retry.results = [TestResult(id=uuid.uuid4(), test_run_id=retry_id, automation_script_id=retried_script,
+        spec_path="tests/two.spec.ts", status=TestResultStatus.PASSED, assertion={}, evidence={})]
+    scripts = [_script(passed_script, project_id, generation_id, passed_case, "TC-001", requirement_id, map_id),
+               _script(retried_script, project_id, generation_id, retried_case, "TC-002", requirement_id, map_id)]
+    report = assemble_latest_suite_report(retry, [first, retry], scripts,
+        [_version(passed_case, "First", "Pass"), _version(retried_case, "Second", "Pass")],
+        [Requirement(id=requirement_id, req_code="REQ-001", project_id=project_id, current_version=1, status="APPROVED")])
+    assert report.counts.total == 2
+    assert report.counts.passed == 2
+    assert {row.test_case_code for row in report.results} == {"TC-001", "TC-002"}
 
 
 def _script(

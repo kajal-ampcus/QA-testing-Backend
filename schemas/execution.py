@@ -112,6 +112,7 @@ class ExecutionReportCounts(BaseModel):
 
 class ExecutionReportResult(BaseModel):
     id: UUID
+    execution_run_id: UUID | None = None
     test_case_code: str
     title: str
     requirement_code: str

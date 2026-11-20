@@ -400,14 +400,14 @@ def test_later_cases_are_added_to_the_same_suite(tmp_path) -> None:
     assert codes == {"TC-001", "TC-002"}
 
 
-def test_case_ids_to_write_skips_an_unchanged_version() -> None:
+def test_case_ids_to_write_keeps_existing_specs_until_explicit_regeneration() -> None:
     kept = uuid4()
     changed = uuid4()
     added = uuid4()
     assert case_ids_to_write(
         [(kept, 1), (changed, 2), (added, 1)],
         {kept: 1, changed: 1},
-    ) == [changed, added]
+    ) == [added]
 
 
 def test_discovery_input_is_private_to_execution_inputs(tmp_path) -> None:

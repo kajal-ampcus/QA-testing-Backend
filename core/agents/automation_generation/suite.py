@@ -145,8 +145,13 @@ def _carry_local_env(suite_dir: Path) -> None:
 
 
 def case_ids_to_write(requested: list[tuple[UUID, int]], stored: dict[UUID, int]) -> list[UUID]:
-    """Cases with no spec yet, or whose approved version changed."""
-    return [case_id for case_id, version in requested if stored.get(case_id) != version]
+    """Only cases with no generated spec enter an ordinary additive run.
+
+    Changing an approved test case must not silently rewrite a tester's
+    existing suite. A deliberate regeneration clears ``stored`` at the route
+    boundary, which then makes the selected cases eligible to be rewritten.
+    """
+    return [case_id for case_id, _version in requested if case_id not in stored]
 
 
 def generate_suite(
@@ -684,6 +689,10 @@ def _action_for(method: str, prop: str) -> dict[str, str] | None:
             "name: string, expected: string",
             f"await expect(this.{prop}).toHaveAttribute(name, expected);",
         ),
+        f"expect{pascal}Value": (
+            "expected: string",
+            f"await expect(this.{prop}).toHaveValue(expected);",
+        ),
         f"expect{pascal}AccessibleName": (
             "expected: string",
             f"await expect(this.{prop}).toHaveAccessibleName(expected);",
@@ -730,6 +739,8 @@ def _assertion_call(
         return f"expect{pascal}Validity", f'{json.dumps(assertion["property"])}, {assertion["value"]}'
     if kind == "attribute":
         return f"expect{pascal}Attribute", f'{json.dumps(assertion["name"])}, {json.dumps(assertion["value"])}'
+    if kind == "value":
+        return f"expect{pascal}Value", json.dumps(assertion["value"])
     if kind == "accessible_name":
         return f"expect{pascal}AccessibleName", json.dumps(text)
 

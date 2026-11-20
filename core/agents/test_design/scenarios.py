@@ -273,6 +273,22 @@ def plan_scenarios(acceptance_criteria: list[dict[str, Any]], states: list[dict[
                         str(ac["text"]), dimension(str(ac["text"])), missing_category,
                         reason="Requested category needs a defined input and expected outcome for this login behavior."))
                 continue
+        # A password-visibility criterion cannot safely fall through to the
+        # generic login planner. It needs an observed, labelled toggle control;
+        # otherwise the test is deferred instead of submitting the form and
+        # asserting an unrelated post-login destination.
+        if len(login_states) == 1 and re.search(r"\b(password|passphrase)\b", str(ac.get("text") or ""), re.I) and re.search(
+            r"\b(visibility|visible|show|hide|reveal|toggle|eye)\b", str(ac.get("text") or ""), re.I
+        ):
+            ac_id = str(ac["id"])
+            wanted = (requested_categories or {}).get(ac_id, {"POSITIVE"})
+            for category in sorted(wanted):
+                scenarios.append(Scenario(
+                    f"{ac_id}:{criterion_index}:password-visibility:{category}", ac_id, str(ac["text"]),
+                    "functional", category,
+                    reason="Password visibility needs one observed, labelled show/hide control before an executable case can be generated.",
+                ))
+            continue
         for clause_index, text in enumerate(clauses(str(ac.get("text") or "")) or [""]):
             ac_id = str(ac["id"])
             category = _default_categories({"text": text})[0]
