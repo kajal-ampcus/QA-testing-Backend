@@ -548,12 +548,13 @@ async function enterApplication(page: Page): Promise<void> {
         throw new Error("CAPTCHA_CONFIGURATION_ERROR: staging_hook mode is disabled in production.");
       }
     }
-    await page.getByRole("button", { name: /^log\s*in$/i }).click();
+    const submit = page.getByRole("button", { name: /^\s*(?:log\s*in|sign\s*in|submit|continue)\s*$/i })
+      .or(page.locator('input[type="submit"]')).first();
+    await submit.click();
     try {
-      await page.waitForURL((url) => !/\/login\/?$/i.test(url.pathname), { timeout: 20_000 });
-      // A reload before the session is stored sends the app back to the login page.
-      // CEP labels this control "Sign out"; other apps use "Log out".
-      await sessionEndControl(page).first().waitFor({ state: "visible", timeout: 20_000 });
+      // SPAs can show the authenticated screen at the same URL and may hide
+      // sign-out inside a menu. Require the credential form to disappear.
+      await page.locator('input[type="password"]').first().waitFor({ state: "hidden", timeout: 20_000 });
       return;
     } catch {
       notice = await loginNotice(page);

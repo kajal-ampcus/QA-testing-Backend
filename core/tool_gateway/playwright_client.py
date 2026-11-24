@@ -152,7 +152,14 @@ export default defineConfig({
     ["./execution-progress.cjs"],
     ["list"],
   ],
-  use: { ...(base.use || {}), headless: true, screenshot: "on", video: "on", trace: "on" },
+  use: {
+    ...(base.use || {}), headless: true, screenshot: "on", video: "on", trace: "on",
+    launchOptions: {
+      ...((base.use || {}).launchOptions || {}),
+      ...(process.env.CHROME_EXECUTABLE_PATH ? { executablePath: process.env.CHROME_EXECUTABLE_PATH } : {}),
+      ...(process.env.CHROME_NO_SANDBOX === "true" ? { args: ["--no-sandbox", "--disable-dev-shm-usage"] } : {}),
+    },
+  },
 });
 """
 
